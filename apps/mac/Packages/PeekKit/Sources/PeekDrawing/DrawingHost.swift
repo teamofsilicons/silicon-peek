@@ -49,6 +49,9 @@ public final class DrawingHost: DrawingHosting {
     private var consecutiveThrows = 0
     private var overrunTimes: [CFTimeInterval] = []
     private var reportedOpsCap = false
+    /// The loaded script, for readable stacks (source line + caret) in logs and `drawing.error`.
+    private var scriptSource: String?
+    private var scriptFilename = "drawing.js"
     /// Frames completed since load (tests, diagnostics).
     private(set) var framesRendered = 0
 
@@ -67,6 +70,11 @@ public final class DrawingHost: DrawingHosting {
         self.usesDisplayLink = true
         compositor = Compositor(canvas: canvas, glassMode: glassMode)
         scheduler.onTick = { [weak self] timestamp in self?.tick(timestamp: timestamp) }
+        scheduler.onStall = { [weak self] in
+            guard let self else { return }
+            Self.logger.info("drawing \(self.key): the display link is not firing (display asleep or off screen); "
+                + "running frames from a 10 Hz timer so errors are still caught")
+        }
     }
 
     /// A host without a display link, for tests.
@@ -78,6 +86,11 @@ public final class DrawingHost: DrawingHosting {
         self.usesDisplayLink = !manualClock
         compositor = Compositor(canvas: canvas, glassMode: glassMode)
         scheduler.onTick = { [weak self] timestamp in self?.tick(timestamp: timestamp) }
+        scheduler.onStall = { [weak self] in
+            guard let self else { return }
+            Self.logger.info("drawing \(self.key): the display link is not firing (display asleep or off screen); "
+                + "running frames from a 10 Hz timer so errors are still caught")
+        }
     }
 
     isolated deinit {
@@ -95,12 +108,14 @@ public final class DrawingHost: DrawingHosting {
         compositor.hideFallback()
         status = .loading
         resetFrameState()
+        scriptSource = String(validating: script.source, as: UTF8.self)
+        scriptFilename = script.filename
 
         guard script.source.count <= DrawingLimits.maxScriptBytes else {
             let failure = DrawingFailure(
                 reason: .throwsRepeatedly,
-                message: String(format: "%@ is %.1f KB; drawings are limited to 256 KB (visual.md A7)",
-                                script.filename, Double(script.source.count) / 1024))
+                message: String(format: "%@ is %.1f KB; drawings are limited to 256 KB (%@)",
+                                script.filename, Double(script.source.count) / 1024, DrawingDocs.limits))
             enterFallback(failure, report: false)
             throw failure
         }
@@ -125,14 +140,14 @@ public final class DrawingHost: DrawingHosting {
             return
         case .threw(let message, let stack):
             failure = DrawingFailure(reason: .throwsRepeatedly, message: "loading \(script.filename) threw: \(message)",
-                                     stack: stack)
+                                     stack: clean(stack))
         case .interrupted:
             failure = DrawingFailure(
                 reason: .overruns,
                 message: "the top-level code of \(script.filename) ran longer than 250 ms and was stopped")
         case .outOfMemory:
             failure = DrawingFailure(reason: .oom,
-                                     message: "loading \(script.filename) exceeded the 16 MB memory limit (visual.md A7)")
+                                     message: "loading \(script.filename) exceeded the 16 MB memory limit (\(DrawingDocs.limits))")
         case .failed(let message):
             failure = DrawingFailure(reason: .throwsRepeatedly, message: "loading \(script.filename) failed: \(message)")
         }
@@ -211,7 +226,7 @@ public final class DrawingHost: DrawingHosting {
             enterFallback(DrawingFailure(reason: .oom, message: "the '\(name)' handler exceeded the 16 MB memory limit: "
                                              + message), report: true)
         case .threw(let message, let stack):
-            report("the '\(name)' handler threw: \(message)" + (stack.map { "\n\($0)" } ?? ""))
+            report("the '\(name)' handler threw: \(message)" + (clean(stack).map { "\n\($0)" } ?? ""))
         case .interrupted:
             report("the '\(name)' handler ran longer than 4 ms and was stopped")
         case .failed(let message):
@@ -272,12 +287,13 @@ public final class DrawingHost: DrawingHosting {
                 if rendered.droppedOps > 0, !reportedOpsCap {
                     reportedOpsCap = true
                     report("a frame recorded more than \(DrawingLimits.maxOpsPerFrame) ops; \(rendered.droppedOps) were "
-                        + "ignored (visual.md A7)")
+                        + "ignored (\(DrawingDocs.limits))")
                 }
                 keepAwake = rendered.again || wakePending || levelsAwake
             }
         case .threw(let message, let stack):
             consecutiveThrows += 1
+            let stack = clean(stack)
             report("frame() threw: \(message)" + (stack.map { "\n\($0)" } ?? ""))
             if consecutiveThrows >= DrawingLimits.maxConsecutiveThrows {
                 enterFallback(DrawingFailure(
@@ -292,7 +308,7 @@ public final class DrawingHost: DrawingHosting {
             if overrunTimes.count >= DrawingLimits.maxOverruns {
                 enterFallback(DrawingFailure(
                     reason: .overruns,
-                    message: "frame() ran longer than 4 ms \(overrunTimes.count) times within 5 s (visual.md A7)"),
+                    message: "frame() ran longer than 4 ms \(overrunTimes.count) times within 5 s (\(DrawingDocs.limits))"),
                     report: true)
                 return
             }
@@ -321,6 +337,10 @@ public final class DrawingHost: DrawingHosting {
         let who = key.description, message = failure.message
         Self.logger.error("drawing \(who) switched to the fallback visual: \(message)")
         if shouldReport { onFailure?(failure) }
+    }
+
+    private func clean(_ stack: String?) -> String? {
+        DrawingStack.clean(stack, source: scriptSource, filename: scriptFilename)
     }
 
     private func report(_ message: String) {

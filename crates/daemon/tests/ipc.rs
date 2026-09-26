@@ -62,7 +62,9 @@ async fn hello_negotiates_and_reports_the_app() {
     let app = r.app.unwrap();
     assert!(!app.ui_running);
     assert_eq!(
-        app.build, 1000,
+        app.build,
+        silicon_peek_client::ipc::cli::AppOfferInfo::build_number(silicon_peek_client::VERSION)
+            .unwrap(),
         "no installed app: peekd reports its own build"
     );
 

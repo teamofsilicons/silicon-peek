@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use silicon_peek_client::{
     Error, ErrorCode, Result,
-    ipc::cli::{AskResult, AskState, SendOp, SendResult},
+    ipc::cli::{AskResult, AskState, SendOp, SendResult, Warning, warnings},
     runtime::daemon::{EventWait, REQUEST_TIMEOUT},
     schema::{
         ImageRef,
@@ -44,6 +44,8 @@ pub struct Prepared {
     pub blobs: Vec<Vec<u8>>,
     /// `--wait` duration, when waiting.
     pub wait: Option<Duration>,
+    /// Local notes merged into peekd's (e.g. `isi_ignored`).
+    pub warnings: Vec<Warning>,
 }
 
 fn replace_images<'a>(
@@ -86,9 +88,13 @@ pub fn prepare(args: &SendArgs, default_notify: &[Notify]) -> Result<Prepared> {
         .map(|raw| input::read_json("--ask", raw).and_then(|v| Ask::from_input(&v)))
         .transpose()?;
     if let Some(v) = &args.voice {
-        check_voice(v)?;
+        check_voice(v).map_err(|e| e.with_input_field("--voice", ""))?;
     }
-    let lang = args.lang.as_deref().map(normalize_language).transpose()?;
+    let lang = args
+        .lang
+        .as_deref()
+        .map(|l| normalize_language(l).map_err(|e| e.with_input_field("--lang", "")))
+        .transpose()?;
     let duration_ms = args
         .duration
         .map(|s| check_duration(s).map(|d| d.as_secs() * 1000))
@@ -98,22 +104,29 @@ pub fn prepare(args: &SendArgs, default_notify: &[Notify]) -> Result<Prepared> {
     }
     let wait = args.wait.map(|s| check_wait(Some(s))).transpose()?;
     let notify = match &args.notify {
-        Some(list) => Notify::parse_list(list)?,
+        Some(list) => Notify::parse_list(list).map_err(|e| {
+            e.with_input_field("--notify", "--notify speech_finished,show_dismissed")
+        })?,
         None => default_notify.to_vec(),
     };
+    let mut warnings = Vec::new();
+    // ISI is optional context: an invalid one is left out, never a reason
+    // for the Carbon to miss the bubble.
     let isi = match std::env::var("ISI") {
-        Ok(v) if !v.is_empty() => {
-            check_isi(&v).map_err(|e| {
-                Error::invalid_input(format!(
-                    "the ISI environment variable is invalid: {}",
-                    e.message()
-                ))
-                .with_hint(
-                    "ISI is optional context (at most 160 characters, one line); fix or unset it",
-                )
-            })?;
-            Some(v)
-        }
+        Ok(v) if !v.is_empty() => match check_isi(&v) {
+            Ok(()) => Some(v),
+            Err(e) => {
+                warnings.push(Warning {
+                    code: warnings::ISI_IGNORED.to_owned(),
+                    message: format!(
+                        "the ISI environment variable was left out of this send: {} (at most 160 characters, one line)",
+                        e.message()
+                    ),
+                    details: Some(json!({"field": "ISI"})),
+                });
+                None
+            }
+        },
         _ => None,
     };
     let mut blobs = Vec::new();
@@ -137,7 +150,12 @@ pub fn prepare(args: &SendArgs, default_notify: &[Notify]) -> Result<Prepared> {
     };
     // The same check peekd runs, so a mismatch is caught here first.
     op.validate(&blobs)?;
-    Ok(Prepared { op, blobs, wait })
+    Ok(Prepared {
+        op,
+        blobs,
+        wait,
+        warnings,
+    })
 }
 
 pub async fn run(g: &Globals, out: Out, args: SendArgs) -> Result<()> {
@@ -157,9 +175,10 @@ pub async fn run(g: &Globals, out: Out, args: SendArgs) -> Result<()> {
     let (_session, auth) = mac_session(g).await?;
     let mut svc = service::ensure_service().await?;
     let started = Instant::now();
-    let (result, _) = svc
+    let (mut result, _) = svc
         .call(&prepared.op, Some(&auth), prepared.blobs, REQUEST_TIMEOUT)
         .await?;
+    result.warnings.splice(0..0, prepared.warnings);
     out.warnings(&result.warnings);
     let Some(wait) = prepared.wait else {
         out.result(&result, human_send);
@@ -349,6 +368,60 @@ mod tests {
         assert!(prepare(&a, &[]).is_ok());
         a.wait = Some(60);
         assert_eq!(code(&a), Some(ErrorCode::ConflictingFlags));
+    }
+
+    fn field(a: &SendArgs) -> Option<String> {
+        prepare(a, &[]).err().and_then(|e| {
+            assert!(e.hint().is_some(), "every input error has a hint: {e}");
+            e.details()
+                .and_then(|d| d.get("field"))
+                .and_then(|f| f.as_str().map(str::to_owned))
+        })
+    }
+
+    #[test]
+    fn input_errors_name_the_field() {
+        let mut a = args();
+        a.ask = Some(
+            r#"{"question":"Pick","type":"single_choice","options":["Same"," same "]}"#.into(),
+        );
+        assert_eq!(code(&a), Some(ErrorCode::InvalidInput), "duplicate labels");
+        assert_eq!(field(&a).as_deref(), Some("ask.options[1].label"));
+        a.ask = Some(r#"{"question":"Pick","type":"single_choice","options":["a"]}"#.into());
+        assert_eq!(field(&a).as_deref(), Some("ask.options"));
+        a.ask = Some(
+            r#"{"question":"Pick","type":"single_choice","options":[{"id":"x","label":"a"},{"id":"x","label":"b"}]}"#
+                .into(),
+        );
+        assert_eq!(field(&a).as_deref(), Some("ask.options[1].id"));
+        a.ask = Some(r#"{"question":"q","type":"slider","min":0,"max":10,"step":0}"#.into());
+        assert_eq!(field(&a).as_deref(), Some("ask.step"));
+        a.ask = Some(r#"{"question":"q","type":"text","bogus":1}"#.into());
+        assert_eq!(field(&a).as_deref(), Some("ask.bogus"));
+        a.ask = Some(r#"{"question":"q","type":"text","max_length":2001}"#.into());
+        assert_eq!(field(&a).as_deref(), Some("ask.max_length"));
+        a.ask = Some("{not json".into());
+        assert_eq!(code(&a), Some(ErrorCode::InvalidJson));
+        a.ask = None;
+        a.show = Some(r#"{"elements":[]}"#.into());
+        assert_eq!(field(&a).as_deref(), Some("show.elements"));
+        a.show = None;
+        a.speak = Some("hola".into());
+        a.lang = Some("es-MX".into());
+        let p = prepare(&a, &[]);
+        assert_eq!(
+            p.ok().and_then(|p| p.op.lang).as_deref(),
+            Some("es"),
+            "a full BCP 47 tag uses its primary subtag"
+        );
+        a.lang = Some("not a tag".into());
+        assert_eq!(field(&a).as_deref(), Some("--lang"));
+        a.lang = None;
+        a.voice = Some("thalia".into());
+        assert_eq!(field(&a).as_deref(), Some("--voice"));
+        a.voice = None;
+        a.notify = Some("nope".into());
+        assert_eq!(field(&a).as_deref(), Some("--notify"));
     }
 
     #[test]

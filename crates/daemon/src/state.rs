@@ -54,6 +54,8 @@ pub struct Caller {
     pub store: Store,
     /// The testing environment, in a testing context.
     pub testing: Option<TestingEnvironment>,
+    /// Whether the session slot records an active Ting enrollment.
+    pub ting_subscribed: Option<bool>,
 }
 
 impl Caller {

@@ -678,6 +678,11 @@ public final class SlotManager {
         bubble.timers.removeAll()
         slot.active = nil
         let machine = bubble.machine
+        if machine.visibleSince != nil {
+            let visible = machine.visibleSince.map { String(format: " after %.1f s", env.now() - $0) } ?? ""
+            logger.info("close \(machine.id) at slot \(slot.index.rawValue): \(Self.describe(machine.leaveReason))\(visible)"
+                + (requeue ? " (queued again)" : ""))
+        }
         if let sendID = bubble.sendID {
             if machine.audioOutlivesBubble, !stoppedAudio.contains(sendID) { slot.draining.insert(sendID) }
             let cancelled = cancelledSends.remove(sendID) != nil
@@ -726,7 +731,9 @@ public final class SlotManager {
     private func handle(_ event: BubbleEvent, for bubble: Bubble, in slot: PhysicalSlot) {
         guard slot.active === bubble else { return }
         let before = bubble.machine.phase
+        let speechBefore = bubble.machine.speech
         let effects = bubble.machine.handle(event, now: env.now())
+        if bubble.machine.speech != speechBefore { logSpeech(bubble.machine.speech, bubble: bubble) }
         var finished: Bool?
         for effect in effects {
             if case .finished(let requeue) = effect {
@@ -746,6 +753,7 @@ public final class SlotManager {
     private func run(_ effect: BubbleEffect, bubble: Bubble, slot: PhysicalSlot) {
         switch effect {
         case .slideIn:
+            logger.info("show \(bubble.machine.id) at slot \(slot.index.rawValue): \(Self.describe(bubble.machine.event))")
             let surface = surface(for: slot)
             surface.slideIn()
             env.backdrop.track(bubble.key, rectOnScreen: slot.chrome.slotLayout.visualFrameOnScreen)
@@ -830,8 +838,54 @@ public final class SlotManager {
         Task { [weak self] in
             guard let self else { return }
             let delivery = await self.env.send(context, outbound)
+            if expectsReply {
+                let what: String =
+                    switch outbound {
+                    case .answer(_, let via): "answer submitted for \(context.askID ?? "?") via \(via.rawValue)"
+                    case .voice: context.askID.map { "voice answer submitted for \($0)" } ?? "voice message submitted"
+                    default: "message submitted"
+                    }
+                if let problem = delivery.problem {
+                    self.logger.notice("\(what) at slot \(slot.index.rawValue) was not taken: \(problem)")
+                } else {
+                    self.logger.info("\(what) at slot \(slot.index.rawValue)")
+                }
+            }
             self.delivered(delivery, voiceMessage: isVoiceMessage, expectsReply: expectsReply, bubble: bubble, slot: slot)
         }
+    }
+
+    private func logSpeech(_ speech: BubbleMachine.Speech, bubble: Bubble) {
+        let id = bubble.machine.id
+        // Speech done (with played/total ms) is logged where the player reports it (PeekCoordinator).
+        switch speech {
+        case .playing: logger.info("speech started for \(id)")
+        case .failed: logger.info("speech unavailable for \(id); showing the text instead")
+        case .none, .waiting, .finished, .stopped: break
+        }
+    }
+
+    static func describe(_ reason: BubbleMachine.LeaveReason?) -> String {
+        switch reason {
+        case .auto(let why)?: why.rawValue
+        case .dismissed?: "dismissed"
+        case .escaped?: "escaped"
+        case .cancelled?: "cancelled"
+        case .preempted?: "preempted"
+        case .replaced?: "replaced"
+        case .answered?: "answered"
+        case .idle?: "idle"
+        case nil: "closed"
+        }
+    }
+
+    static func describe(_ event: PeekShowEvent?) -> String {
+        guard let event else { return "summoned by the Carbon" }
+        var parts: [String] = []
+        if event.speak != nil { parts.append("speak") }
+        if let show = event.show { parts.append("show(\(show.elements.count))") }
+        if let ask = event.ask { parts.append("ask(\(ask.type.rawValue))") }
+        return parts.isEmpty ? "empty" : parts.joined(separator: " + ")
     }
 
     /// The request's context. Kept out of line: the Swift 6.3.1 optimizer crashes (SIL ownership verifier, in

@@ -189,12 +189,12 @@ Unknown ops are refused as `unknown_op`. Unknown fields are ignored, so fields c
 
 ```jsonc
 // CLI → peekd
-{"v":1,"id":"…","op":"hello","role":"cli","cli_version":"0.1.0","protocols":[1],
- "platform":"macos-aarch64","bundled_app":{"build":1000,"short_version":"0.1.0","zip_path":"/…/Peek.app.zip","zip_sha256":"…"}}
+{"v":1,"id":"…","op":"hello","role":"cli","cli_version":"0.1.1","protocols":[1],
+ "platform":"macos-aarch64","bundled_app":{"build":1001,"short_version":"0.1.1","zip_path":"/…/Peek.app.zip","zip_sha256":"…"}}
 // peekd → CLI
-{"v":1,"id":"…","ok":true,"result":{"protocol":1,"peekd_version":"0.1.0","app":{"build":1000,"ui_running":true}}}
+{"v":1,"id":"…","ok":true,"result":{"protocol":1,"peekd_version":"0.1.1","app":{"build":1001,"ui_running":true}}}
 // UI → peekd
-{"v":1,"id":"…","op":"hello","role":"ui","app_build":1000,"app_version":"0.1.0","protocols":[1]}
+{"v":1,"id":"…","op":"hello","role":"ui","app_build":1001,"app_version":"0.1.1","protocols":[1]}
 ```
 
 If the protocol sets do not intersect, peekd answers `cli_outdated` (fix: `honeycomb update 'peek'`). If peekd is the older one, the CLI offers its bundled app (`app.offer`) and retries for up to 30 s, then fails with `app_update_pending` (retryable).
@@ -225,10 +225,11 @@ peekd checks that the home is a private directory owned by the user, that `<home
 
 **`config.sync` and telemetry.** `config.sync` mirrors `{"voice","language","notify","telemetry"}` into peekd. `telemetry` is the home's *effective* setting as the CLI sees it: `false` also when only the CLI's environment opts out (`PEEK_TELEMETRY`, `SPACE_STATION_TELEMETRY`, `SILICON_TELEMETRY`). The additive field `"env_opt_out":true` marks that case. Every CLI command that talked to peekd for its home under such an environment sends one more `config.sync` at the end. peekd then records nothing about the home and sends `X-Peek-Telemetry: off` on its backend calls for it. An environment opt-out ends when a CLI of that home hands peekd a `telemetry` batch again, since the CLI only does that when neither its config nor its environment opts out. A config opt-out never ends this way, and peekd always reads the home's `config.json` as well. `--no-telemetry` is per process and is not forwarded ([Telemetry](telemetry.md#the-helper-and-environment-opt-outs)).
 
-**UI traffic.** peekd sends the app `slots.state`, `peek.show`, `peek.cancel`, `tts.begin`/`tts.chunk`/`tts.end`/`tts.error` (24 kHz mono s16le PCM), `stt.result` and `restarting` events, and the requests `drawing.validate`, `drawing.load`, `app.update.prepare`, `app.quit`, `app.uninstall` and `doctor`. The app sends `answer`, `voice.submit` (the WAV), `message`, `dismissed`, `speech.done`, `shown.done`, `focus`, `drawing.error`, `telemetry`, `settings.changed` and `ui.status`. peekd also checks that the peer process of a `ui` connection is `…/Peek.app/Contents/MacOS/Peek`.
+**UI traffic.** peekd sends the app `slots.state`, `peek.show`, `peek.cancel`, `tts.begin`/`tts.chunk`/`tts.end`/`tts.error` (24 kHz mono s16le PCM), `stt.result` and `restarting` events, and the requests `drawing.validate`, `drawing.load`, `app.update.prepare`, `app.quit`, `app.uninstall` and `doctor`. The app sends `answer`, `voice.submit` (the WAV), `message`, `dismissed`, `speech.done`, `shown.done`, `focus`, `drawing.error`, `telemetry`, `settings.changed`, `ui.status` and `presence`. peekd also checks that the peer process of a `ui` connection is `…/Peek.app/Contents/MacOS/Peek`.
 
 - **`voice.submit` names its message.** The reply is `{"message_id":"cmsg_…"}` for a Carbon voice message (`ask_id` null) and `{"message_id":null}` for a voice answer. The later `stt.result` carries the same `message_id` (or the `ask_id`), so the app matches outcomes by id, never by arrival order. peekd starts transcribing only after the reply is queued on the connection, so the `stt.result` never arrives before the reply that names its message, even when it is immediate (silence gives `empty` without any upload). The app still keeps an outcome whose reply it has not handled yet, and applies it when the reply comes. With an older peekd whose reply is `{}`, it falls back to matching messages in order.
 - **`message`** (a typed Carbon message) replies `{"message_id":"cmsg_…"}` too.
+- **`presence`** tells peekd whether anyone can see the screen: `{"op":"presence","available":bool,"reason":"ok"|"locked"|"asleep"|"display_off"}`, reply `{}`. The app sends it right after its `hello` and on every change (`com.apple.screenIsLocked` / `com.apple.screenIsUnlocked`, `NSWorkspace` screens did sleep / wake, session resign / become active). While `available` is false peekd pushes no `peek.show` and no `tts.*`: new sends stay in the per-position queue (the `send` result has `status:"queued"` and a `carbon_away` warning), asks keep their expiry clock, and speech starts only once the bubble is actually shown. When `available` turns true, queued sends are pushed in order. `status` reports `"carbon":{"available","reason"}`. An app that never sends `presence` (older than 0.1.1) is treated as available.
 - **`ui.status`** is additive. The app pushes what only it knows after every successful `hello` and whenever a value changes: `{"mic":"granted|denied|restricted|undetermined","hotkeys":{"modifier","registered":[…],"failed":[…],"problems":[…]},"glass","services","app_build","app_version"}`. peekd keeps the latest report for that connection and replies `{}`. For `peek doctor`, peekd first asks the app live with a `doctor` request (answered with the same object) and reports `"ui_status_source":"live"`. If that request fails (an app that is busy or too old), it falls back to the last push and reports `"ui_status_source":"pushed"`. Every field is optional and read leniently. An older peekd answers `ui.status` with `unknown_op`, and the app then stops pushing until the next connection.
 
 ## Where state lives
@@ -250,7 +251,7 @@ Every row in peekd's database is keyed by `context`, so production and test data
 | `GET /api/v1/iam` | – (test key optional) | discovery: `app_id`, `api_version`, URLs, `testing_environment{id,name,generation}`, `compatibility` |
 | `POST /api/v1/auth/login` | – | `{"slt"}` → session |
 | `POST /api/v1/auth/refresh` | – | `{"refresh_token"}` → session |
-| `POST /api/v1/auth/logout` | optional Bearer | `{"token"}` → 204 (also revokes the Ting grant) |
+| `POST /api/v1/auth/logout` | optional Bearer | `{"token","revoke_ting"?}` → 204. Revokes the IAM refresh family. The Silicon's Ting grant is revoked too only with `"revoke_ting":true` and the Bearer (`peek logout --revoke-ting`), because every home of the Silicon shares it |
 | `GET /api/v1/auth/me` | Bearer | the introspected identity, display name, org role, scopes, Ting enrollment |
 | `POST /api/v1/ting/recipient` | Bearer | enroll as a Ting recipient |
 | `POST /api/v1/deliveries` | Bearer | deliver one event through Ting |
@@ -309,4 +310,4 @@ A report without a fix is welcome too. The more exact the reproduction, the fast
 
 ## Release (maintainers)
 
-One version number is used everywhere: every Cargo package, `honeycomb.yaml`, the app's `CFBundleShortVersionString` and the git tag (`v0.1.0`). The release script builds the CLI for all six Honeycomb targets (macOS universal, Linux musl, Windows MSVC static), a universal peekd and Peek.app, signs them with Developer ID and notarizes the app, packs `Peek.app.zip` into both macOS payloads, validates and packs the Honeycomb archive, and runs a loopback install test exactly as Stemcell would. The package ships only the `peek` command; the app is installed by `peek app install` or the first `peek login`.
+One version number is used everywhere: every Cargo package, `honeycomb.yaml`, the app's `CFBundleShortVersionString` and the git tag (`v0.1.1`). The release script builds the CLI for all six Honeycomb targets (macOS universal, Linux musl, Windows MSVC static), a universal peekd and Peek.app, signs them with Developer ID and notarizes the app, packs `Peek.app.zip` into both macOS payloads, validates and packs the Honeycomb archive, and runs a loopback install test exactly as Stemcell would. The package ships only the `peek` command; the app is installed by `peek app install` or the first `peek login`.

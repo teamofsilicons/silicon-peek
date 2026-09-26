@@ -47,6 +47,9 @@ pub struct VerifiedHome {
     pub org_id: OrgId,
     /// Its display name, when known.
     pub display_name: Option<String>,
+    /// Whether the slot records an active Ting enrollment (`None` when it
+    /// records none).
+    pub ting_subscribed: Option<bool>,
 }
 
 /// peekd's authentication of a CLI request (BLUEPRINT §1.6), in order:
@@ -89,6 +92,7 @@ pub fn authenticate_home(auth: &AuthBlock) -> Result<VerifiedHome> {
         actor_id: slot.actor.public_id.clone(),
         org_id: slot.org_id.clone(),
         display_name: slot.display_name.clone(),
+        ting_subscribed: slot.ting.as_ref().map(|t| t.subscribed),
         slot_key,
         store,
     })

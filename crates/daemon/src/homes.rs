@@ -112,6 +112,7 @@ impl Shared {
                 context: auth.context,
             },
             display_name: verified.display_name.clone(),
+            ting_subscribed: verified.ting_subscribed,
             store: verified.store,
             testing,
         };

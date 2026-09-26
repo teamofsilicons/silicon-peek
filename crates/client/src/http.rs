@@ -344,18 +344,28 @@ impl Client {
         .await
     }
 
-    /// `POST /api/v1/auth/logout` `{"token":"ort_…"}`. With a session attached
-    /// the bearer is sent too, so the backend also revokes the Ting grant.
-    /// Unknown tokens also succeed.
+    /// `POST /api/v1/auth/logout` `{"token":"ort_…"}`. Only with
+    /// `revoke_ting` (and a session attached) are `"revoke_ting":true` and the
+    /// bearer sent, so the backend also revokes the Silicon's Ting grant; a
+    /// plain logout never sends the bearer, so no backend revokes the grant
+    /// that other homes of the same Silicon still use. Unknown tokens also
+    /// succeed.
     ///
     /// # Errors
     /// Transport or server errors.
-    pub async fn logout(&self, refresh_token: &Secret, key: &IdempotencyKey) -> Result<()> {
+    pub async fn logout(
+        &self,
+        refresh_token: &Secret,
+        key: &IdempotencyKey,
+        revoke_ting: bool,
+    ) -> Result<()> {
+        let revoke_ting = revoke_ting && self.session.is_some();
         let body = LogoutRequest {
             token: refresh_token.clone(),
+            revoke_ting,
         };
         let mut r = self.post(routes::LOGOUT, key, &body, true);
-        if self.session.is_some() {
+        if revoke_ting {
             r = self.bearer(r)?;
         }
         self.empty(routes::LOGOUT, r).await

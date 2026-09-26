@@ -72,22 +72,34 @@ fn stage_name(filename: &str) -> String {
         .map_or_else(|| "drawing.js".to_owned(), str::to_owned)
 }
 
-fn validation_failed(filename: &str, r: &DrawingValidateResult) -> Error {
+fn validation_failed(
+    filename: &str,
+    r: &DrawingValidateResult,
+    check_only: bool,
+    previous_active: bool,
+) -> Error {
     let (message, frame) = r.error.as_ref().map_or_else(
         || ("the drawing did not pass validation".to_owned(), None),
         |e| (e.message.clone(), e.frame),
     );
     let at = frame.map_or_else(String::new, |f| format!(" at test frame {f}"));
+    let hint = if previous_active && !check_only {
+        "fix the script and run `peek register drawing` again; the previous drawing stays active (see peek docs drawing)"
+    } else {
+        "fix the script and run `peek register drawing` again (see peek docs drawing)"
+    };
     Error::new(
         ErrorCode::DrawingInvalid,
         format!("drawing `{filename}` failed validation{at}: {message}"),
     )
-    .with_hint("fix the script and run `peek register drawing` again; the previous drawing stays active (see peek docs drawing)")
+    .with_hint(hint)
     .with_details(json!({
         "error": r.error,
         "stats": r.stats,
         "warnings": r.warnings,
         "logs": r.logs,
+        "check_only": check_only,
+        "previous_active": previous_active,
     }))
 }
 
@@ -332,7 +344,13 @@ impl Shared {
         self.record(rec);
         if !result.ok {
             staged.remove();
-            return Err(validation_failed(&op.filename, &result));
+            let previous_active = self.drawing_row(&key).await.is_ok_and(|r| r.is_some());
+            return Err(validation_failed(
+                &op.filename,
+                &result,
+                op.check_only,
+                previous_active,
+            ));
         }
         let preview_blobs = if op.preview {
             reply_blobs.into_iter().take(1).collect()

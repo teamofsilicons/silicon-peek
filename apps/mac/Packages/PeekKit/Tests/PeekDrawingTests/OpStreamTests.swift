@@ -194,7 +194,8 @@ struct OpStreamTests {
         let logs = await harness.logs
         let errors = try #require(logs.last).split(separator: "\n").map(String.init)
         #expect(errors == [
-            "TypeError: ctx.getImageData is not supported in peek drawings: drawings cannot read pixels (visual.md A5)",
+            "TypeError: ctx.getImageData is not supported in peek drawings: drawings cannot read pixels "
+                + "(https://peek.teamofsilicons.com/docs/drawing#not-supported)",
             "RangeError: arc: the radius -1 is negative (canvas IndexSizeError)",
             "TypeError: fill: the fill rule must be 'nonzero' or 'evenodd', got \"sideways\"",
             "TypeError: drawImage: expected an image handle from input.show or input.ask, got object",

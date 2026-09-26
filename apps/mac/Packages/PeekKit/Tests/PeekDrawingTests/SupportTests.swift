@@ -121,6 +121,24 @@ struct SampleTests {
         #expect(ValidationSchedule.sampleImages().count == 3)
     }
 
+    @Test("validation inputs are real states: asks never carry a show, speech exists only while speaking")
+    func scheduleRealism() {
+        let steps = ValidationSchedule.steps(glass: .live)
+        for step in steps {
+            let input = step.input
+            #expect(!(input.show != nil && input.ask != nil), "frame \(step.index): show and ask together")
+            if input.speech != nil { #expect(input.phase == .speaking, "frame \(step.index): speech in \(input.phase)") }
+            if input.phase == .asking { #expect(input.show == nil && input.ask != nil, "frame \(step.index)") }
+        }
+        #expect(steps.contains { $0.input.phase == .asking && $0.input.show == nil })
+        #expect(steps.contains { $0.input.speech?.done == true })
+        for step in steps {
+            for case .send(let show, let ask, _) in step.events {
+                #expect(!(show != nil && ask != nil), "frame \(step.index): a send with show and ask")
+            }
+        }
+    }
+
     @Test("even-odd glass outlines are normalised so holes survive glassEffect's nonzero fill")
     func unitPathShape() {
         let path = CGMutablePath()

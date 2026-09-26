@@ -348,7 +348,49 @@ async fn refresh_rotates_and_maps_terminal_errors() {
 }
 
 #[tokio::test]
-async fn logout_revokes_the_ting_grant_then_the_family() {
+async fn a_plain_logout_keeps_the_shared_ting_grant() {
+    let h = Harness::start().await;
+    mount_login_happy_path(&h, &FULL_SCOPES).await;
+    assert_eq!(h.send(login_request(IDEM)).await.status, 200);
+    Mock::given(method("POST"))
+        .and(path("/api/v1/oauth/revoke"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&h.iam)
+        .await;
+    // A 0.1.0 CLI always sent the bearer; without the flag the grant stays,
+    // so other homes of the same Silicon keep receiving answers.
+    let r = h
+        .send(json_body(
+            authed("POST", "/api/v1/auth/logout", ACCESS)
+                .header("content-type", "application/json")
+                .header("idempotency-key", "peek-revoke-0123456789"),
+            &json!({"token": REFRESH}),
+        ))
+        .await;
+    assert_eq!(r.status, 204, "{}", String::from_utf8_lossy(&r.body));
+    assert!(
+        Harness::requests(&h.ting, "/v1/subscriptions/revoke")
+            .await
+            .is_empty()
+    );
+    assert_eq!(
+        Harness::requests(&h.iam, "/api/v1/oauth/revoke")
+            .await
+            .len(),
+        1
+    );
+    let me = h
+        .send(
+            authed("GET", "/api/v1/auth/me", ACCESS)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(me.json()["ting"]["subscribed"], true);
+}
+
+#[tokio::test]
+async fn logout_with_revoke_ting_revokes_the_ting_grant_then_the_family() {
     let h = Harness::start().await;
     mount_login_happy_path(&h, &FULL_SCOPES).await;
     assert_eq!(h.send(login_request(IDEM)).await.status, 200);
@@ -369,7 +411,7 @@ async fn logout_revokes_the_ting_grant_then_the_family() {
             authed("POST", "/api/v1/auth/logout", ACCESS)
                 .header("content-type", "application/json")
                 .header("idempotency-key", "peek-revoke-0123456789"),
-            &json!({"token": REFRESH}),
+            &json!({"token": REFRESH, "revoke_ting": true}),
         ))
         .await;
     assert_eq!(r.status, 204, "{}", String::from_utf8_lossy(&r.body));

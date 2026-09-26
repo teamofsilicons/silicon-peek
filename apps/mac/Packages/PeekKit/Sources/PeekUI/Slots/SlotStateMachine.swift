@@ -7,8 +7,8 @@ import PeekCore
 // Behaviour (understanding.md "Interactions", BLUEPRINT §1.9.3–§1.9.7, §8.5):
 //   * a bubble slides in ("entering"), then shows, speaks, asks, listens, types or transcribes,
 //     and slides out ("leaving");
-//   * speak + show: slides back 1.5 s after speech is done (or `--duration` after it);
-//     show only: slides back after `PeekShowEvent.effectiveDuration`; asks stay until answered;
+//   * speak (with or without a show): slides back 1.5 s after speech is done or stopped;
+//     show only (or speech that failed): slides back after `PeekShowEvent.effectiveDuration`; asks stay until answered;
 //   * down-arrow: one click slides the bubble out and lets the audio play on; a double click also
 //     stops the audio. The protocol message (`dismissed` with `down_arrow` or `down_arrow_double`)
 //     is sent once, after the double-click window, so the gesture is reported exactly;
@@ -46,7 +46,7 @@ public struct BubbleTiming: Sendable, Equatable {
     public var enter: Double = 0.5
     /// The slide-out (`.smooth(duration: 0.3)`) plus its settling tail.
     public var leave: Double = 0.45
-    /// Linger after speech ends when the send has no `--duration` (§1.9.3 step 6).
+    /// Linger after speech ends, for speak-only and speak + show alike (§1.9.3 step 6, docs/carbon.md).
     public var afterSpeech: Double = 1.5
     /// No audio this long after the bubble appeared: show the text instead (peekd's own budget is 5 s).
     public var speechStartTimeout: Double = 8
@@ -713,7 +713,9 @@ public struct BubbleMachine: Sendable, Equatable {
         }
         let seconds: Double
         if speech == .finished || speech == .stopped {
-            seconds = event?.durationMs.map { Double($0) / 1000 } ?? timing.afterSpeech
+            // Speech sets the pace: 1.5 s after it ends, with or without a show (docs/carbon.md). peekd fills
+            // `duration_ms` with the show's default, which only applies when nothing is spoken.
+            seconds = timing.afterSpeech
         } else if speakAsPill, event?.show == nil {
             seconds = event?.durationMs.map { Double($0) / 1000 }
                 ?? min(max(3 + 0.06 * Double(speakCharacterCount), 4), 15)

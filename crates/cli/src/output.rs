@@ -106,11 +106,15 @@ fn drawing_failure(error: &Error) -> Option<String> {
     let e = details.get("error").unwrap_or(details);
     let message = e.get("message").and_then(Value::as_str)?;
     let mut out = match e.get("frame").and_then(Value::as_u64) {
+        // The engine may already say "frame 60 threw: …" or "frame 4 was
+        // interrupted": one prefix, never two.
+        Some(frame) if message.starts_with(&format!("frame {frame} ")) => format!("✗ {message}"),
         Some(frame) => format!("✗ frame {frame} threw: {message}"),
         None => format!("✗ {message}"),
     };
     if let Some(stack) = e.get("stack").and_then(Value::as_str) {
-        for line in stack.lines() {
+        // peek's own prelude frames say nothing about the author's script.
+        for line in stack.lines().filter(|l| !l.contains("peek-prelude.js")) {
             out.push_str("\n    ");
             out.push_str(line);
         }
@@ -121,7 +125,13 @@ fn drawing_failure(error: &Error) -> Option<String> {
     ) {
         let _ = write!(out, "\n  input at frame {frame}: {summary}");
     }
-    out.push_str("\ndrawing NOT registered (previous drawing still active)");
+    let check_only = details.get("check_only") == Some(&Value::Bool(true));
+    let previous = details.get("previous_active") == Some(&Value::Bool(true));
+    out.push_str(match (check_only, previous) {
+        (true, _) => "\ndrawing NOT valid (--check: nothing was registered)",
+        (false, true) => "\ndrawing NOT registered (previous drawing still active)",
+        (false, false) => "\ndrawing NOT registered",
+    });
     Some(out)
 }
 
@@ -235,11 +245,30 @@ mod tests {
     fn drawing_failures_render_like_a9() {
         let e = Error::new(ErrorCode::DrawingInvalid, "the drawing failed validation")
             .with_details(json!({"error":{"message":"TypeError: cannot read property 'colors' of undefined",
-                "stack":"at cassette.js:18:34","frame":14,"input_summary":"phase=showing, show=null"}}));
+                "stack":"at cassette.js:18:34","frame":14,"input_summary":"phase=showing, show=null"},
+                "previous_active": true, "check_only": false}));
         let block = drawing_failure(&e).unwrap_or_default();
         assert!(block.starts_with("✗ frame 14 threw: TypeError"));
         assert!(block.contains("\n    at cassette.js:18:34"));
         assert!(block.contains("input at frame 14: phase=showing, show=null"));
         assert!(block.ends_with("drawing NOT registered (previous drawing still active)"));
+
+        // The engine's own prefix is not repeated, the prelude frame is
+        // dropped, and --check / a first drawing say what really happened.
+        let e = Error::new(ErrorCode::DrawingInvalid, "the drawing failed validation")
+            .with_details(json!({"error":{"message":"frame 60 threw: TypeError: x of null",
+                "stack":"at <anonymous> (broken1.js:24:15)\nat <anonymous> (peek-prelude.js:638:32)","frame":60},
+                "previous_active": false, "check_only": true}));
+        let block = drawing_failure(&e).unwrap_or_default();
+        assert!(block.starts_with("✗ frame 60 threw: TypeError"), "{block}");
+        assert_eq!(block.matches("threw").count(), 1, "{block}");
+        assert!(!block.contains("peek-prelude.js"), "{block}");
+        assert!(block.ends_with("drawing NOT valid (--check: nothing was registered)"));
+        let e = Error::new(ErrorCode::DrawingInvalid, "x").with_details(
+            json!({"error":{"message":"frame 4 was interrupted","frame":4},"previous_active":false}),
+        );
+        let block = drawing_failure(&e).unwrap_or_default();
+        assert!(block.starts_with("✗ frame 4 was interrupted"), "{block}");
+        assert!(block.ends_with("drawing NOT registered"));
     }
 }

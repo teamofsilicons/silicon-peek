@@ -16,7 +16,7 @@ install_peek() {
   hv=$("$HC" --version 2>/dev/null | awk '{print $NF}')       # UNCERTAIN: exact --version format; require >= 0.5.0
   case "$hv" in 0.[0-4].*) echo "Honeycomb $hv is too old for peek (need >= 0.5.0). Stemcell users: silicon update. Otherwise: honeycomb self-update." >&2; exit 1 ;; esac
   printf '[2/4] Installing the peek CLI…\n'
-  out=$("$HC" install 'peek' --json) || { echo "honeycomb install 'peek' failed. Until peek is public, sign in as a tos member first: honeycomb login" >&2; exit 1; }
+  out=$("$HC" install 'peek' --json) || { echo "honeycomb install 'peek' failed (no Honeycomb login is needed; check your network and run: honeycomb install 'peek')" >&2; exit 1; }
   PEEK=$(printf '%s' "$out" | sed -n 's/.*"help_command":"\([^"]*\)\/peek --help".*/\1\/peek/p')
   [ -x "$PEEK" ] || PEEK=$(command -v peek)
   printf '[3/4] Installing Peek.app into ~/Applications…\n'

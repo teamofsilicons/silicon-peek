@@ -7,6 +7,7 @@ scripts/package-honeycomb.py inspects. Real builds come from scripts/build-*-rel
 from __future__ import annotations
 
 import plistlib
+import re
 import shutil
 import struct
 import zipfile
@@ -155,7 +156,8 @@ def write_repo(root: Path, *, version: str = "0.1.0", cli_version: str | None = 
         member.mkdir(parents=True, exist_ok=True)
         member_version = cli_version if (directory == "cli" and cli_version) else version
         (member / "Cargo.toml").write_text(CARGO_MEMBER.format(name=name, version=member_version))
-    manifest = (REPO / "honeycomb.yaml").read_text().replace('version: "0.1.0"', f'version: "{version}"')
+    # Whatever the real manifest's version is, the fixture carries `version`.
+    manifest = re.sub(r'(?m)^version: "[^"]*"', f'version: "{version}"', (REPO / "honeycomb.yaml").read_text(), count=1)
     (root / "honeycomb.yaml").write_text(manifest)
     (root / "apps/mac").mkdir(parents=True, exist_ok=True)
     (root / "apps/mac/project.yml").write_text(PROJECT_YML.format(version=version, build=build))

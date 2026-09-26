@@ -15,10 +15,13 @@ use silicon_peek_client::{
     ids::{AskId, SendId},
     ipc::{
         cli::{
-            AskCancel, AskGet, AskList, AskState, DeliveryState, History, RegisterDrawing, SendOp,
-            SendStatus, ServerSync, SpeechStatus, StatusOp, Unregister,
+            AskCancel, AskGet, AskList, AskState, Attach, DeliveryState, History, RegisterDrawing,
+            SendOp, SendStatus, ServerSync, SpeechStatus, StatusOp, Unregister,
         },
-        ui::{AnswerOp, Dismissed, MessageOp, ShownDone, SpeechDone, UiAnswerVia, VoiceSubmit},
+        ui::{
+            AnswerOp, Dismissed, MessageOp, Presence, PresenceReason, ShownDone, SpeechDone,
+            UiAnswerVia, VoiceSubmit,
+        },
     },
     runtime::daemon::EventWait,
     schema::{ask::Ask, show::Show},
@@ -154,6 +157,14 @@ async fn send_shows_the_bubble_and_streams_tts_to_the_ui() {
     )
     .await
     .unwrap();
+    let payload: Vec<u8> = query_one(
+        &h.db(),
+        "SELECT payload FROM sends WHERE send_id = ?1",
+        &[&r.send_id.as_str()],
+    )
+    .unwrap();
+    let payload: Value = serde_json::from_slice(&payload).unwrap();
+    assert_eq!(payload["speech"]["status"], "played", "the outcome is kept");
     ui.request(
         &ShownDone {
             send_id: r.send_id.clone(),
@@ -191,6 +202,47 @@ async fn send_shows_the_bubble_and_streams_tts_to_the_ui() {
     assert_eq!(items.items[1].kind, "speak+show");
     assert_eq!(items.items[1].close_reason.as_deref(), Some("speech_done"));
     assert_eq!(items.items[0].send_id, r2.send_id, "newest first");
+
+    // A speak-only send closes on the UI's shown.done (the slide-back 1.5 s
+    // after the speech), not on speech.done.
+    ui.request(
+        &SpeechDone {
+            send_id: r2.send_id.clone(),
+            stopped_by_user: false,
+            played_ms: 3125,
+            total_ms: 3125,
+        },
+        vec![],
+    )
+    .await
+    .unwrap();
+    let closed: Option<i64> = query_one(
+        &h.db(),
+        "SELECT closed_at FROM sends WHERE send_id = ?1",
+        &[&r2.send_id.as_str()],
+    )
+    .unwrap();
+    assert!(
+        closed.is_none(),
+        "speech.done alone does not close a speak-only send"
+    );
+    ui.request(
+        &ShownDone {
+            send_id: r2.send_id.clone(),
+            visible_ms: 4625,
+            reason: silicon_peek_client::ipc::ui::ShownReason::SpeechDone,
+        },
+        vec![],
+    )
+    .await
+    .unwrap();
+    let reason: Option<String> = query_one(
+        &h.db(),
+        "SELECT close_reason FROM sends WHERE send_id = ?1",
+        &[&r2.send_id.as_str()],
+    )
+    .unwrap();
+    assert_eq!(reason.as_deref(), Some("speech_done"));
 }
 
 #[tokio::test]
@@ -250,6 +302,14 @@ async fn unsupported_languages_and_tts_failures_fall_back_to_the_pill() {
         .is_some_and(|w| w.contains("speech_unavailable"))
     })
     .await;
+    let payload: Vec<u8> = query_one(
+        &db,
+        "SELECT payload FROM sends WHERE send_id = ?1",
+        &[&r.send_id.as_str()],
+    )
+    .unwrap();
+    let payload: Value = serde_json::from_slice(&payload).unwrap();
+    assert_eq!(payload["speech"]["status"], "failed");
     // The warning reaches the CLI through the typed `history` reply (it
     // used to be dropped when the reply was decoded into HistoryItem).
     let (history, _) = h
@@ -556,7 +616,38 @@ async fn terminal_and_parked_delivery_outcomes() {
     assert_eq!(code.as_deref(), Some("recipient_not_registered"));
     let (st, _) = h.call(&home, &StatusOp {}, vec![]).await.unwrap();
     assert_eq!(st.deliveries.authority_required, 1);
+    // The Silicon learns at send time that answers cannot reach it.
+    let mut op = send_op();
+    op.show =
+        Some(serde_json::from_value(json!({"elements":[{"type":"text","text":"hi"}]})).unwrap());
+    let (r, _) = h.call(&home, &op, vec![]).await.unwrap();
+    assert!(
+        r.warnings.iter().any(|w| w.code == "ting_not_enrolled"),
+        "{:?}",
+        r.warnings
+    );
+    let _ = ui.expect("peek.show").await;
     drop(m);
+    // `peek ting enroll` re-attaches the home: the parked row is retried at
+    // once instead of at the next ten-minute retry.
+    let accepted = Mock::given(method("POST"))
+        .and(path("/api/v1/deliveries"))
+        .respond_with(|req: &wiremock::Request| {
+            let v: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+            ResponseTemplate::new(200).set_body_json(json!({
+                "event_id": v["event_id"], "ting_id": "msg_1", "status": "accepted",
+                "silent": false, "replayed": false
+            }))
+        })
+        .mount_as_scoped(&h.server)
+        .await;
+    let started = std::time::Instant::now();
+    h.call(&home, &Attach {}, vec![]).await.unwrap();
+    let _ = outbox_row(&h, &a1, "accepted").await;
+    assert!(started.elapsed() < Duration::from_secs(8));
+    let (st, _) = h.call(&home, &StatusOp {}, vec![]).await.unwrap();
+    assert_eq!(st.deliveries.authority_required, 0);
+    drop(accepted);
 
     // ting_key_conflict → failed.
     let m = Mock::given(method("POST"))
@@ -1175,7 +1266,15 @@ async fn drawings_validate_in_the_ui_activate_and_sync() {
         "at draw (logo.js:1:10)"
     );
     let (st, _) = h.call(&home, &StatusOp {}, vec![]).await.unwrap();
-    assert_eq!(st.drawing.unwrap().sha256, r.sha256);
+    // The drawing's backend copy is not a Ting delivery.
+    assert_eq!(st.deliveries.pending, 0);
+    assert_eq!(st.deliveries.authority_required, 0);
+    let drawing = st.drawing.unwrap();
+    assert!(
+        matches!(drawing.server_sync.as_deref(), Some("synced" | "pending")),
+        "{drawing:?}"
+    );
+    assert_eq!(drawing.sha256, r.sha256);
 
     // Too large is refused before the UI is asked.
     let e = h
@@ -1261,6 +1360,15 @@ async fn sends_queue_behind_a_pending_ask_up_to_five() {
     assert_eq!(*e.code(), ErrorCode::SlotBusy);
     assert_eq!(e.exit_code().code(), 4);
     assert_eq!(e.details().unwrap()["limit"], 5);
+    let blocking = first.ask_id.clone().unwrap();
+    assert_eq!(e.details().unwrap()["ask_id"], blocking.as_str());
+    assert!(
+        e.hint()
+            .unwrap()
+            .contains(&format!("peek ask cancel {blocking}")),
+        "{:?}",
+        e.hint()
+    );
     let (st, _) = h.call(&home, &StatusOp {}, vec![]).await.unwrap();
     assert_eq!(st.queue.pending, 5);
     assert_eq!(st.pending_asks, 1);
@@ -1320,6 +1428,127 @@ async fn sends_queue_behind_a_pending_ask_up_to_five() {
         .await
         .unwrap();
     assert_eq!(lst.asks.len(), 1);
+}
+
+#[tokio::test]
+async fn a_locked_screen_holds_bubbles_until_the_carbon_is_back() {
+    let h = Harness::start().await;
+    let (home, ui) = ready_home(&h, "si:cleanup", 2).await;
+    let show = |t: &str| {
+        let mut s = send_op();
+        s.show =
+            Some(serde_json::from_value(json!({"elements":[{"type":"text","text":t}]})).unwrap());
+        s
+    };
+    ui.request(
+        &Presence {
+            available: false,
+            reason: PresenceReason::Locked,
+        },
+        vec![],
+    )
+    .await
+    .unwrap();
+    let (st, _) = h.call(&home, &StatusOp {}, vec![]).await.unwrap();
+    let carbon = st.carbon.unwrap();
+    assert!(!carbon.available);
+    assert_eq!(carbon.reason, PresenceReason::Locked);
+
+    // Nothing is shown to nobody: every send waits, none replaces another.
+    let (first_send, _) = h.call(&home, &show("first"), vec![]).await.unwrap();
+    let (second_send, _) = h.call(&home, &show("second"), vec![]).await.unwrap();
+    let mut op = send_op();
+    op.ask = Some(keep_or_delete());
+    op.expires_in_s = Some(600);
+    let (ask_send, _) = h.call(&home, &op, vec![]).await.unwrap();
+    for r in [&first_send, &second_send, &ask_send] {
+        assert_eq!(r.status, SendStatus::Queued);
+        let w = r.warnings.iter().find(|w| w.code == "carbon_away").unwrap();
+        assert_eq!(w.details.as_ref().unwrap()["reason"], "locked");
+    }
+    assert!(
+        ui.try_expect("peek.show", Duration::from_millis(300))
+            .await
+            .is_none()
+    );
+    let db = h.db();
+    let shown: Option<i64> = query_one(
+        &db,
+        "SELECT shown_at FROM sends WHERE send_id = ?1",
+        &[&first_send.send_id.as_str()],
+    );
+    assert!(shown.is_none(), "never recorded as shown while away");
+    let warnings: String = query_one(
+        &db,
+        "SELECT warnings FROM sends WHERE send_id = ?1",
+        &[&first_send.send_id.as_str()],
+    )
+    .unwrap();
+    assert!(
+        warnings.contains("carbon_away"),
+        "history keeps the warning"
+    );
+    // An ask's expiry clock keeps running while it waits.
+    let expires: Option<i64> = query_one(
+        &db,
+        "SELECT expires_at FROM asks WHERE send_id = ?1",
+        &[&ask_send.send_id.as_str()],
+    );
+    assert!(expires.is_some());
+
+    // Back: the held sends are shown in order.
+    ui.request(&Presence::default(), vec![]).await.unwrap();
+    let first = ui.expect("peek.show").await;
+    assert_eq!(first.fields["send_id"], first_send.send_id.as_str());
+    assert_eq!(first.fields["queued_behind"], 2);
+    ui.request(
+        &ShownDone {
+            send_id: first_send.send_id.clone(),
+            visible_ms: 4000,
+            reason: silicon_peek_client::ipc::ui::ShownReason::Auto,
+        },
+        vec![],
+    )
+    .await
+    .unwrap();
+    let second = ui.expect("peek.show").await;
+    assert_eq!(second.fields["send_id"], second_send.send_id.as_str());
+    let (st, _) = h.call(&home, &StatusOp {}, vec![]).await.unwrap();
+    assert!(st.carbon.unwrap().available);
+    // Available again, a new show replaces the visible one as before.
+    let (later, _) = h.call(&home, &show("third"), vec![]).await.unwrap();
+    assert_eq!(
+        later.status,
+        SendStatus::Queued,
+        "the ask still waits in line"
+    );
+    assert!(later.warnings.iter().all(|w| w.code != "carbon_away"));
+}
+
+#[tokio::test]
+async fn a_send_warns_when_the_session_has_no_ting_enrollment() {
+    let h = Harness::start().await;
+    let (home, ui) = ready_home(&h, "si:cleanup", 6).await;
+    home.edit_session(|f| {
+        for slot in f.slots.values_mut() {
+            slot.ting = Some(silicon_peek_client::runtime::session::SlotTing {
+                subscribed: false,
+                subscription_id: None,
+                registered_at: None,
+                error: None,
+            });
+        }
+    });
+    let mut op = send_op();
+    op.ask = Some(keep_or_delete());
+    let (r, _) = h.call(&home, &op, vec![]).await.unwrap();
+    let w = r
+        .warnings
+        .iter()
+        .find(|w| w.code == "ting_not_enrolled")
+        .expect("ting_not_enrolled");
+    assert_eq!(w.details.as_ref().unwrap()["next"], "peek ting enroll");
+    let _ = ui.expect("peek.show").await;
 }
 
 #[tokio::test]

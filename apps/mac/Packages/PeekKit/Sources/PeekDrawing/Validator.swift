@@ -20,8 +20,8 @@ public enum DrawingValidator {
         if script.source.count > DrawingLimits.maxScriptBytes {
             let kb = Double(script.source.count) / 1024
             return ValidationReport(ok: false, error: ValidationFailure(
-                message: String(format: "%@ is %.1f KB; drawings are limited to 256 KB (visual.md A7). "
-                    + "Remove unused code or data and register it again.", script.filename, kb)))
+                message: String(format: "%@ is %.1f KB; drawings are limited to 256 KB (%@). "
+                    + "Remove unused code or data and register it again.", script.filename, kb, DrawingDocs.limits)))
         }
         guard let source = String(validating: script.source, as: UTF8.self) else {
             return ValidationReport(ok: false, error: ValidationFailure(
@@ -45,8 +45,16 @@ private struct ValidationRun {
 
     private final class LogSink {
         var lines: [String] = []
+        /// Prelude warnings (`warning: …`, once per kind): values peek ignored, reported as `ignored_value`.
+        var warnings: [String] = []
         let limit = 200
+        static let warningPrefix = "warning: "
         func append(_ line: String) {
+            if line.hasPrefix(Self.warningPrefix) {
+                let message = String(line.dropFirst(Self.warningPrefix.count))
+                if !warnings.contains(message) { warnings.append(message) }
+                return
+            }
             if lines.count < limit {
                 lines.append(line)
             } else if lines.count == limit {
@@ -72,14 +80,15 @@ private struct ValidationRun {
         case .ok:
             break
         case .threw(let message, let stack):
-            return failure("loading \(filename) threw: \(message)", stack: stack, logs: sink.lines)
+            return failure("loading \(filename) threw: \(message)", stack: clean(stack), logs: sink.lines)
         case .interrupted:
             return failure(
                 "the top-level code of \(filename) ran longer than \(millis(DrawingLimits.loadBudget)) ms; it runs "
                     + "once at load and must finish quickly (move work into peek.frame or spread it over frames)",
                 logs: sink.lines)
         case .outOfMemory:
-            return failure("loading \(filename) exceeded the 16 MB memory limit (visual.md A7)", logs: sink.lines)
+            return failure("loading \(filename) exceeded the 16 MB memory limit (\(DrawingDocs.limits))",
+                           logs: sink.lines)
         case .failed(let message):
             return failure("loading \(filename) failed: \(message)", logs: sink.lines)
         }
@@ -112,17 +121,20 @@ private struct ValidationRun {
                 switch status {
                 case .ok:
                     continue
+                // `frame` is set only for exceptions: the CLI prints "frame N threw: <message>" from it, so the message
+                // never repeats that prefix. Other failures name their frame in the message and leave `frame` unset.
                 case .threw(let message, let stack):
-                    return failure("the '\(event.name)' handler threw at frame \(step.index): \(message)", stack: stack,
+                    return failure("\(message) (in the '\(event.name)' handler)", stack: clean(stack),
                                    frame: step.index, summary: step.summary, logs: sink.lines)
                 case .interrupted:
-                    return failure("the '\(event.name)' handler ran longer than 4 ms at frame \(step.index) (visual.md A7)",
-                                   frame: step.index, summary: step.summary, logs: sink.lines)
+                    return failure("the '\(event.name)' handler ran longer than 4 ms at frame \(step.index) "
+                                   + "(\(DrawingDocs.limits))", summary: step.summary, logs: sink.lines)
                 case .outOfMemory:
-                    return failure("the '\(event.name)' handler exceeded the 16 MB memory limit at frame \(step.index)",
-                                   frame: step.index, summary: step.summary, logs: sink.lines)
+                    return failure("the '\(event.name)' handler exceeded the 16 MB memory limit at frame \(step.index) "
+                                   + "(\(DrawingDocs.limits))", summary: step.summary, logs: sink.lines)
                 case .failed(let message):
-                    return failure("delivering '\(event.name)' failed: \(message)", frame: step.index, logs: sink.lines)
+                    return failure("delivering '\(event.name)' at frame \(step.index) failed: \(message)",
+                                   summary: step.summary, logs: sink.lines)
                 }
             }
 
@@ -134,7 +146,7 @@ private struct ValidationRun {
             case .ok:
                 break
             case .threw(let message, let stack):
-                return failure("frame \(step.index) threw: \(message)", stack: stack, frame: step.index,
+                return failure(message, stack: clean(stack), frame: step.index,
                                summary: step.summary, logs: sink.lines,
                                stats: stats(okFrames, times, opsMax, glassRebuilds))
             case .interrupted:
@@ -143,17 +155,17 @@ private struct ValidationRun {
                 if interrupted >= 5 {
                     return failure(
                         "frame \(step.index) was interrupted: frame() ran longer than 4 ms on \(interrupted) test "
-                            + "frames (visual.md A7). Do less work per frame, precompute at the top level, and return "
-                            + "false when nothing moves",
-                        frame: step.index, summary: step.summary, logs: sink.lines,
+                            + "frames (\(DrawingDocs.limits)). Do less work per frame, precompute at the top level, "
+                            + "and return false when nothing moves",
+                        summary: step.summary, logs: sink.lines,
                         stats: stats(okFrames, times, opsMax, glassRebuilds))
                 }
                 continue
             case .outOfMemory:
-                return failure("frame \(step.index) exceeded the 16 MB memory limit (visual.md A7)", frame: step.index,
+                return failure("frame \(step.index) exceeded the 16 MB memory limit (\(DrawingDocs.limits))",
                                summary: step.summary, logs: sink.lines, stats: stats(okFrames, times, opsMax, glassRebuilds))
             case .failed(let message):
-                return failure("frame \(step.index) failed: \(message)", frame: step.index, logs: sink.lines)
+                return failure("frame \(step.index) failed: \(message)", summary: step.summary, logs: sink.lines)
             }
             times.append(ms)
             okFrames += 1
@@ -164,13 +176,15 @@ private struct ValidationRun {
                 checkedFrameFunction = true
                 if !list.hasFrameFunction {
                     return failure("\(filename) never called peek.frame(fn), so it cannot draw anything "
-                                   + "(visual.md A3)", logs: sink.lines)
+                                   + "(\(DrawingDocs.scriptStructure))", logs: sink.lines)
                 }
             }
             opsMax = max(opsMax, list.recordedOps + list.droppedOps)
             maxDropped = max(maxDropped, list.droppedOps)
             if list.glassOverflow > 0 { glassOverflowFrames += 1 }
-            for message in list.diagnostics {
+            // Glass overflow is reported once, as `glass_limit`, below.
+            for message in list.diagnostics where message != OpDecoder.glassOverflowMessage
+                && !warnings.contains(where: { $0.code == "ignored_value" && $0.message == message }) {
                 warnings.append(ValidationWarning(code: "ignored_value", message: message))
             }
             if step.input.mode == .compact, list.textCount > 0, textInCompactFrame == nil {
@@ -218,18 +232,23 @@ private struct ValidationRun {
                     + "and interrupted frames have no display list"))
         }
 
+        for message in sink.warnings
+        where !warnings.contains(where: { $0.code == "ignored_value" && $0.message == message }) {
+            warnings.append(ValidationWarning(code: "ignored_value", message: message))
+        }
+
         let finalStats = stats(okFrames, times, opsMax, glassRebuilds)
         if finalStats.p95Ms > 4 {
             return failure(
-                String(format: "frame time p95 %.2f ms is over the 4 ms limit (p50 %.2f ms, max %.2f ms; visual.md A7). "
+                String(format: "frame time p95 %.2f ms is over the 4 ms limit (p50 %.2f ms, max %.2f ms; see %@). "
                     + "Do less work per frame and return false when nothing moves",
-                    finalStats.p95Ms, finalStats.p50Ms, finalStats.maxMs),
+                    finalStats.p95Ms, finalStats.p50Ms, finalStats.maxMs, DrawingDocs.limits),
                 logs: sink.lines, stats: finalStats, warnings: warnings, dump: dump)
         }
         if !drewSomething {
             return failure(
                 "\(filename) drew nothing in \(ValidationSchedule.frameCount) test frames: every frame was empty or "
-                    + "fully transparent. Draw something in peek.frame (visual.md A9)",
+                    + "fully transparent. Draw something in peek.frame (\(DrawingDocs.validation))",
                 logs: sink.lines, stats: finalStats, warnings: warnings, dump: dump)
         }
 
@@ -239,25 +258,26 @@ private struct ValidationRun {
                 code: "glass_outline_unstable",
                 message: "glass fill #\(index) changed outline in \(changes)/\(ValidationSchedule.frameCount) frames. "
                     + "Glass outlines are applied at most 10 times per second, so it looks choppy and costs CPU. "
-                    + "Keep glass outlines fixed and animate on top of them (visual.md A6.1)."))
+                    + "Keep glass outlines fixed and animate on top of them (\(DrawingDocs.glass))."))
         }
         if let frame = textInCompactFrame {
             warnings.append(ValidationWarning(
                 code: "text_in_compact",
                 message: "text is drawn in compact mode (first at frame \(frame)). The visual is tiny there: "
-                    + "check input.mode and drop text and thin details (visual.md A6.6)."))
+                    + "check input.mode and drop text and thin details (\(DrawingDocs.rules))."))
         }
         if maxDropped > 0 {
             warnings.append(ValidationWarning(
                 code: "ops_truncated",
                 message: "a frame recorded more than \(DrawingLimits.maxOpsPerFrame) ops (\(opsMax)); "
-                    + "\(maxDropped) were ignored (visual.md A7). Draw less per frame."))
+                    + "\(maxDropped) were ignored (\(DrawingDocs.limits)). Draw less per frame."))
         }
         if glassOverflowFrames > 0 {
             warnings.append(ValidationWarning(
                 code: "glass_limit",
-                message: "more than \(DrawingLimits.maxGlassFills) glass/blur fills in \(glassOverflowFrames) frames; "
-                    + "the extra ones are drawn as a flat translucent fill (visual.md A7)."))
+                message: "more than \(DrawingLimits.maxGlassFills) glass/blur fills in \(glassOverflowFrames) of "
+                    + "\(ValidationSchedule.frameCount) frames; the extra ones are drawn as a flat translucent fill "
+                    + "(\(DrawingDocs.limits))."))
         }
 
         var preview: Data?
@@ -269,6 +289,11 @@ private struct ValidationRun {
         }
         return ValidationReport(ok: true, stats: finalStats, warnings: warnings, logs: sink.lines, error: nil,
                                 dump: dump, previewPNG: preview)
+    }
+
+    /// The stack without prelude frames, with the offending source line and a caret.
+    private func clean(_ stack: String?) -> String? {
+        DrawingStack.clean(stack, source: source, filename: filename)
     }
 
     private func millis(_ duration: Duration) -> Int {

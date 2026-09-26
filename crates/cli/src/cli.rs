@@ -139,15 +139,18 @@ later; `peek logout` ends it.",
     )]
     Login(LoginArgs),
 
-    /// Revoke this home's peek session and its Ting grant (Stemcell contract).
+    /// Revoke this home's peek session (Stemcell contract).
     #[command(
         long_about = "Ends this home's peek session: writes a logged-out marker, revokes the refresh \
-family and the Ting recipient grant at the backend, and cancels this Silicon's undelivered answers on \
-this Mac. Prints {\"authenticated\":false,\"remote_revocation\":\"confirmed\"|\"pending\"} and exits 0 \
-either way: `pending` means the local session is gone and the backend revocation is retried by the \
-next peek run. Log in again with `peek login '<SLT>'`."
+family at the backend, and cancels this Silicon's undelivered answers on this Mac. Prints \
+{\"authenticated\":false,\"remote_revocation\":\"confirmed\"|\"pending\"} and exits 0 either way: \
+`pending` means the local session is gone and the backend revocation is retried by the next peek run. \
+Log in again with `peek login '<SLT>'`.\n\n\
+The Ting recipient grant belongs to the Silicon, not to this home, so other homes of the same Silicon \
+(Stemcell and a hand-run home, for example) keep receiving answers. Add --revoke-ting to remove the \
+grant too; every home of this Silicon then needs `peek ting enroll`."
     )]
-    Logout,
+    Logout(LogoutArgs),
 
     /// This home's configuration: strict JSON merge, show, get, unset, telemetry, home.
     #[command(
@@ -332,6 +335,15 @@ warning; the command itself exits 0."
     /// Internal: install and start Peek.app after `peek login`, then attach this home.
     #[command(name = "__after-login", hide = true)]
     AfterLogin(AfterLoginArgs),
+}
+
+/// `peek logout`.
+#[derive(Debug, Args)]
+pub struct LogoutArgs {
+    /// Also revoke this Silicon's Ting recipient grant. It is shared by every home of the
+    /// Silicon: answers stop reaching all of them until `peek ting enroll`.
+    #[arg(long)]
+    pub revoke_ting: bool,
 }
 
 /// `peek login`.
@@ -704,6 +716,10 @@ pub struct ReportArgs {
     /// Attach the non-secret `peek doctor` output.
     #[arg(long)]
     pub attach_status: bool,
+    /// Print exactly what would be filed (the request body, or gh's title and body) and send
+    /// nothing. Allowed in testing environments too.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Report transports.

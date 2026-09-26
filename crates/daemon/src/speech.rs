@@ -886,7 +886,14 @@ impl Shared {
         let id = send_id.as_str().to_owned();
         let r = self
             .db
-            .call(move |c| crate::bubbles::append_send_warning(c, &id, warning))
+            .call(move |c| {
+                crate::bubbles::set_speech_outcome(
+                    c,
+                    &id,
+                    crate::bubbles::StoredSpeechStatus::Failed,
+                )?;
+                crate::bubbles::append_send_warning(c, &id, warning)
+            })
             .await;
         if let Err(e) = r {
             tracing::warn!(error = %e, "could not record a speech warning");

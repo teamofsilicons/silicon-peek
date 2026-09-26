@@ -83,11 +83,18 @@ public protocol DaemonLinking: Sendable {
     /// Installs the handler for peekd → UI requests (`drawing.validate`, `drawing.load`, `app.update.prepare`,
     /// `app.quit`). Without a handler every request is answered `unknown_op`.
     func setRequestHandler(_ handler: (@Sendable (DaemonRequest) async -> DaemonReply)?) async
+    /// Records whether the Carbon can see bubbles (``PresenceRequest``) and tells peekd: now when connected and the
+    /// value changed, and again right after every hello. The default just sends it once.
+    func setPresence(_ presence: PresenceRequest) async
 }
 
 extension DaemonLinking {
     public func send<R: UIRequest>(_ request: R) async throws(DaemonLinkError) -> R.Reply {
         try await send(request, blobs: [], timeout: nil)
+    }
+
+    public func setPresence(_ presence: PresenceRequest) async {
+        _ = try? await send(presence, blobs: [], timeout: nil)
     }
 }
 

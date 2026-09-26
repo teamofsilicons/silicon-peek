@@ -520,6 +520,41 @@ public struct FocusRequest: UIRequest, Equatable {
     enum CodingKeys: String, CodingKey { case slot, context }
 }
 
+/// Why the Carbon can or cannot see bubbles right now (`presence.reason`).
+public enum PresenceReason: String, Codable, Sendable, CaseIterable {
+    case ok
+    /// The screen is locked, or this login session is not on the console (fast user switching).
+    case locked
+    /// The displays are asleep.
+    case asleep
+    /// No display is attached (closed lid without an external display).
+    case displayOff = "display_off"
+}
+
+/// `presence` (additive): whether bubbles can reach the Carbon's eyes. While `available` is false peekd pushes
+/// no `peek.show` or TTS: new sends stay queued (`carbon_away`) and are pushed in order once the UI reports
+/// `available` again. Sent right after every hello and on every change. A peekd that predates it answers
+/// `unknown_op`, which the UI tolerates; a UI that never sends it counts as available.
+///
+/// ```json
+/// {"op":"presence","available":false,"reason":"locked"}
+/// ```
+public struct PresenceRequest: UIRequest, Equatable {
+    public static let op = "presence"
+    public typealias Reply = IPCAck
+
+    public var available: Bool
+    public var reason: PresenceReason
+
+    public init(available: Bool, reason: PresenceReason) {
+        self.available = available
+        self.reason = reason
+    }
+
+    /// The Carbon can see bubbles.
+    public static let available = PresenceRequest(available: true, reason: .ok)
+}
+
 public enum DrawingFailureReason: String, Codable, Sendable, CaseIterable {
     case throwsRepeatedly = "throws"
     case overruns

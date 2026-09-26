@@ -1,7 +1,7 @@
 # honeycomb.yaml — package format 1. No install_script: Honeycomb < 0.5.0 rejects it and would abort `silicon connect`.
 format_version: 1
 app_id: "peek"
-version: "0.1.0"            # == every Cargo.toml version == CFBundleShortVersionString; git tag v0.1.0
+version: "0.1.1"            # == every Cargo.toml version == CFBundleShortVersionString; git tag v0.1.1
 bin:
   peek: "cli"
 targets:

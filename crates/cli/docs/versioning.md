@@ -4,7 +4,7 @@ peek runs as many pieces that update on their own schedules: a CLI copy in every
 
 ## One version number
 
-Every Cargo package, `honeycomb.yaml`, the app's `CFBundleShortVersionString` and the git tag share one version (`0.1.0`, tag `v0.1.0`). The app's build number is derived from it (`major × 1,000,000 + minor × 1,000 + patch`, so 0.1.0 is build 1000) and only ever increases. `peek --version`, `peek iam --json` (`version`) and `peek daemon status` (`version`, `ui.build`) report it.
+Every Cargo package, `honeycomb.yaml`, the app's `CFBundleShortVersionString` and the git tag share one version (`0.1.1`, tag `v0.1.1`). The app's build number is derived from it (`major × 1,000,000 + minor × 1,000 + patch`, so 0.1.1 is build 1001) and only ever increases. `peek --version`, `peek iam --json` (`version`) and `peek daemon status` (`version`, `ui.build`) report it.
 
 The package version describes a release. Compatibility is decided by the **contract versions** below, not by comparing package versions.
 

@@ -189,4 +189,76 @@ struct CoordinatorTests {
         #expect(ops == ["settings.changed"])
         await coordinator.stop()
     }
+
+    @Test("presence changes reach peekd in order as presence requests")
+    func presence() async {
+        let link = FakeLink()
+        let coordinator = makeCoordinator(link)
+        await coordinator.start()
+        #expect(coordinator.carbonPresence == .available)
+        coordinator.presenceChanged(PresenceRequest(available: false, reason: .locked))
+        coordinator.presenceChanged(PresenceRequest(available: false, reason: .asleep))
+        coordinator.presenceChanged(.available)
+        #expect(coordinator.carbonPresence == .available)
+        var sent: [JSONValue] = []
+        for _ in 0..<200 {
+            sent = await link.sent.filter { $0.op == "presence" }.map(\.fields)
+            if sent.count == 3 { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(sent == [["available": false, "reason": "locked"], ["available": false, "reason": "asleep"],
+                         ["available": true, "reason": "ok"]])
+        await coordinator.stop()
+    }
+
+    @Test("a drawing that switches to the fallback while on screen is reported to peekd as drawing.error")
+    func drawingErrorReachesPeekd() async {
+        let link = FakeLink()
+        let coordinator = makeCoordinator(link)
+        await coordinator.start()
+        let key = SiliconKey(context: .production, orgID: "tos", actorID: "si:dj")
+        let host = coordinator.host(for: key)
+        host.onFailure?(DrawingFailure(reason: .throwsRepeatedly,
+                                       message: "frame() threw 10 times in a row; last error: Error: boom",
+                                       stack: "at crash.js:3:9"))
+        var sent: [JSONValue] = []
+        for _ in 0..<200 {
+            sent = await link.sent.filter { $0.op == "drawing.error" }.map(\.fields)
+            if !sent.isEmpty { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(sent == [["context": "production", "org_id": "tos", "actor_id": "si:dj", "reason": "throws",
+                          "message": "frame() threw 10 times in a row; last error: Error: boom",
+                          "stack": "at crash.js:3:9"]])
+        await coordinator.stop()
+    }
+}
+
+@Suite("Carbon presence")
+@MainActor
+struct PresenceTests {
+    @Test("locked or switched-away sessions are 'locked'; sleeping displays 'asleep'; no display 'display_off'")
+    func mapping() {
+        #expect(PresenceState().request == .available)
+        #expect(PresenceState(screenLocked: true).request == PresenceRequest(available: false, reason: .locked))
+        #expect(PresenceState(sessionInactive: true).request == PresenceRequest(available: false, reason: .locked))
+        #expect(PresenceState(displaysAsleep: true).request == PresenceRequest(available: false, reason: .asleep))
+        #expect(PresenceState(noDisplays: true).request == PresenceRequest(available: false, reason: .displayOff))
+        // A lock wins: the display waking on the lock screen does not make the Carbon available.
+        #expect(PresenceState(screenLocked: true, displaysAsleep: true).request.reason == .locked)
+    }
+
+    @Test("the monitor reports each change once: lock, display sleep, wake while locked, unlock")
+    func monitorReportsChanges() {
+        var reports: [PresenceRequest] = []
+        let monitor = PresenceMonitor { reports.append($0) }
+        monitor.update { $0.screenLocked = true }
+        monitor.update { $0.displaysAsleep = true }
+        monitor.update { $0.displaysAsleep = false }
+        monitor.update { $0.screenLocked = false }
+        monitor.update { $0.screenLocked = false }
+        #expect(reports == [PresenceRequest(available: false, reason: .locked), .available])
+        monitor.update { $0.displaysAsleep = true }
+        #expect(reports.last == PresenceRequest(available: false, reason: .asleep))
+    }
 }

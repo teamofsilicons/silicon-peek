@@ -117,8 +117,17 @@ fn human_drawing(v: &Value, silicon: &str) -> String {
         format!("✓ ops/frame  max {}", stats["ops_max"]),
     ];
     let rebuilds = stats["glass_rebuilds"].as_u64().unwrap_or_default();
+    // Excessive when the glass is rebuilt in more than 10% of the frames, or
+    // the validator flagged the glass.
+    let glass_flagged = v["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|w| w["code"].as_str().is_some_and(|c| c.starts_with("glass")));
+    let excessive = rebuilds.saturating_mul(10) > frames || glass_flagged;
     out.push(format!(
-        "✓ glass rebuilt {rebuilds} time{} in {frames} frames",
+        "{} glass rebuilt {rebuilds} time{} in {frames} frames",
+        if excessive { "⚠" } else { "✓" },
         if rebuilds == 1 { "" } else { "s" }
     ));
     for w in v["warnings"].as_array().into_iter().flatten() {

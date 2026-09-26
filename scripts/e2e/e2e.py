@@ -44,6 +44,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import local_stack  # noqa: E402
 from peek_ipc import FakeUi, process_executable, resample_s16le, wav_bytes  # noqa: E402
 
+def _workspace_version() -> str:
+    """The workspace version (Cargo.toml `[workspace.package] version`)."""
+    in_package = False
+    for line in (Path(__file__).resolve().parents[2] / "Cargo.toml").read_text().splitlines():
+        if line.strip().startswith("["):
+            in_package = line.strip() == "[workspace.package]"
+        elif in_package and line.strip().startswith("version"):
+            return line.split("=", 1)[1].strip().strip('"')
+    raise SystemExit("Cargo.toml has no [workspace.package] version")
+
+
+PEEK_VERSION = _workspace_version()
 ACTOR = "si:e2e-silicon"
 ORG = "tos"
 SLOT = 3
@@ -134,7 +146,7 @@ class Run:
         check(ting["raw"] == expected, f"{ting_type}: the Ting body is exactly the §3.5 TingSend serialization")
         check(ting["content_type"] == "application/json", f"{ting_type}: Content-Type application/json")
         check(ting["idempotency_key_header"] is None, f"{ting_type}: no Idempotency-Key header to Ting (the body key is the idempotency)")
-        check(body["metadata"] == {"isi": ISI, "peek_version": "0.1.0"}, f"{ting_type}: metadata is {{isi, peek_version}}")
+        check(body["metadata"] == {"isi": ISI, "peek_version": PEEK_VERSION}, f"{ting_type}: metadata is {{isi, peek_version}}")
         data = body["data"]
         check(data["schema"] == 1 and data["slot"] == SLOT and data["context"] == "production", f"{ting_type}: schema 1, slot {SLOT}, production")
         return data
@@ -241,6 +253,38 @@ class Run:
         check(data["ask_id"] == r["ask_id"] and data["send_id"] == r["send_id"] and data["ask_type"] == "single_choice", "ask_id, send_id, ask_type")
         g = self.wait_delivery(r["ask_id"])
         check(g["delivery"]["ting_id"] == ting["id"], "peek ask get shows the accepted delivery with Ting's id")
+
+    def presence(self, speech: bool) -> None:
+        print("presence: a locked screen holds bubbles; unlocking shows them in order")
+        self.ui.call("presence", {"available": False, "reason": "locked"})
+        s = self.peek("status")
+        check(s.get("carbon") == {"available": False, "reason": "locked"}, "peek status reports the Carbon away (locked)")
+        first_args = ["--speak", "Welcome back."] if speech else ["--show", json.dumps({"elements": [{"type": "text", "text": "welcome back"}]})]
+        a = self.peek("send", *first_args)
+        check(a["status"] == "queued" and any(w["code"] == "carbon_away" for w in a["warnings"]), "a send while the screen is locked is queued with warning carbon_away")
+        b = self.peek("send", "--show", json.dumps({"elements": [{"type": "text", "text": "second"}]}))
+        check(b["status"] == "queued", "a second send waits behind it instead of replacing it")
+        time.sleep(0.8)
+        held = {a["send_id"], b["send_id"]}
+        pushed = [e for e in self.ui.events_named("peek.show") + self.ui.events_named("tts.begin") if e.get("send_id") in held]
+        check(not pushed, "no peek.show and no speech reach the UI while the Carbon is away")
+        self.ui.call("presence", {"available": True, "reason": "ok"})
+        first = self.ui.wait_event(lambda e: e.get("event") == "peek.show" and e.get("send_id") == a["send_id"], 10, "peek.show of the first held send")
+        check(first["queued_behind"] == 1, "unlocking shows the held sends in order (one still behind)")
+        if speech:
+            end = self.ui.wait_event(lambda e: e.get("event") in ("tts.end", "tts.error") and e.get("send_id") == a["send_id"], 30, "speech of the held send")
+            check(end["event"] == "tts.end", "speech starts only once the bubble is actually shown")
+            total_ms = end["total_frames"] // 24
+            self.ui.call("speech.done", {"send_id": a["send_id"], "stopped_by_user": False, "played_ms": total_ms, "total_ms": total_ms})
+        else:
+            self.ui.call("shown.done", {"send_id": a["send_id"], "visible_ms": 4000, "reason": "auto"})
+        self.ui.wait_event(lambda e: e.get("event") == "peek.show" and e.get("send_id") == b["send_id"], 15, "peek.show of the second held send")
+        self.ui.call("shown.done", {"send_id": b["send_id"], "visible_ms": 4000, "reason": "auto"})
+        s = self.peek("status")
+        check(s.get("carbon", {}).get("available") is True, "peek status reports the Carbon back")
+        h = self.peek("history", "--limit", "5")
+        held_items = [i for i in h.get("items", []) if i["send_id"] == a["send_id"]]
+        check(bool(held_items) and any(w["code"] == "carbon_away" for w in held_items[0].get("warnings") or []), "history keeps the carbon_away warning")
 
     def wait_delivery(self, ask_id: str) -> dict:
         deadline = time.monotonic() + 15
@@ -376,6 +420,7 @@ def main() -> int:
         else:
             print("send --speak / voice answer: SKIPPED (no Deepgram key)")
         run.click_answer()
+        run.presence(speech=pcm is not None)
         if pcm is not None:
             run.voice_answer(pcm)
             run.voice_message(pcm)

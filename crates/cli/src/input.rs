@@ -21,17 +21,21 @@ const JSON_MAX_BYTES: u64 = 1024 * 1024;
 
 /// Resolves `path` against the current directory.
 pub fn resolve(path: &Path) -> Result<PathBuf> {
-    if path.is_absolute() {
-        return Ok(path.to_path_buf());
-    }
-    let cwd = std::env::current_dir().map_err(|e| {
-        Error::invalid_input(format!(
-            "the current directory is unusable ({e}), so `{}` cannot be resolved",
-            path.display()
-        ))
-        .with_hint("cd into an existing directory, or pass an absolute path")
-    })?;
-    Ok(cwd.join(path))
+    let full = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        let cwd = std::env::current_dir().map_err(|e| {
+            Error::invalid_input(format!(
+                "the current directory is unusable ({e}), so `{}` cannot be resolved",
+                path.display()
+            ))
+            .with_hint("cd into an existing directory, or pass an absolute path")
+        })?;
+        cwd.join(path)
+    };
+    // `components()` drops every `.` (`/a/./b` → `/a/b`); `..` stays, since
+    // only the filesystem knows where it leads through a symlink.
+    Ok(full.components().collect())
 }
 
 fn stdin_bytes(flag: &str, limit: u64) -> Result<Vec<u8>> {
@@ -204,6 +208,19 @@ mod tests {
 
     fn temp() -> Result<tempfile::TempDir> {
         tempfile::tempdir().map_err(|e| Error::internal(e.to_string()))
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn resolved_paths_drop_dot_components() -> Result<()> {
+        let p = resolve(Path::new("./drawings/./preview.png"))?;
+        assert!(!p.to_string_lossy().contains("/./"), "{}", p.display());
+        assert!(p.ends_with("drawings/preview.png"));
+        assert_eq!(
+            resolve(Path::new("/tmp/./a/../b"))?,
+            PathBuf::from("/tmp/a/../b")
+        );
+        Ok(())
     }
 
     #[test]

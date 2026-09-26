@@ -40,8 +40,8 @@ public final class DrawingRuntime: DrawingRuntimeProviding {
             let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
             if let size = attributes[.size] as? Int, size > DrawingLimits.maxScriptBytes {
                 return ValidationReport(ok: false, error: ValidationFailure(
-                    message: String(format: "%@ is %.1f KB; drawings are limited to 256 KB (visual.md A7)",
-                                    url.lastPathComponent, Double(size) / 1024)))
+                    message: String(format: "%@ is %.1f KB; drawings are limited to 256 KB (%@)",
+                                    url.lastPathComponent, Double(size) / 1024, DrawingDocs.limits)))
             }
             data = try Data(contentsOf: url)
         } catch {

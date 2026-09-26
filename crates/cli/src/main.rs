@@ -54,7 +54,17 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let result = runtime.block_on(commands::run(*cli, &path, &globals));
+    let result = runtime
+        .block_on(commands::run(*cli, &path, &globals))
+        // Every input error names its field and says what to do.
+        .map_err(|e| {
+            let hint = if path.is_empty() {
+                "run `peek --help`".to_owned()
+            } else {
+                format!("run `peek {} --help` for the accepted values", path.join(" "))
+            };
+            e.with_input_context("", &hint)
+        });
     let exit = match &result {
         Ok(()) => 0,
         Err(e) => {

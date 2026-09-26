@@ -2,13 +2,20 @@
 //! recipient for peek through `POST /api/v1/ting/recipient`, and records the
 //! enrollment in the session slot. peek never does this on its own (D7).
 
+use std::time::Duration;
+
 use serde_json::json;
 use silicon_peek_client::{
-    Result, ids::IdempotencyKey, runtime::session::SlotTing, timestamp::unix_now,
+    Result,
+    identity::SlotKey,
+    ids::IdempotencyKey,
+    ipc::cli::Attach,
+    runtime::{Store, auth_block, session::SlotTing},
+    timestamp::unix_now,
 };
 
 use super::{bearer, next};
-use crate::{context::Globals, output::Out};
+use crate::{context::Globals, output::Out, service};
 
 pub async fn enroll(g: &Globals, out: Out) -> Result<()> {
     let key = g
@@ -37,6 +44,9 @@ pub async fn enroll(g: &Globals, out: Out) -> Result<()> {
             Ok(())
         })
         .await?;
+    if recipient.subscribed {
+        retry_parked_deliveries(&session.store, &session.slot_key).await;
+    }
     out.value(
         &json!({"subscribed": recipient.subscribed, "subscription_id": recipient.subscription_id}),
         |v| {
@@ -48,4 +58,23 @@ pub async fn enroll(g: &Globals, out: Out) -> Result<()> {
     );
     next(out, &["peek login status --json", "peek status"]);
     Ok(())
+}
+
+/// Re-attaches the home to a running peekd (never starts it), which makes
+/// this Silicon's deliveries parked in `authority_required` due now instead
+/// of at the next ten-minute retry. Best effort: a peekd that is not running
+/// retries them when it starts.
+async fn retry_parked_deliveries(store: &Store, slot_key: &SlotKey) {
+    let Ok(auth) = auth_block(store, slot_key) else {
+        return;
+    };
+    let task = async {
+        let mut s = service::connect_existing(Duration::from_millis(500))
+            .await
+            .ok()??;
+        s.call(&Attach {}, Some(&auth), Vec::new(), Duration::from_secs(3))
+            .await
+            .ok()
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(4), task).await;
 }

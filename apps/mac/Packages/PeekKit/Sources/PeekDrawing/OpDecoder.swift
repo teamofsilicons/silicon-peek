@@ -13,6 +13,10 @@ import PeekCore
 ///
 /// One decoder per drawing; it lives on the drawing's ``JSThread``.
 final class OpDecoder {
+    /// Reported once when a frame draws more than 3 glass/blur fills (validation turns it into `glass_limit`).
+    static let glassOverflowMessage = "more than \(DrawingLimits.maxGlassFills) glass/blur fills in one frame; "
+        + "the extra ones are drawn as a flat translucent fill (\(DrawingDocs.limits))"
+
     private let fonts: FontCache
     private var colors: [String: RGBA?] = [:]
     private var reported: Set<String> = []
@@ -582,8 +586,7 @@ final class OpDecoder {
             }
             if list.glassLayerCount >= DrawingLimits.maxGlassFills {
                 list.glassOverflow += 1
-                report("more than \(DrawingLimits.maxGlassFills) glass/blur fills in one frame; "
-                    + "the extra ones are drawn as a flat translucent fill (visual.md A7)")
+                report(OpDecoder.glassOverflowMessage)
                 var t = geometry.transform
                 let unit = geometry.path.copy(using: &t) ?? geometry.path
                 layerHash.mix(OpCode.fillGlass.rawValue)
@@ -618,8 +621,7 @@ final class OpDecoder {
             }
             if list.glassLayerCount >= DrawingLimits.maxGlassFills {
                 list.glassOverflow += 1
-                report("more than \(DrawingLimits.maxGlassFills) glass/blur fills in one frame; "
-                    + "the extra ones are drawn as a flat translucent fill (visual.md A7)")
+                report(OpDecoder.glassOverflowMessage)
                 layerHash.mix(OpCode.fillBlur.rawValue)
                 layerHash.mix(pathHash)
                 add(.flatGlass(unit, rule, tint: nil))

@@ -60,7 +60,7 @@ Every event is self-contained:
 
 ```jsonc
 {"schema_version":1,"app":"peek","service":"peek-backend|peek-cli|peek-daemon|peek-mac|peek-web",
- "source":"backend|cli|daemon|mac|web","version":"0.1.0","environment":"production|testing|development",
+ "source":"backend|cli|daemon|mac|web","version":"0.1.1","environment":"production|testing|development",
  "instance_id":"<uuidv7 per process>","trace_id":"<uuidv7 created by the CLI and carried in X-Peek-Trace-Id>",
  "step":"send.validate","event":"send.displayed","progress":1,"outcome":"ok|error|skipped|timeout",
  "duration_ms":412,"error_code":null,"isi":"deliberate",

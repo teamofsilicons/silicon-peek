@@ -24,9 +24,9 @@ use silicon_peek_client::{
         frame::{AsyncFrameReader, Frame, FrameLimits, blob_limit, write_frame_async},
         negotiate,
         ui::{
-            AnswerOp, CancelReason, Dismissed, DrawingError, Focus, MessageOp, SettingsChanged,
-            ShownDone, SpeechDone, UiAppUninstall, UiDoctor, UiStatusReport, UiTelemetry,
-            VoiceSubmit,
+            AnswerOp, CancelReason, Dismissed, DrawingError, Focus, MessageOp, Presence,
+            SettingsChanged, ShownDone, SpeechDone, UiAppUninstall, UiDoctor, UiStatusReport,
+            UiTelemetry, VoiceSubmit,
         },
     },
     runtime::daemon::verify_peer,
@@ -74,10 +74,11 @@ const CLI_OPS: [&str; 17] = [
     "doctor",
 ];
 /// Ops only Peek.app may send.
-const UI_OPS: [&str; 11] = [
+const UI_OPS: [&str; 12] = [
     "answer",
     "voice.submit",
     "ui.status",
+    "presence",
     "message",
     "dismissed",
     "speech.done",
@@ -289,7 +290,10 @@ impl Shared {
                         .map_or_else(|| "unknown".to_owned(), |p| p.display().to_string())
                 ),
             );
-            tracing::warn!(peer = ?exe, "refused a UI connection from an unexpected executable");
+            let peer = exe
+                .as_deref()
+                .map_or_else(|| "unknown".to_owned(), |p| p.display().to_string());
+            tracing::warn!(peer = %peer, "refused a UI connection from an unexpected executable");
             let _ = write(&mut w, Message::Reply(req.reply_err(&e))).await;
             return;
         }
@@ -972,7 +976,39 @@ impl Shared {
             );
             return (reply, None);
         }
+        if req.op == "presence" {
+            let reply = match req.parse::<Presence>() {
+                Ok(presence) => {
+                    self.ui_presence(link, presence).await;
+                    reply_of(&req, Ok(Empty {}))
+                }
+                Err(e) => req.reply_err(&e),
+            };
+            return (reply, None);
+        }
         (self.ui_request_plain(req).await, None)
+    }
+
+    /// `presence`: kept on the connection that sent it. When the Carbon comes
+    /// back, every bubble held while they were away is shown, in order.
+    async fn ui_presence(self: &SharedRef, link: &UiLink, presence: Presence) {
+        let before = link.set_presence(presence);
+        if before == presence {
+            return;
+        }
+        let reason = serde_json::to_value(presence.reason)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        if presence.available {
+            tracing::info!("the Carbon is back ({reason}); showing held bubbles");
+        } else {
+            tracing::info!("the Carbon is away ({reason}); new bubbles wait in their queues");
+        }
+        let current = self.ui.current().is_some_and(|l| l.conn_id == link.conn_id);
+        if presence.available && !before.available && current {
+            self.push_all().await;
+        }
     }
 
     async fn ui_request_plain(self: &SharedRef, req: Request) -> Reply {

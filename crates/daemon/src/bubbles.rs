@@ -29,7 +29,7 @@ use silicon_peek_client::{
         },
         ui::{
             AnswerOp, CancelReason, Dismissed, MessageOp, MessageResult, PeekCancel, PeekShow,
-            ShownDone, SpeakInfo, SpeechDone,
+            PresenceReason, ShownDone, SpeakInfo, SpeechDone,
         },
     },
     schema::{
@@ -64,11 +64,102 @@ pub fn now_ms() -> i64 {
     Timestamp::now().unix_ms()
 }
 
-/// How TTS was planned for a send.
+/// A send's speech as stored: the plan reported to the CLI, then its outcome
+/// once the UI finished (`played`) or TTS failed before any audio (`failed`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredSpeechStatus {
+    /// Planned; streaming from Deepgram when shown.
+    Pending,
+    /// Served from the local TTS cache (kept once played).
+    Cached,
+    /// No speech.
+    Skipped,
+    /// The detected language has no Aura-2 voice.
+    UnsupportedLanguage,
+    /// Streamed from Deepgram and played.
+    Played,
+    /// TTS failed before any audio played.
+    Failed,
+}
+
+impl From<SpeechStatus> for StoredSpeechStatus {
+    fn from(s: SpeechStatus) -> Self {
+        match s {
+            SpeechStatus::Pending => Self::Pending,
+            SpeechStatus::Cached => Self::Cached,
+            SpeechStatus::Skipped => Self::Skipped,
+            SpeechStatus::UnsupportedLanguage => Self::UnsupportedLanguage,
+        }
+    }
+}
+
+impl StoredSpeechStatus {
+    /// What `peek.show` tells the UI: a finished or failed speech is never
+    /// spoken again (a re-shown ask shows its text instead).
+    #[must_use]
+    pub const fn for_ui(self) -> SpeechStatus {
+        match self {
+            Self::Pending => SpeechStatus::Pending,
+            Self::Cached => SpeechStatus::Cached,
+            Self::UnsupportedLanguage => SpeechStatus::UnsupportedLanguage,
+            Self::Skipped | Self::Played | Self::Failed => SpeechStatus::Skipped,
+        }
+    }
+
+    /// Whether TTS still has to run.
+    const fn to_speak(self) -> bool {
+        matches!(self, Self::Pending | Self::Cached)
+    }
+}
+
+/// Records how a send's speech ended in `sends.payload` (`played` for a
+/// streamed voice, `cached` stays `cached`, `failed`); a final status is
+/// never overwritten.
+///
+/// # Errors
+/// Database failures.
+pub fn set_speech_outcome(
+    c: &Connection,
+    send_id: &str,
+    outcome: StoredSpeechStatus,
+) -> Result<()> {
+    let payload: Option<Vec<u8>> = c
+        .query_row(
+            "SELECT payload FROM sends WHERE send_id = ?1",
+            [send_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .sql()?;
+    let Some(mut payload) = payload.and_then(|p| serde_json::from_slice::<SendPayload>(&p).ok())
+    else {
+        return Ok(());
+    };
+    let Some(speech) = payload.speech.as_mut() else {
+        return Ok(());
+    };
+    let next = match (speech.status, outcome) {
+        (StoredSpeechStatus::Pending, o) => o,
+        (StoredSpeechStatus::Cached, StoredSpeechStatus::Failed) => StoredSpeechStatus::Failed,
+        _ => return Ok(()),
+    };
+    speech.status = next;
+    let bytes = serde_json::to_vec(&payload)
+        .map_err(|e| Error::internal(format!("serializing a send failed: {e}")))?;
+    c.execute(
+        "UPDATE sends SET payload = ?2 WHERE send_id = ?1",
+        params![send_id, bytes],
+    )
+    .sql()?;
+    Ok(())
+}
+
+/// How TTS was planned for a send, and how it ended.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredSpeech {
-    /// Status reported to the CLI and UI.
-    pub status: SpeechStatus,
+    /// The plan reported to the CLI, then the outcome.
+    pub status: StoredSpeechStatus,
     /// The voice.
     #[serde(default)]
     pub model: Option<String>,
@@ -325,6 +416,52 @@ pub fn append_send_warning(c: &Connection, send_id: &str, warning: Value) -> Res
     Ok(())
 }
 
+/// Puts the warnings a send returned to the CLI first in its history row,
+/// ahead of any added since (a speech failure can race the send's reply).
+///
+/// # Errors
+/// Database failures.
+pub fn prepend_send_warnings(c: &Connection, send_id: &str, warnings: Vec<Value>) -> Result<()> {
+    let existing: Option<Option<String>> = c
+        .query_row(
+            "SELECT warnings FROM sends WHERE send_id = ?1",
+            [send_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .sql()?;
+    let Some(existing) = existing else {
+        return Ok(());
+    };
+    let mut list = warnings;
+    list.extend(
+        existing
+            .and_then(|s| serde_json::from_str::<Vec<Value>>(&s).ok())
+            .unwrap_or_default(),
+    );
+    c.execute(
+        "UPDATE sends SET warnings = ?2 WHERE send_id = ?1",
+        params![send_id, Value::Array(list).to_string()],
+    )
+    .sql()?;
+    Ok(())
+}
+
+/// `carbon_away`: the send waits until the Carbon can see it.
+fn carbon_away_warning(reason: PresenceReason, slot: SlotIndex) -> Warning {
+    let why = match reason {
+        PresenceReason::Asleep | PresenceReason::DisplayOff => "their display is asleep",
+        _ => "their screen is locked",
+    };
+    Warning {
+        code: warnings::CARBON_AWAY.to_owned(),
+        message: format!(
+            "the Carbon cannot see bubbles right now ({why}); this send waits in position {slot}'s queue and is shown, and spoken, when they are back"
+        ),
+        details: Some(json!({"reason": reason})),
+    }
+}
+
 /// The Silicon's current slot.
 ///
 /// # Errors
@@ -399,6 +536,39 @@ pub fn drawing_not_registered(actor: &ActorId) -> Error {
     .with_hint("peek register drawing ./logo.js   (see peek docs drawing)")
 }
 
+/// `slot_busy`: the queue is full. Names the ask that blocks it, so the
+/// Silicon can withdraw it without listing its asks first.
+fn slot_busy(slot: SlotIndex, queued: usize, ask: Option<&AskId>, away: bool) -> Error {
+    let behind = match (ask, away) {
+        (Some(_), _) => "behind a pending ask",
+        (None, true) => "for the Carbon to come back (their screen is locked or asleep)",
+        (None, false) => "behind the bubble on screen",
+    };
+    let hint = match ask {
+        Some(a) => {
+            format!("wait for the Carbon to answer, or withdraw the ask with `peek ask cancel {a}`")
+        }
+        None if away => {
+            "retry later: queued sends are shown in order when the Carbon is back".to_owned()
+        }
+        None => "retry in a few seconds".to_owned(),
+    };
+    let mut details = json!({"queued": queued, "limit": limits::QUEUE_MAX});
+    if let Some(a) = ask {
+        details["ask_id"] = json!(a);
+    }
+    Error::new(
+        ErrorCode::SlotBusy,
+        format!(
+            "{queued} sends already wait {behind} in position {slot}; peek queues at most {}",
+            limits::QUEUE_MAX
+        ),
+    )
+    .with_hint(hint)
+    .with_retryable(true)
+    .with_details(details)
+}
+
 fn kind_of(op: &SendOp) -> String {
     let mut parts = Vec::new();
     if op.speak.is_some() {
@@ -439,7 +609,7 @@ fn peek_show_event(
                 .payload
                 .speech
                 .as_ref()
-                .map_or(SpeechStatus::Skipped, |s| s.status),
+                .map_or(SpeechStatus::Skipped, |s| s.status.for_ui()),
         }),
         show: send.payload.show.clone(),
         ask: send.payload.ask.clone(),
@@ -646,7 +816,7 @@ impl Shared {
         let payload = build_payload(&op, show, ask, stored_speech, now);
         let send_id = SendId::generate();
         let ask_id = payload.ask.as_ref().map(|_| AskId::generate());
-        let (status, receiver) = self
+        let (status, away, receiver) = self
             .enqueue_send(caller, slot, &send_id, ask_id.as_ref(), &payload, &op, now)
             .await?;
         if payload.expires_at.is_some() {
@@ -655,8 +825,29 @@ impl Shared {
         if status == SendStatus::Showing && !self.ui.is_connected() {
             self.launch_ui_soon();
         }
+        if away {
+            warnings_out.push(carbon_away_warning(self.ui.presence().reason, slot));
+        }
+        if let Some(w) = self.ting_warning(caller).await {
+            warnings_out.push(w);
+        }
         if let Some(w) = self.take_fallback_warning(&key).await {
             warnings_out.push(w);
+        }
+        if !warnings_out.is_empty() {
+            // Kept with the send so `peek history` shows them too.
+            let sid = send_id.as_str().to_owned();
+            let stored: Vec<Value> = warnings_out
+                .iter()
+                .filter_map(|w| serde_json::to_value(w).ok())
+                .collect();
+            if let Err(e) = self
+                .db
+                .call(move |c| prepend_send_warnings(c, &sid, stored))
+                .await
+            {
+                tracing::warn!(error = %e, "recording a send's warnings failed");
+            }
         }
         self.record_send(&key, slot, status, &payload, &op);
         Ok((
@@ -670,6 +861,39 @@ impl Shared {
             },
             receiver,
         ))
+    }
+
+    /// `ting_not_enrolled` when answers from this send could not reach the
+    /// Silicon: its session records no active Ting enrollment, or Ting
+    /// already refused a delivery to it (`recipient_not_registered`, e.g.
+    /// after `peek logout --revoke-ting` in another home).
+    async fn ting_warning(&self, caller: &Caller) -> Option<Warning> {
+        let refused = if caller.ting_subscribed == Some(false) {
+            true
+        } else {
+            let k = caller.key.clone();
+            self.db
+                .call(move |c| {
+                    c.query_row(
+                        "SELECT count(*) FROM outbox WHERE kind = 'ting' AND status = 'authority_required'
+                           AND last_error_code = 'recipient_not_registered'
+                           AND context = ?1 AND org_id = ?2 AND actor_id = ?3",
+                        params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .sql()
+                })
+                .await
+                .is_ok_and(|n| n > 0)
+        };
+        refused.then(|| Warning {
+            code: warnings::TING_NOT_ENROLLED.to_owned(),
+            message: format!(
+                "{} is not an active Ting recipient for peek, so answers, messages and notifications cannot be delivered; they wait until you enroll",
+                caller.key.actor
+            ),
+            details: Some(json!({"next": "peek ting enroll"})),
+        })
     }
 
     /// The Silicon must hold a position and a drawing (§7.5's exact errors).
@@ -801,7 +1025,7 @@ impl Shared {
                 chars,
             }),
             Some(StoredSpeech {
-                status,
+                status: status.into(),
                 model: plan.model,
                 language: plan.language,
             }),
@@ -820,7 +1044,7 @@ impl Shared {
         payload: &SendPayload,
         op: &SendOp,
         now: i64,
-    ) -> Result<(SendStatus, Option<oneshot::Receiver<WaiterMsg>>)> {
+    ) -> Result<(SendStatus, bool, Option<oneshot::Receiver<WaiterMsg>>)> {
         let key = caller.key.clone();
         let bubble = Bubble {
             send_id: send_id.clone(),
@@ -837,28 +1061,29 @@ impl Shared {
         let kind = kind_of(op);
 
         let mut core = self.core.lock().await;
+        // While the Carbon is away (screen locked or asleep) nothing is
+        // replaced and nothing is pushed: every send waits its turn and is
+        // shown, in order, when they are back.
+        let away = !self.ui.carbon_available();
         let queue = core.queues.entry(key.clone()).or_default();
-        let busy =
-            queue.current.as_ref().is_some_and(|b| b.ask_id.is_some()) || !queue.waiting.is_empty();
+        let blocking_ask = queue.current.as_ref().and_then(|b| b.ask_id.clone());
+        let busy = blocking_ask.is_some()
+            || !queue.waiting.is_empty()
+            || (away && queue.current.is_some());
         if busy && queue.waiting.len() >= limits::QUEUE_MAX {
-            return Err(Error::new(
-                ErrorCode::SlotBusy,
-                format!(
-                    "{} sends already wait behind a pending ask in position {slot}; peek queues at most {}",
-                    queue.waiting.len(),
-                    limits::QUEUE_MAX
-                ),
-            )
-            .with_hint("wait for the Carbon to answer, or withdraw the ask with `peek ask cancel <ASK_ID>`")
-            .with_retryable(true)
-            .with_details(json!({"queued": queue.waiting.len(), "limit": limits::QUEUE_MAX})));
+            return Err(slot_busy(
+                slot,
+                queue.waiting.len(),
+                blocking_ask.as_ref(),
+                away,
+            ));
         }
         let replaced = if busy {
             None
         } else {
             queue.current.take().map(|b| b.send_id)
         };
-        let status = if busy {
+        let status = if busy || away {
             SendStatus::Queued
         } else {
             SendStatus::Showing
@@ -899,10 +1124,11 @@ impl Shared {
             }
             _ => None,
         };
-        if status == SendStatus::Showing {
+        if !busy {
+            // Shown now, or held (`pushed = false`) while the Carbon is away.
             self.push_current_locked(&mut core, &key).await;
         }
-        Ok((status, receiver))
+        Ok((status, away, receiver))
     }
 
     fn record_send(
@@ -993,12 +1219,14 @@ impl Shared {
         key: &ActorKey,
     ) {
         if !self.ui.is_connected()
+            || !self.ui.carbon_available()
             || self
                 .update_swapping
                 .load(std::sync::atomic::Ordering::SeqCst)
         {
-            // Stays `pushed = false`: shown by the next UI connection, or
-            // by `push_all` when a pending update backs off.
+            // Stays `pushed = false`: shown by the next UI connection, by
+            // `push_all` when the Carbon is back (`presence`), or when a
+            // pending update backs off. No speech starts before that.
             return;
         }
         let Some(queue) = core.queues.get(key) else {
@@ -1094,7 +1322,7 @@ impl Shared {
             tracing::warn!(error = %e, "recording shown_at failed");
         }
         if let (Some(text), Some(speech)) = (&send.payload.speak, &send.payload.speech)
-            && matches!(speech.status, SpeechStatus::Pending | SpeechStatus::Cached)
+            && speech.status.to_speak()
             && let Some(model) = &speech.model
         {
             self.start_tts(TtsJob {
@@ -1897,6 +2125,9 @@ impl Shared {
                         params![sid, now],
                     )
                     .sql()?;
+                if n == 1 {
+                    set_speech_outcome(tx, &sid, StoredSpeechStatus::Played)?;
+                }
                 Ok((send, n == 1))
             })
             .await?;
@@ -1920,7 +2151,18 @@ impl Shared {
             self.queue_send_ting(&send, data).await?;
         }
         if send.closed_at.is_none() && send.payload.show.is_none() && send.payload.ask.is_none() {
-            self.close_send(&op.send_id, "speech_done").await?;
+            // A speak-only bubble stays up 1.5 s after the speech and then the
+            // UI reports `shown.done(speech_done)`, which closes the send (so
+            // `closed_at` is the slide-back). Close it here only if that never
+            // arrives.
+            let this = Arc::clone(self);
+            let send_id = op.send_id.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(SPEAK_ONLY_CLOSE_FALLBACK).await;
+                if let Err(e) = this.close_send(&send_id, "speech_done").await {
+                    tracing::warn!(send = %send_id, error = %e, "closing a speak-only send failed");
+                }
+            });
         }
         Ok(())
     }
@@ -2310,6 +2552,11 @@ pub fn cache_image(dir: &std::path::Path, bytes: &[u8]) -> Result<String> {
     }
     Ok(path.to_string_lossy().into_owned())
 }
+
+/// How long peekd waits for `shown.done` after a speak-only send's
+/// `speech.done` (the UI slides back 1.5 s after the speech) before closing
+/// the send itself.
+pub const SPEAK_ONLY_CLOSE_FALLBACK: Duration = Duration::from_secs(5);
 
 /// Cached images no open send references are removed once older than this
 /// (the Silicon's own file may be gone, so a bubble keeps its copy until it

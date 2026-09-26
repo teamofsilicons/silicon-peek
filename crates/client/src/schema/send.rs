@@ -45,7 +45,9 @@ impl Notify {
             "show_dismissed" => Ok(Self::ShowDismissed),
             other => Err(Error::invalid_input(format!(
                 "`{other}` is not a notification; allowed: speech_finished, show_dismissed"
-            ))),
+            ))
+            .with_hint("use speech_finished and/or show_dismissed")
+            .with_details(json!({"allowed": ["speech_finished", "show_dismissed"]}))),
         }
     }
 
@@ -133,17 +135,27 @@ pub fn voice_language(voice: &str) -> Option<&str> {
     voice.rsplit_once('-').map(|(_, l)| l)
 }
 
-/// Validates and normalizes a BCP 47 primary language subtag (`EN` → `en`).
+/// Validates a BCP 47 language tag and returns its primary subtag,
+/// lowercased (`EN` → `en`, `es-MX` → `es`, `zh-Hant-TW` → `zh`): voices are
+/// chosen by language, never by region or script.
 ///
 /// # Errors
-/// `invalid_input` unless the value is 2–3 ASCII letters.
+/// `invalid_input` unless the primary subtag is 2–3 ASCII letters and every
+/// further subtag is 1–8 letters or digits.
 pub fn normalize_language(lang: &str) -> Result<String> {
-    if (2..=3).contains(&lang.len()) && lang.bytes().all(|b| b.is_ascii_alphabetic()) {
-        Ok(lang.to_ascii_lowercase())
+    let mut parts = lang.split(['-', '_']);
+    let primary = parts.next().unwrap_or_default();
+    let primary_ok =
+        (2..=3).contains(&primary.len()) && primary.bytes().all(|b| b.is_ascii_alphabetic());
+    let rest_ok =
+        parts.all(|p| (1..=8).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_alphanumeric()));
+    if primary_ok && rest_ok {
+        Ok(primary.to_ascii_lowercase())
     } else {
         Err(Error::invalid_input(format!(
-            "language `{lang}` is not a BCP 47 primary subtag; use two or three letters such as `en` or `ja`"
-        )))
+            "language `{lang}` is not a BCP 47 language tag; use a tag such as `en`, `es-MX` or `ja`"
+        ))
+        .with_hint("peek uses the primary subtag (the part before the first -) to pick the voice"))
     }
 }
 
@@ -154,7 +166,8 @@ fn bounded_secs(flag: &str, secs: u64, min: u64, max: u64) -> Result<Duration> {
         Err(Error::invalid_input(format!(
             "{flag} {secs} is out of range; it must be {min}–{max} seconds"
         ))
-        .with_details(json!({"flag": flag, "min": min, "max": max, "actual": secs})))
+        .with_hint(format!("pass {flag} with a value from {min} to {max}"))
+        .with_details(json!({"field": flag, "flag": flag, "min": min, "max": max, "actual": secs})))
     }
 }
 
@@ -308,7 +321,12 @@ mod tests {
         assert_eq!(normalize_language("EN").ok().as_deref(), Some("en"));
         assert!(normalize_language("e").is_err());
         assert!(normalize_language("english").is_err());
-        assert!(normalize_language("en-US").is_err());
+        assert_eq!(normalize_language("es-MX").ok().as_deref(), Some("es"));
+        assert_eq!(normalize_language("zh-Hant-TW").ok().as_deref(), Some("zh"));
+        assert_eq!(normalize_language("pt_BR").ok().as_deref(), Some("pt"));
+        assert!(normalize_language("en-").is_err());
+        assert!(normalize_language("en-toolongsubtag").is_err());
+        assert!(normalize_language("-US").is_err());
     }
 
     #[test]

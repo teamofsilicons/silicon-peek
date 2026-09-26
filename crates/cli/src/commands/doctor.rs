@@ -172,16 +172,37 @@ fn session_checks(session: &Session, file: &SessionFile) -> Vec<Check> {
             });
         }
     }
-    if file.pending_login_live(now) {
-        checks.push(check(
+    checks.extend(login_leftover_checks(file, now));
+    checks
+}
+
+/// `pending_login` and `revocations`: always reported, `ok` when nothing is
+/// pending.
+fn login_leftover_checks(file: &SessionFile, now: i64) -> [Check; 2] {
+    let pending_login = if file.pending_login_live(now) {
+        check(
             "pending_login",
             Status::Warn,
             "an interrupted login can still be recovered",
             Some("peek login --recover"),
-        ));
-    }
-    if !file.pending_revocations.is_empty() {
-        checks.push(check(
+        )
+    } else {
+        check(
+            "pending_login",
+            Status::Ok,
+            "no interrupted login to recover",
+            None,
+        )
+    };
+    let revocations = if file.pending_revocations.is_empty() {
+        check(
+            "revocations",
+            Status::Ok,
+            "no refresh-token revocation is waiting for the backend",
+            None,
+        )
+    } else {
+        check(
             "revocations",
             Status::Warn,
             format!(
@@ -189,9 +210,9 @@ fn session_checks(session: &Session, file: &SessionFile) -> Vec<Check> {
                 file.pending_revocations.len()
             ),
             Some("any peek login, logout or login status run retries them"),
-        ));
-    }
-    checks
+        )
+    };
+    [pending_login, revocations]
 }
 
 async fn backend_check(client: &Client) -> Check {
@@ -689,6 +710,10 @@ async fn collect(g: &Globals) -> Vec<Check> {
             },
             Err(e) => checks.push(check("session", Status::Fail, e.message(), e.hint())),
         }
+    }
+    if !checks.iter().any(|c| c.name == "pending_login") {
+        // No store or no readable session: nothing can be pending.
+        checks.extend(login_leftover_checks(&SessionFile::default(), unix_now()));
     }
     if let Some(s) = &session {
         checks.push(backend_check(&s.client).await);

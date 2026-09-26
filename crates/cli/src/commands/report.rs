@@ -50,7 +50,7 @@ fn body(message: &str, pr: Option<&str>, status: Option<&Value>) -> String {
 }
 
 pub async fn run(g: &Globals, out: Out, args: ReportArgs) -> Result<()> {
-    if g.is_testing()? {
+    if g.is_testing()? && !args.dry_run {
         return Err(Error::new(
             ErrorCode::ConflictingFlags,
             "peek report is refused in a testing environment: reports go to the production issue tracker",
@@ -75,6 +75,16 @@ pub async fn run(g: &Globals, out: Out, args: ReportArgs) -> Result<()> {
     } else {
         None
     };
+    if args.dry_run {
+        let value = dry_run(g, &args, status).await?;
+        out.value(&value, |v| {
+            format!(
+                "dry run: nothing was sent. peek report without --dry-run would file:\n{}",
+                serde_json::to_string_pretty(&v["would_send"]).unwrap_or_default()
+            )
+        });
+        return Ok(());
+    }
     let value = match args.via {
         ReportVia::Backend => backend(g, &args, status).await?,
         ReportVia::Gh => gh(&args, status.as_ref()).await?,
@@ -98,11 +108,8 @@ pub async fn run(g: &Globals, out: Out, args: ReportArgs) -> Result<()> {
     Ok(())
 }
 
-async fn backend(g: &Globals, args: &ReportArgs, status: Option<Value>) -> Result<Value> {
-    let key = g
-        .idempotency_key()?
-        .unwrap_or_else(IdempotencyKey::generate);
-    let request = ReportRequest {
+fn backend_request(args: &ReportArgs, status: Option<Value>) -> ReportRequest {
+    ReportRequest {
         message: args.message.trim().to_owned(),
         pr: args.pr.clone(),
         context: Some(ReportContext {
@@ -112,7 +119,53 @@ async fn backend(g: &Globals, args: &ReportArgs, status: Option<Value>) -> Resul
             error_code: None,
         }),
         status,
-    };
+    }
+}
+
+/// `--dry-run`: what would be filed, and where; nothing is sent.
+async fn dry_run(g: &Globals, args: &ReportArgs, status: Option<Value>) -> Result<Value> {
+    Ok(match args.via {
+        ReportVia::Backend => {
+            // The same backend a real report would use, without creating a
+            // store for it.
+            let api = match crate::context::existing_store().ok().flatten() {
+                Some(store) => match g.session(store, false).await {
+                    Ok(session) => session.client.api_url().clone(),
+                    Err(_) => g
+                        .explicit_api()?
+                        .unwrap_or_else(silicon_peek_client::identity::ApiUrl::production),
+                },
+                None => g
+                    .explicit_api()?
+                    .unwrap_or_else(silicon_peek_client::identity::ApiUrl::production),
+            };
+            json!({
+                "dry_run": true,
+                "via": "backend",
+                "would_send": {
+                    "method": "POST",
+                    "url": format!("{}{}", api.as_str().trim_end_matches('/'), silicon_peek_client::api::routes::REPORTS),
+                    "body": backend_request(args, status),
+                },
+            })
+        }
+        ReportVia::Gh => json!({
+            "dry_run": true,
+            "via": "gh",
+            "would_send": {
+                "command": format!("gh issue create --repo {REPO} --title <title> --body-file -"),
+                "title": title(&args.message),
+                "body": body(&args.message, args.pr.as_deref(), status.as_ref()),
+            },
+        }),
+    })
+}
+
+async fn backend(g: &Globals, args: &ReportArgs, status: Option<Value>) -> Result<Value> {
+    let key = g
+        .idempotency_key()?
+        .unwrap_or_else(IdempotencyKey::generate);
+    let request = backend_request(args, status);
     let session = g.session(crate::context::store()?, false).await?;
     // Attribute the report to the session when there is a usable one; a
     // report must still go through without login.

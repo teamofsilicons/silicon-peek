@@ -26,7 +26,7 @@ The Carbon at the Mac does not log in to peek in v1. Answers carry only the aski
 | `self.membership.read` | Discloses your org role, so org owners and admins can manage the org's own Deepgram key. |
 | `obo:ting:subscriptions.register` | Enroll you as a Ting recipient at login. |
 | `obo:ting:tings.send` | Deliver answers, dismissals and messages to you. |
-| `obo:ting:subscriptions.revoke` | Remove that enrollment when you log out. |
+| `obo:ting:subscriptions.revoke` | Remove that enrollment when you ask for it (`peek logout --revoke-ting`). |
 
 Scopes are fixed when you consent, and a refresh never adds scopes. peek's v1 scope set is final so that no Silicon is ever forced to log in again for a new scope. `--approve-scopes` (which Stemcell always passes) approves all six. If `self.identity.read`, `obo:ting:subscriptions.register` or `obo:ting:tings.send` is missing, login reports `reconsent_required:true` and deliveries wait in `authority_required`.
 
@@ -35,8 +35,8 @@ Scopes are fixed when you consent, and a refresh never adds scopes. peek's v1 sc
 1. **Mint an SLT** with the IAM CLI. It is single use and lives 2 minutes.
    ```sh
    iam --output json --org <OWNER_ORG> silicon-login --sid si:<handle> --stk <STK> --app-id peek --grant-org <SILICON_ORG> --approve-scopes   # what Stemcell runs
-   iam -o json silicon-login --app-id peek --grant-org tos --approve-scopes     # a Silicon, by hand
-   iam -o json login --app-id peek --grant-org tos --approve-scopes             # a Carbon's own CLI
+   iam -o json silicon-login --app-id peek --grant-org <org> --approve-scopes   # a Silicon, by hand
+   iam -o json login --app-id peek --grant-org <org> --approve-scopes           # a Carbon's own CLI
    # → {"slt":"…","expires_in":120,…}
    ```
 2. **Exchange it.** `peek login "$SLT"` (or `--token-file -`). peek writes a pending-login marker, then calls `POST /api/v1/auth/login` with body exactly `{"slt":"…"}` and an idempotency key derived from the SLT. The backend exchanges it with IAM using peek's app secret, checks the tokens belong to `peek`, picks your org (the `--org`/`SILICON_ORG` hint when you belong to it, otherwise the first alphabetically), and enrolls you with Ting.
@@ -78,14 +78,16 @@ Margins: the CLI refreshes when fewer than 60 s remain, the helper 120 s before 
 
 ## Log out
 
-`peek logout` writes a logged-out marker, asks the backend to revoke your Ting enrollment and your IAM refresh family, deletes the session, and cancels your undelivered events on this Mac. It exits 0 with `remote_revocation:"confirmed"` or `"pending"`; a pending revocation is retried by the next `peek` run or the helper. The backend's logout answers 204 even for unknown tokens, so it cannot be used to probe tokens.
+`peek logout` writes a logged-out marker, asks the backend to revoke this home's IAM refresh family, deletes the session, and cancels this home's undelivered events on this Mac. It exits 0 with `remote_revocation:"confirmed"` or `"pending"`; a pending revocation is retried by the next `peek` run or the helper. The backend's logout answers 204 even for unknown tokens, so it cannot be used to probe tokens.
+
+Logout **keeps your Ting enrollment**. The enrollment belongs to the Silicon, not to a home, so revoking it from one home would silently stop answers for every other home logged in as the same `si:`. To remove it as well, run `peek logout --revoke-ting`. Afterwards every home of this Silicon reports `"ting":{"subscribed":false}`, its sends carry a `ting_not_enrolled` warning, and `peek ting enroll` restores delivery (waiting events are retried right away).
 
 ## Many Silicons on one Mac
 
 - **Each Silicon has its own `SILICON_HOME`**, and so its own session, IAM family and `daemon-token`. Stemcell refuses two connected Silicons on one home.
 - **One helper per macOS user** (peekd) serves them all. It learns homes when their CLI attaches, reads each home's session under that home's lock, and never copies tokens into its own database.
 - **Every CLI request to the helper is authenticated**: the peer must be the same macOS user, the home must be private and owned by that user, the request's `home_token` must equal the home's `daemon-token`, and the home must hold a valid session for the backend and context in use. Naming another Silicon's home does not let you act as it.
-- Two homes holding the same `si:` in the same context share one position.
+- Two homes holding the same `si:` in the same context share one position and one Ting enrollment. Logging out one of them leaves the other untouched.
 
 If a `SILICON_HOME` lives under `~/Documents`, `~/Desktop` or `~/Downloads`, macOS may ask to allow Peek to read it. peek reports this as `authority_required` with the hint to move the home or allow Peek in **Privacy & Security → Files and Folders**.
 
@@ -95,7 +97,7 @@ Every app route takes `Authorization: Bearer oat_…` and `X-Org-ID: <org>`. The
 
 ## Availability
 
-peek is registered as a public app, but until its listing is approved only members of org `tos` can install it or log in. Other orgs get `403 private_application_organization_required` (exit 4). See [Peek for Silicons](silicon.md) for the interim path.
+peek is a public app. `honeycomb install 'peek'` needs no Honeycomb login, and a Silicon or Carbon of any org can log in.
 
 ## Next
 

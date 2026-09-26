@@ -156,6 +156,6 @@ public final class RotatingLogFile: @unchecked Sendable {
     }
 
     static func timestamp(_ date: Date) -> String {
-        date.formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true, timeZone: .current))
+        date.formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true, timeZone: .gmt))
     }
 }

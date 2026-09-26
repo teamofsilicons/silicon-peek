@@ -347,33 +347,53 @@ async fn drawings_are_verified_against_their_etag() {
 }
 
 #[tokio::test]
-async fn logout_sends_the_bearer_only_when_a_session_is_attached() {
+async fn logout_sends_the_bearer_only_to_revoke_the_ting_grant() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api/v1/auth/logout"))
         .and(body_string(r#"{"token":"ort_1"}"#))
         .and(header_exists("idempotency-key"))
         .respond_with(ResponseTemplate::new(204))
-        .expect(2)
+        .expect(3)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/auth/logout"))
+        .and(body_string(r#"{"token":"ort_1","revoke_ting":true}"#))
+        .and(header_exists("idempotency-key"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
         .mount(&server)
         .await;
     let c = client(&server);
     let key = IdempotencyKey::revoke("ort_1");
-    c.logout(&Secret::new("ort_1"), &key)
+    c.logout(&Secret::new("ort_1"), &key, false)
         .await
         .expect("anonymous");
-    c.with_session(Secret::new("oat_1"), OrgId::parse("tos").unwrap())
-        .logout(&Secret::new("ort_1"), &key)
+    // Without a session there is no bearer, so no grant can be revoked.
+    c.logout(&Secret::new("ort_1"), &key, true)
+        .await
+        .expect("anonymous, revoke ignored");
+    let with = c.with_session(Secret::new("oat_1"), OrgId::parse("tos").unwrap());
+    with.logout(&Secret::new("ort_1"), &key, false)
+        .await
+        .expect("plain logout keeps the Ting grant");
+    with.logout(&Secret::new("ort_1"), &key, true)
         .await
         .expect("with bearer");
     let reqs = server.received_requests().await.unwrap();
     assert!(!has(&reqs[0], "authorization"));
+    assert!(!has(&reqs[1], "authorization"));
+    assert!(
+        !has(&reqs[2], "authorization"),
+        "a plain logout never sends the bearer"
+    );
     assert_eq!(
-        reqs[1].headers.get("authorization").unwrap(),
+        reqs[3].headers.get("authorization").unwrap(),
         "Bearer oat_1"
     );
     assert_eq!(
-        reqs[1].headers.get("idempotency-key").unwrap(),
+        reqs[3].headers.get("idempotency-key").unwrap(),
         key.as_str()
     );
 }

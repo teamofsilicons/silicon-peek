@@ -13,7 +13,11 @@ use std::{
 use silicon_peek_client::{
     Error, ErrorCode, Result,
     error::Origin,
-    ipc::{Event, EventBody, Message, Op, Reply, Request, frame::Frame, ui::UiStatusReport},
+    ipc::{
+        Event, EventBody, Message, Op, Reply, Request,
+        frame::Frame,
+        ui::{Presence, UiStatusReport},
+    },
 };
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -38,6 +42,9 @@ pub struct UiLink {
     /// The latest `ui.status` this connection pushed (microphone and
     /// hotkey state), for `peek doctor`.
     status: Mutex<Option<UiStatusReport>>,
+    /// The Carbon's presence as this connection last reported it (an app
+    /// that never sends `presence` counts as available).
+    presence: Mutex<Presence>,
 }
 
 impl UiLink {
@@ -59,7 +66,22 @@ impl UiLink {
             version,
             pid,
             status: Mutex::new(None),
+            presence: Mutex::new(Presence::default()),
         }
+    }
+
+    /// Records a `presence` report; returns the previous one.
+    pub fn set_presence(&self, presence: Presence) -> Presence {
+        std::mem::replace(
+            &mut *self.presence.lock().unwrap_or_else(PoisonError::into_inner),
+            presence,
+        )
+    }
+
+    /// The Carbon's presence as this connection reported it.
+    #[must_use]
+    pub fn presence(&self) -> Presence {
+        *self.presence.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Keeps the app's latest `ui.status` push.
@@ -152,6 +174,19 @@ impl UiHub {
     #[must_use]
     pub fn is_connected(&self) -> bool {
         self.current().is_some()
+    }
+
+    /// The connected app's `presence` report; available when no app is
+    /// connected or it never reported one.
+    #[must_use]
+    pub fn presence(&self) -> Presence {
+        self.current().map(|l| l.presence()).unwrap_or_default()
+    }
+
+    /// Whether the Carbon can see bubbles right now (see [`Presence`]).
+    #[must_use]
+    pub fn carbon_available(&self) -> bool {
+        self.presence().available
     }
 
     /// Installs a new link (newest wins) and returns the replaced one.

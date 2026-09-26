@@ -164,6 +164,91 @@ struct HostTests {
         #expect(logs.filter { $0.hasPrefix("frame() threw: Error: nope") }.count == 10)
     }
 
+    @Test("a drawing that starts throwing while on screen (t > 5, phase showing) falls back and reports once")
+    func throwsLaterOnScreen() async throws {
+        // The dogfood crash-later.js: fine for 5 s after loading, then throws whenever it is visible.
+        let (host, visual) = makeHost()
+        var now: CFTimeInterval = 1000
+        host.clock = { now }
+        let input = FakeInputSource()
+        input.base.phase = .hidden
+        host.input = input
+        var failures: [DrawingFailure] = []
+        host.onFailure = { failures.append($0) }
+        try await load(host, """
+            peek.frame((ctx, input) => {
+              ctx.fillRect(0, 0, 10, 10)
+              if (input.t > 5 && input.phase !== 'hidden') throw new Error('dogfood deliberate crash after 5s')
+              return true
+            })
+            """, filename: "crash-later.js")
+        host.attach(to: visual)
+        for index in 0..<30 {  // the first 5 s: nothing throws
+            now = 1000 + Double(index) * 0.1
+            await step(host, at: now)
+        }
+        #expect(failures.isEmpty)
+        #expect(host.status == .ready(sha256: "abc"))
+
+        // 7 s later a send shows the bubble: every frame now throws; the 10th in a row switches to the fallback.
+        input.base.phase = .showing
+        host.deliver(.enter)
+        var frames = 0
+        while failures.isEmpty, frames < 20 {
+            now = 1007 + Double(frames) / 60
+            await step(host, at: now)
+            frames += 1
+        }
+        #expect(frames == 10, "every visible frame must run and count")
+        let failure = try #require(failures.first)
+        #expect(failures.count == 1)
+        #expect(failure.reason == .throwsRepeatedly)
+        #expect(failure.message == "frame() threw 10 times in a row; last error: Error: dogfood deliberate crash after 5s")
+        let stack = try #require(failure.stack)
+        #expect(!stack.contains("peek-prelude.js"), "\(stack)")
+        #expect(stack.contains("at crash-later.js:3:"), "\(stack)")
+        #expect(stack.contains("  if (input.t > 5 && input.phase !== 'hidden') throw new Error("), "\(stack)")
+        #expect(host.compositor.isShowingFallback)
+        // Later ticks do nothing: the VM is gone and the failure is not reported again.
+        await step(host, at: now + 1)
+        #expect(failures.count == 1)
+    }
+
+    @Test("the watchdog drives frames when the display link is silent while the panel is visible")
+    func watchdogDrivesStalledFrames() {
+        let scheduler = FrameScheduler()
+        var now: CFTimeInterval = 50
+        scheduler.clock = { now }
+        var ticks: [CFTimeInterval] = []
+        var stalls = 0
+        scheduler.onTick = { ticks.append($0) }
+        scheduler.onStall = { stalls += 1 }
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 10, height: 10))
+        scheduler.attach(to: view)  // in no window: the display link never fires here
+        scheduler.isVisible = { true }
+        scheduler.start()
+        now = 50.1
+        scheduler.watchdogFired()
+        #expect(ticks.isEmpty, "the link may still fire: no frame from the watchdog before 0.25 s")
+        now = 50.3
+        scheduler.watchdogFired()
+        now = 50.4
+        scheduler.watchdogFired()
+        #expect(ticks == [50.3, 50.4])
+        #expect(stalls == 1)
+        #expect(scheduler.isStalled)
+
+        scheduler.isVisible = { false }  // ordered out: nobody sees it, no frames
+        now = 51
+        scheduler.watchdogFired()
+        #expect(ticks.count == 2)
+        scheduler.isVisible = { true }
+        scheduler.stop()  // the drawing went to sleep
+        scheduler.watchdogFired()
+        #expect(ticks.count == 2)
+        scheduler.detach()
+    }
+
     @Test("a successful frame resets the throw streak")
     func throwStreakResets() async throws {
         let (host, visual) = makeHost()

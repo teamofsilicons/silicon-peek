@@ -585,7 +585,7 @@ drawing NOT registered (previous drawing still active)
 Warning:
 
 ```text
-⚠ glass fill #1 changed outline in 90/90 frames. Glass outlines are applied at most 10 times per second, so it looks choppy and costs CPU. Keep glass outlines fixed and animate on top of them (visual.md A6.1).
+⚠ glass fill #1 changed outline in 90/90 frames. Glass outlines are applied at most 10 times per second, so it looks choppy and costs CPU. Keep glass outlines fixed and animate on top of them (https://peek.teamofsilicons.com/docs/drawing#glass-what-is-cheap-and-what-is-not).
 ```
 
 With `--json`, the same warning is `{"code":"glass_outline_unstable","message":"glass fill #1 changed outline in 90/90 frames. …"}` in `warnings`, and `peek.log` lines are in `logs`.

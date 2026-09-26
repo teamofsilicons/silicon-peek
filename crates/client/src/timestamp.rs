@@ -90,18 +90,26 @@ impl Timestamp {
         Ok(Self { unix_ms })
     }
 
-    /// The RFC 3339 rendering.
+    /// The RFC 3339 rendering in UTC with fixed millisecond precision
+    /// (`2026-09-26T11:07:18.730Z`), so timestamps compare correctly as
+    /// strings and parse with fixed-width readers.
     #[must_use]
     pub fn to_rfc3339(self) -> String {
         let nanos = i128::from(self.unix_ms) * 1_000_000;
-        match OffsetDateTime::from_unix_timestamp_nanos(nanos)
-            .ok()
-            .and_then(|dt| dt.format(&Rfc3339).ok())
-        {
-            Some(s) => s,
-            // Outside time's supported years (±9999): clamp to the epoch
-            // rather than panic; no peek timestamp is ever that far off.
-            None => "1970-01-01T00:00:00Z".to_owned(),
+        match OffsetDateTime::from_unix_timestamp_nanos(nanos) {
+            Ok(dt) if (0..=9999).contains(&dt.year()) => format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+                dt.year(),
+                u8::from(dt.month()),
+                dt.day(),
+                dt.hour(),
+                dt.minute(),
+                dt.second(),
+                dt.millisecond()
+            ),
+            // Outside RFC 3339's years: clamp to the epoch rather than
+            // panic; no peek timestamp is ever that far off.
+            _ => "1970-01-01T00:00:00.000Z".to_owned(),
         }
     }
 }
@@ -132,10 +140,18 @@ mod tests {
     #[test]
     fn formats_and_parses() -> Result<()> {
         let t = Timestamp::from_unix(1_790_000_000);
-        assert_eq!(t.to_rfc3339(), "2026-09-21T14:13:20Z");
+        assert_eq!(t.to_rfc3339(), "2026-09-21T14:13:20.000Z");
         assert_eq!(Timestamp::parse("2026-09-21T14:13:20Z")?, t);
         let ms = Timestamp::from_unix_ms(1_790_000_000_250);
-        assert_eq!(ms.to_rfc3339(), "2026-09-21T14:13:20.25Z");
+        assert_eq!(ms.to_rfc3339(), "2026-09-21T14:13:20.250Z");
+        assert_eq!(
+            Timestamp::from_unix_ms(1_790_000_000_730).to_rfc3339(),
+            "2026-09-21T14:13:20.730Z"
+        );
+        assert_eq!(
+            Timestamp::from_unix_ms(1_790_000_000_007).to_rfc3339(),
+            "2026-09-21T14:13:20.007Z"
+        );
         assert_eq!(Timestamp::parse(&ms.to_rfc3339())?, ms);
         assert!(Timestamp::parse("2026-09-21T14:13:20+02:00").is_err());
         assert!(Timestamp::parse("yesterday").is_err());
@@ -147,7 +163,7 @@ mod tests {
     #[test]
     fn serde_uses_the_string_form() -> std::result::Result<(), serde_json::Error> {
         let t = Timestamp::from_unix(0);
-        assert_eq!(serde_json::to_string(&t)?, "\"1970-01-01T00:00:00Z\"");
+        assert_eq!(serde_json::to_string(&t)?, "\"1970-01-01T00:00:00.000Z\"");
         let back: Timestamp = serde_json::from_str("\"1970-01-01T00:00:00Z\"")?;
         assert_eq!(back, t);
         Ok(())

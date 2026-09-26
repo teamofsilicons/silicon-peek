@@ -265,6 +265,20 @@ async fn send_ships_bytes_as_blobs_with_the_home_auth() {
 }
 
 #[tokio::test]
+async fn an_invalid_isi_is_dropped_with_a_warning() {
+    let mut env = logged_in();
+    env.var("ISI", "two\nlines");
+    let d = fake(&env, send_ok(None));
+    let run = env.run(&["send", "--json", "--speak", "hi"]).await;
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let v = run.json();
+    assert_eq!(v["warnings"][0]["code"], "isi_ignored");
+    let seen = d.seen();
+    assert_eq!(seen[0].op, "send");
+    assert!(seen[0].fields["isi"].is_null(), "{:?}", seen[0].fields);
+}
+
+#[tokio::test]
 async fn send_uses_the_config_notify_default() {
     let env = logged_in();
     let d = fake(&env, send_ok(None));
@@ -330,7 +344,7 @@ async fn send_wait_prints_the_answer() {
     );
     assert_eq!(v["via"], "click");
     assert!(v["transcript"].is_null());
-    assert_eq!(v["answered_at"], "2026-09-26T10:00:07Z");
+    assert_eq!(v["answered_at"], "2026-09-26T10:00:07.000Z");
     assert_eq!(d.seen()[0].fields["wait"], true);
     // The CLI acknowledges the result it read, so peekd sends no ting.
     let mut acked = false;

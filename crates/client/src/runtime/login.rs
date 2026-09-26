@@ -258,13 +258,19 @@ pub struct LogoutOutcome {
 }
 
 /// `peek logout` steps 1–3: tombstone + queue the refresh token, revoke it
-/// remotely (with the bearer, so the Ting grant goes too), then delete the
-/// slot. Local logout always completes; the outcome never claims a remote
-/// revocation it does not have.
+/// remotely, then delete the slot. The Silicon's Ting grant is revoked too
+/// only with `revoke_ting` (`peek logout --revoke-ting`): other homes of the
+/// same Silicon share it. Local logout always completes; the outcome never
+/// claims a remote revocation it does not have.
 ///
 /// # Errors
 /// Store failures only; backend failures become `remote_revocation: pending`.
-pub async fn logout(store: &Store, client: &Client, context: Context) -> Result<LogoutOutcome> {
+pub async fn logout(
+    store: &Store,
+    client: &Client,
+    context: Context,
+    revoke_ting: bool,
+) -> Result<LogoutOutcome> {
     let key = SlotKey::new(client.api_url().clone(), context);
     let now = unix_now();
     // With no slot there is nothing to revoke; `login status` already
@@ -282,7 +288,7 @@ pub async fn logout(store: &Store, client: &Client, context: Context) -> Result<
     let idem = IdempotencyKey::parse(&revocation.key)?;
     let result = client
         .with_session(slot.access_token.clone(), slot.org_id.clone())
-        .logout(&revocation.token, &idem)
+        .logout(&revocation.token, &idem, revoke_ting)
         .await;
     let (remote, error) = match &result {
         Ok(()) => (RemoteRevocation::Confirmed, None),
@@ -340,7 +346,11 @@ pub async fn revoke_pending(
             sweep.pending += 1;
             continue;
         };
-        match client.without_session().logout(&r.token, &idem).await {
+        match client
+            .without_session()
+            .logout(&r.token, &idem, false)
+            .await
+        {
             Ok(()) => {
                 sweep.confirmed += 1;
                 done.push(r.key);

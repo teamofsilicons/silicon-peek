@@ -55,8 +55,19 @@ struct ValidatorTests {
         #expect(!report.ok)
         let error = try #require(report.error)
         #expect(error.frame == 14)
-        #expect(error.message.hasPrefix("frame 14 threw: TypeError"), "\(error.message)")
-        #expect(error.stack?.contains("cassette.js:6") == true, "\(error.stack ?? "")")
+        // The CLI prints "✗ frame 14 threw: <message>": the message itself never repeats that prefix.
+        #expect(error.message.hasPrefix("TypeError"), "\(error.message)")
+        #expect(!error.message.contains("threw"), "\(error.message)")
+        let stack = try #require(error.stack)
+        #expect(stack.hasPrefix("at cassette.js:6:"), "\(stack)")
+        #expect(!stack.contains("peek-prelude.js"), "\(stack)")
+        // The offending line with a caret under the failing expression (docs/drawing.md "Validation").
+        let lines = stack.split(separator: "\n").map(String.init)
+        #expect(lines.count >= 3, "\(stack)")
+        #expect(lines[1] == "  return art.colors.dominant", "\(stack)")
+        let caret = try #require(lines[2].firstIndex(of: "^"))
+        let column = lines[2].distance(from: lines[2].startIndex, to: caret)
+        #expect(["a", "."].contains(lines[1][lines[1].index(lines[1].startIndex, offsetBy: column)]), "\(stack)")
         #expect(error.inputSummary?.contains("phase=showing") == true, "\(error.inputSummary ?? "")")
         #expect(report.stats?.frames == 14)
     }
@@ -71,9 +82,13 @@ struct ValidatorTests {
         #expect(clock.now - started < .seconds(5))
         #expect(!report.ok)
         let error = try #require(report.error)
-        #expect(error.message.contains("interrupted"), "\(error.message)")
+        #expect(error.message.hasPrefix("frame 4 was interrupted"), "\(error.message)")
         #expect(error.message.contains("4 ms"))
-        #expect(error.frame == 4)
+        #expect(!error.message.contains("visual.md"))
+        #expect(error.message.contains("https://peek.teamofsilicons.com/docs/drawing#limits"), "\(error.message)")
+        // Not a throw: `frame` stays unset so no "frame 4 threw:" prefix is added; the input is still reported.
+        #expect(error.frame == nil)
+        #expect(error.inputSummary?.contains("phase=entering") == true, "\(error.inputSummary ?? "")")
     }
 
     @Test("an endless loop at the top level is stopped at load")
@@ -139,7 +154,7 @@ struct ValidatorTests {
             peek.frame(ctx => { ctx.fillRect(10, 10, 10, 10); return true })
             """))
         #expect(!report.ok)
-        #expect(report.error?.message == "the 'click' handler threw at frame 25: Error: boom 1")
+        #expect(report.error?.message == "Error: boom 1 (in the 'click' handler)")
         #expect(report.error?.frame == 25)
     }
 
@@ -208,7 +223,48 @@ struct ValidatorTests {
             })
             """))
         #expect(report.ok, "\(report.error?.message ?? "")")
-        #expect(report.warnings.contains { $0.code == "glass_limit" }, "\(report.warnings)")
+        // One warning for one problem: glass_limit, not also an ignored_value about the same fills.
+        let glass = report.warnings.filter { $0.message.contains("glass/blur fills") }
+        #expect(glass.map(\.code) == ["glass_limit"], "\(report.warnings)")
+        #expect(glass.first?.message.contains("https://peek.teamofsilicons.com/docs/drawing#limits") == true)
+    }
+
+    @Test("an unsupported globalCompositeOperation is an ignored_value warning, not a log line")
+    func unsupportedCompositeOperation() async throws {
+        let report = await DrawingValidator.validate(script("""
+            peek.frame(ctx => {
+              ctx.globalCompositeOperation = 'xor'
+              ctx.fillRect(0, 0, 10, 10)
+              return false
+            })
+            """))
+        #expect(report.ok, "\(report.error?.message ?? "")")
+        let ignored = report.warnings.filter { $0.code == "ignored_value" }.map(\.message)
+        #expect(ignored.contains { $0.contains("globalCompositeOperation") && $0.contains("xor") }, "\(report.warnings)")
+        #expect(!report.logs.contains { $0.contains("globalCompositeOperation") }, "\(report.logs)")
+    }
+
+    @Test("warnings cite the public docs, never internal spec sections")
+    func publicDocLinks() async throws {
+        let report = await DrawingValidator.validate(script("""
+            peek.frame((ctx, input) => {
+              ctx.beginPath()
+              ctx.arc(50, 50, 20 + 10 * Math.sin(input.t * 20), 0, Math.PI * 2)
+              ctx.fillGlass()
+              ctx.font = '8px system-ui'
+              ctx.fillText('hi', 10, 10)
+              return true
+            })
+            """))
+        #expect(report.ok, "\(report.error?.message ?? "")")
+        #expect(!report.warnings.isEmpty)
+        for warning in report.warnings {
+            #expect(!warning.message.contains("visual.md"), "\(warning.message)")
+        }
+        let outline = try #require(report.warnings.first { $0.code == "glass_outline_unstable" })
+        #expect(outline.message.contains("https://peek.teamofsilicons.com/docs/drawing#glass-what-is-cheap-and-what-is-not"))
+        let compact = try #require(report.warnings.first { $0.code == "text_in_compact" })
+        #expect(compact.message.contains("https://peek.teamofsilicons.com/docs/drawing#rules-for-good-drawings"))
     }
 
     @Test("unknown colours and fonts are reported as warnings, and peek.log reaches the logs")

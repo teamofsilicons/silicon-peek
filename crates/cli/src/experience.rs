@@ -325,7 +325,7 @@ pub fn notes(path: &str) -> String {
             "iam",
         ),
         "peek logout" => (
-            "Examples:\n  peek logout\n  peek logout --json\n\n\
+            "Examples:\n  peek logout\n  peek logout --json\n  peek logout --revoke-ting     also remove this Silicon's Ting grant (every home)\n\n\
              Next:\n  peek login status --json     now answers authenticated:false\n  peek login '<SLT>'           log in again",
             "iam",
         ),

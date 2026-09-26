@@ -11,8 +11,8 @@ use silicon_peek_client::{
     identity::{ActorId, Context, OrgId, SlotIndex, SlotInfo},
     ipc::{
         cli::{
-            DeliveriesStatus, DrawingStatus, QueueStatus, RegisterSideResult, StatusResult,
-            UnregisterResult,
+            CarbonStatus, DeliveriesStatus, DrawingStatus, QueueStatus, RegisterSideResult,
+            StatusResult, UnregisterResult,
         },
         ui::{CancelReason, SlotDrawing, SlotState, SlotsState},
     },
@@ -351,8 +351,10 @@ impl Shared {
     /// # Errors
     /// Database failures.
     pub async fn status(self: &SharedRef, caller: &Caller) -> Result<StatusResult> {
+        const TING: &str = "'ting'";
+        const DRAWING: &str = "'drawing.put','drawing.delete'";
         let k = caller.key.clone();
-        let (slot, drawing, pending_asks, deliveries) = self
+        let (slot, drawing, pending_asks, deliveries, server_sync) = self
             .db
             .call(move |c| {
                 let slot = crate::bubbles::slot_of(c, &k)?;
@@ -372,19 +374,28 @@ impl Shared {
                         |r| r.get(0),
                     )
                     .sql()?;
-                let counts = |status: &str| -> Result<i64> {
+                // `deliveries` are Ting events only; the drawing's backend
+                // copy is reported as `drawing.server_sync`.
+                let counts = |kinds: &str, status: &str| -> Result<i64> {
                     c.query_row(
-                        "SELECT count(*) FROM outbox WHERE status = ?4 AND context = ?1 AND org_id = ?2 AND actor_id = ?3",
+                        &format!("SELECT count(*) FROM outbox WHERE kind IN ({kinds}) AND status = ?4 AND context = ?1 AND org_id = ?2 AND actor_id = ?3"),
                         params![k.context_str(), k.org.as_str(), k.actor.as_str(), status],
                         |r| r.get(0),
                     )
                     .sql()
                 };
-                let pending = counts("pending")?;
-                let authority = counts("authority_required")?;
+                let pending = counts(TING, "pending")?;
+                let authority = counts(TING, "authority_required")?;
+                let server_sync = if counts(DRAWING, "authority_required")? > 0 {
+                    "authority_required"
+                } else if counts(DRAWING, "pending")? > 0 {
+                    "pending"
+                } else {
+                    "synced"
+                };
                 let last_error: Option<String> = c
                     .query_row(
-                        "SELECT last_error_code FROM outbox WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3
+                        "SELECT last_error_code FROM outbox WHERE kind = 'ting' AND context = ?1 AND org_id = ?2 AND actor_id = ?3
                            AND status != 'accepted' AND last_error_code IS NOT NULL
                          ORDER BY next_attempt_at DESC LIMIT 1",
                         params![k.context_str(), k.org.as_str(), k.actor.as_str()],
@@ -392,7 +403,13 @@ impl Shared {
                     )
                     .optional()
                     .sql()?;
-                Ok((slot, drawing, pending_asks, (pending, authority, last_error)))
+                Ok((
+                    slot,
+                    drawing,
+                    pending_asks,
+                    (pending, authority, last_error),
+                    server_sync,
+                ))
             })
             .await?;
         let mut warnings = Vec::new();
@@ -408,6 +425,7 @@ impl Shared {
                 last_error: last_error
                     .and_then(|e| serde_json::from_str::<Value>(&e).ok())
                     .and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_owned)),
+                server_sync: Some(server_sync.to_owned()),
             }),
             queue: QueueStatus {
                 pending: self.queued_count(&caller.key).await,
@@ -419,6 +437,13 @@ impl Shared {
                 last_error: deliveries.2,
             },
             ui_running: self.ui.is_connected(),
+            carbon: Some({
+                let p = self.ui.presence();
+                CarbonStatus {
+                    available: p.available,
+                    reason: p.reason,
+                }
+            }),
             warnings,
         })
     }

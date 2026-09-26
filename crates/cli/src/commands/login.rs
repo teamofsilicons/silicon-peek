@@ -25,7 +25,7 @@ use silicon_peek_client::{
 
 use super::{fresh, is_unauthenticated, next, sweep_revocations};
 use crate::{
-    cli::{AfterLoginArgs, LoginArgs, LoginCommand},
+    cli::{AfterLoginArgs, LoginArgs, LoginCommand, LogoutArgs},
     context::{Globals, Session, cli_refresh_policy},
     input,
     output::Out,
@@ -574,7 +574,7 @@ fn print_rejected(session: &Session, out: Out) -> Result<()> {
     Ok(())
 }
 
-pub async fn logout(g: &Globals, out: Out) -> Result<()> {
+pub async fn logout(g: &Globals, args: &LogoutArgs, out: Out) -> Result<()> {
     let human = |v: &Value| match v["remote_revocation"].as_str() {
         Some("pending") => {
             "logged out locally; the backend revocation is pending and will be retried".to_owned()
@@ -598,9 +598,21 @@ pub async fn logout(g: &Globals, out: Out) -> Result<()> {
             detach_now(&auth).await;
         }
     }
-    let outcome = login::logout(&session.store, &session.client, session.context).await?;
+    let outcome = login::logout(
+        &session.store,
+        &session.client,
+        session.context,
+        args.revoke_ting,
+    )
+    .await?;
     let value = json!({"authenticated": false, "remote_revocation": outcome.remote_revocation});
     out.value(&value, human);
+    if args.revoke_ting && outcome.remote_revocation == RemoteRevocation::Pending {
+        // A queued retry never carries the bearer, so it cannot revoke the grant.
+        out.hint("the Ting grant was not revoked: the queued retry cannot carry it. Log in again and run `peek logout --revoke-ting` if you still want it gone");
+    } else if !args.revoke_ting && outcome.actor.is_some() {
+        out.hint("the Ting grant stays for other homes of this Silicon; `peek logout --revoke-ting` removes it too");
+    }
     if outcome.remote_revocation == RemoteRevocation::Pending {
         out.hint(format!(
             "the backend could not confirm the revocation ({}); it stays queued and the next peek run retries it",

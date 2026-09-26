@@ -157,12 +157,16 @@ pub(crate) fn check_text(
     if count < min {
         return Err(Error::invalid_input(format!(
             "`{field}` is empty; it needs at least {min} character(s)"
-        )));
+        ))
+        .with_hint(format!("give `{field}` visible text"))
+        .with_details(json!({"field": field, "min": min, "actual": count})));
     }
     if min > 0 && value.trim().is_empty() {
         return Err(Error::invalid_input(format!(
             "`{field}` contains only whitespace; give it visible text"
-        )));
+        ))
+        .with_hint(format!("give `{field}` visible text"))
+        .with_details(json!({"field": field})));
     }
     let bad = value
         .chars()
@@ -176,7 +180,9 @@ pub(crate) fn check_text(
             } else {
                 "only line breaks and tabs are allowed"
             }
-        )));
+        ))
+        .with_hint(format!("remove control characters from `{field}`"))
+        .with_details(json!({"field": field, "character": format!("U+{:04X}", u32::from(c))})));
     }
     Ok(())
 }

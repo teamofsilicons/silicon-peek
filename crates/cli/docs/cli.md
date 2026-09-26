@@ -11,7 +11,7 @@ peek
 ├── iam [--json]                                   IAM discovery; offline; works before login
 ├── login [<SLT>] [--token-file <PATH|->] [--recover]  exchange an IAM short-lived token
 │   └── status [--json]                            live-verified identity; {"authenticated":bool,…}
-├── logout                                         revoke this home's peek session (+ Ting grant)
+├── logout [--revoke-ting]                         revoke this home's peek session (the Ting grant only with --revoke-ting)
 ├── config
 │   ├── set '<json-object>'                        strict merge; prints the resulting config
 │   ├── show | get <key> | unset <key>
@@ -40,7 +40,7 @@ peek
 │   └── status | restart
 ├── docs [<TOPIC>] [--search <TEXT>] [--all]       bundled offline manuals
 ├── commands [--json]                              machine-readable command tree
-├── report <MESSAGE> [--pr <URL>] [--via backend|gh] [--attach-status]
+├── report <MESSAGE> [--pr <URL>] [--via backend|gh] [--attach-status] [--dry-run]
 ├── update                                         Honeycomb guidance JSON (never self-replaces)
 ├── doctor                                         diagnostics with exact fixes
 └── --version | --help
@@ -65,7 +65,7 @@ Other environment the CLI reads:
 | Variable | Use |
 |---|---|
 | `SILICON_HOME` | The store root: state lives in `$SILICON_HOME/.peek/`. Unset falls back to your real home (`~/.peek/`). Empty or non-existent is an error (`invalid_silicon_home`). |
-| `ISI` | Optional. Recorded with each send and echoed as `metadata.isi` in Ting events. At most 160 characters on one line. Never grants authority. |
+| `ISI` | Optional. Recorded with each send and echoed as `metadata.isi` in Ting events. At most 160 characters on one line; an invalid value is dropped with an `isi_ignored` warning and never fails the send. Never grants authority. |
 | `PEEK_DAEMON_SOCKET` | Tests and isolated runs only: overrides the helper's socket path ([Development](development.md#isolated-run-mode)). |
 | `SILICON_HONEYCOMB` | The Honeycomb binary `peek doctor` checks, instead of the one on `PATH` or `~/.honeycomb/dir/system/bin`. |
 
@@ -85,6 +85,7 @@ The CLI **never** reads `IAM_TEST_APP_SECRET` or `IAM_TEST_KEY` (those belong to
 - When a testing environment is selected, the last stderr line is always `Testing environment: <name> (<uuid>)`. stdout stays pure JSON.
 - If your drawing fell back on screen, the next `peek send`, `peek register side` or `peek status` result carries a `drawing_fallback_active` warning with the error message and stack. It is attached once; other commands do not carry it, and `peek status` shows `drawing.active: false` until you register a drawing again.
 - Results that can carry notes have a `warnings` array of `{"code","message","details"?}`. In human mode each warning is also printed to stderr as `warning: <message> (<code>)`.
+- `invalid_input` and `invalid_json` errors carry `details.field`, the field that failed (for example the option whose label repeats another).
 
 ## Exit codes
 
@@ -110,7 +111,7 @@ peek iam --json
 ```
 
 ```json
-{"app_id":"peek","org_id":"tos","name":"Peek","version":"0.1.0","api_version":"v1",
+{"app_id":"peek","org_id":"tos","name":"Peek","version":"0.1.1","api_version":"v1",
  "api_url":"https://backend.peek.teamofsilicons.com","iam_url":"https://backend.iam.teamofsilicons.com",
  "auth_url":"https://auth.iam.teamofsilicons.com","login_method":"short_lived_token","credential_issuer":false,
  "login":"Mint an SLT with `iam silicon-login --app-id peek --grant-org <org> --approve-scopes` (Silicon) or `iam login --app-id peek --grant-org <org>` (Carbon), then run `peek login '<SLT>'`.",
@@ -171,13 +172,14 @@ peek login status --json
 
 ## peek logout
 
-Revokes this home's peek session and its Ting recipient grant, then cancels this Silicon's undelivered answers on this Mac.
+Revokes this home's peek session, then cancels this home's undelivered answers on this Mac. The Silicon's Ting recipient grant is **kept**, because every home logged in as the same `si:` shares it; logging out one home never stops another home's answers.
 
 ```sh
-peek logout
+peek logout                  # this home only; the Ting grant stays
+peek logout --revoke-ting    # also remove this Silicon's Ting grant for peek
 ```
 
-Prints `{"authenticated":false,"remote_revocation":"confirmed"|"pending"}` and exits **0** in both cases. `pending` means the local session is gone but the backend could not be reached; the revocation is retried by the next `peek` run. A home without a session also answers `confirmed`. `peek logout --help` exits 0 (Stemcell probes it).
+Prints `{"authenticated":false,"remote_revocation":"confirmed"|"pending"}` and exits **0** in both cases. After `--revoke-ting`, every home of this Silicon shows `"ting":{"subscribed":false}` in `peek login status`, its sends carry a `ting_not_enrolled` warning, and `peek ting enroll` (or a new login) restores delivery. `pending` means the local session is gone but the backend could not be reached; the revocation is retried by the next `peek` run. A home without a session also answers `confirmed`. `peek logout --help` exits 0 (Stemcell probes it).
 
 ## peek config
 
@@ -206,7 +208,7 @@ peek config telemetry off
 
 ## peek ting enroll
 
-Registers (or re-registers) this Silicon as a Ting recipient for peek. Login does this automatically; run it yourself when `peek login status` shows `"ting":{"subscribed":false}` or a delivery is stuck on `recipient_not_registered`. peek never re-enrolls on its own, because that would undo a grant you revoked on purpose.
+Registers (or re-registers) this Silicon as a Ting recipient for peek. Login does this automatically; run it yourself when `peek login status` shows `"ting":{"subscribed":false}`, a send carries a `ting_not_enrolled` warning, or a delivery is stuck on `recipient_not_registered`. peek never re-enrolls on its own, because that would undo a grant you revoked on purpose. Events waiting in `authority_required` for the enrollment are retried right away.
 
 ```sh
 peek ting enroll --json        # {"subscribed":true,"subscription_id":"sub_…"}
@@ -277,8 +279,8 @@ Speaks, shows or asks on the Carbon's screen. Returns immediately.
 | `--show <JSON\|@FILE\|->` | 1–3 text or image elements. See [Speak and show](show.md). |
 | `--ask <JSON\|@FILE\|->` | One question: text, single_choice, multiple_choice, slider or range. See [Ask a question](ask.md). |
 | `--voice <aura-2-name-lang>` | Overrides config `voice`, which overrides the per-language default. Needs `--speak`. |
-| `--lang <bcp47>` | Forces the TTS language instead of detecting it. Needs `--speak`. |
-| `--duration <SECS>` | 1–120. How long a show stays when there is no speech, or after the speech ends. Needs `--show` or `--speak`; not with `--ask`. |
+| `--lang <bcp47>` | Forces the TTS language instead of detecting it. Any BCP 47 tag works; its primary subtag picks the language (`es-MX` speaks Spanish). Needs `--speak`. |
+| `--duration <SECS>` | 1–120. How long a show stays when there is no speech, or after the speech ends. Without it, a bubble with speech slides back 1.5 s after the speech ends; the text-length default applies only to a show without speech. Needs `--show` or `--speak`; not with `--ask`. |
 | `--expires-in <SECS>` | 10 s to 7 days, asks only. An unanswered ask then slides away and you receive `peek.ask.expired`. |
 | `--notify speech_finished,show_dismissed` | Opt in to those events for this send (default: config `notify`). |
 | `--wait[=<SECS>]` | Asks only. Keep the command open for the answer (default 120, at most 600). Write `--wait=60`, with the `=`; a bare `--wait` means 120. |
@@ -288,29 +290,36 @@ Rules, checked before anything is shown:
 - At least one of `--speak`, `--show`, `--ask` (`nothing_to_send`, exit 2).
 - `--show` and `--ask` are mutually exclusive, and the flags above must match what you send (`conflicting_flags`, exit 2).
 - `@FILE` and `-` read the JSON from a file (relative to the current directory) or stdin. Image paths inside are also resolved against the current directory, and the CLI reads the bytes itself.
-- Unknown JSON fields and duplicate keys are rejected (`invalid_input`, `invalid_json`). Lengths count Unicode scalar values.
+- Unknown JSON fields and duplicate keys are rejected (`invalid_input`, `invalid_json`), and so are two options with the same label (`invalid_input`). `details.field` names the field. Lengths count Unicode scalar values.
 - You need a position and a drawing (`side_not_registered`, `drawing_not_registered`, exit 4).
 
 ```json
 {"send_id":"snd_0192…","ask_id":"ask_0192…"|null,"slot":3,"status":"showing"|"queued",
  "speech":{"status":"pending"|"cached"|"skipped"|"unsupported_language","model":"aura-2-thalia-en","chars":42}|null,
- "warnings":[{"code":"speak_language_unsupported","message":"…"}]}
+ "warnings":[{"code":"carbon_away","message":"…"}]}
 ```
 
-`speech` is `null` when there is no `--speak`.
+`speech` is `null` when there is no `--speak`. `status` is `queued` when an ask of yours is on screen, or when the Carbon is away.
 
-With `--wait`, the command prints the final answer instead:
+| Warning | Meaning |
+|---|---|
+| `carbon_away` | The Carbon's screen is locked or the display is asleep. Nothing is shown to nobody: the send waits in your queue and is shown, in order, when the Carbon is back. An ask keeps its `--expires-in` clock while it waits, and speech starts only when the bubble is shown. |
+| `ting_not_enrolled` | This Silicon is not a Ting recipient for peek, so answers cannot be delivered; they wait on the Mac. Run `peek ting enroll`. |
+| `isi_ignored` | `$ISI` was invalid and was dropped from this send (no `metadata.isi` in its events). |
+| `speak_language_unsupported` | The speech language has no voice (`details.language`); the text shows as a pill instead. |
+
+With `--wait`, the command prints the final answer instead. Whatever it prints replaces the Ting event for that ask, so each outcome reaches you through exactly one channel:
 
 ```jsonc
 // answered in time (no Ting event is sent for this answer)
 {"ask_id":"ask_…","send_id":"snd_…","state":"answered","answer":{"kind":"single_choice","option_id":"keep","label":"Keep"},"via":"click","transcript":null,"answered_at":"…Z"}
-// dismissed, expired or cancelled while waiting
+// dismissed, expired or cancelled while waiting (no peek.ask.dismissed or peek.ask.expired is sent either)
 {"ask_id":"ask_…","send_id":"snd_…","state":"dismissed"}
 // timeout: exit 0, and the answer is delivered by Ting later
 {"ask_id":"ask_…","send_id":"snd_…","state":"pending","delivery":"ting"}
 ```
 
-Queueing is per position: a new show replaces a visible show; while an ask is pending, up to 5 new sends queue behind it, then `slot_busy` (exit 4). Your ISIs share this queue.
+Queueing is per position: a new show replaces a visible show; while an ask is pending, or while the Carbon is away, up to 5 new sends queue, then `slot_busy` (exit 4). Your ISIs share this queue.
 
 ## peek ask
 
@@ -343,21 +352,36 @@ peek history --limit 50 --json
 ```
 
 - `--limit` is 1–200 (default 50); page with `--before <SEND_ID>`.
+- `close_reason` says how the bubble left the screen (it is absent while the send is still queued or showing):
+
+| `close_reason` | Meaning |
+|---|---|
+| `speech_done` | the speech ended and the bubble slid back 1.5 s later |
+| `auto` | a show without speech (or its `--duration`) ran out |
+| `answered` | the Carbon answered the ask |
+| `dismissed` | the Carbon closed it (Esc or the down-arrow) |
+| `expired` | the ask reached its `--expires-in` |
+| `cancelled` | you withdrew it (`peek ask cancel`, `peek unregister`) |
+| `replaced` | your next show replaced it |
+| `ui_disconnected`, `daemon_restarted` | Peek.app quit, or the helper restarted, while it was on screen |
+
 - An item carries a `warnings` array (the same `{"code","message"}` shape as everywhere else) when something went wrong after `peek send` had already returned. Today that is `speech_failed` (the speech could not be played, so the text showed as a pill instead) or `speech_unavailable` (speech is not available for this Silicon or org right now, for example an org key that stopped working). The field is left out when there is nothing to report. In human mode the codes follow the row in brackets, such as `[speech_failed]`.
 
 ## peek status
 
-One view of everything that matters for this Silicon on this Mac: position, drawing, queue, pending asks, deliveries, Peek.app and the helper.
+One view of everything that matters for this Silicon on this Mac: position, drawing, queue, pending asks, deliveries, whether the Carbon is there, Peek.app and the helper.
 
 ```sh
 peek status --json
 # {"actor_id":"si:dj","context":"production",
 #  "slot":{"index":3,"side":"right"},"drawing":{"sha256":"…","bytes":3174,"active":true,"last_error":null},
 #  "queue":{"pending":0},"pending_asks":1,"deliveries":{"pending":0,"authority_required":0,"last_error":null},
-#  "ui_running":true,"daemon":{"running":true,"version":"0.1.0","protocol":1},"app":{"build":1000,"ui_running":true}}
+#  "carbon":{"available":true,"reason":"ok"},
+#  "ui_running":true,"daemon":{"running":true,"version":"0.1.1","protocol":1},"app":{"build":1001,"ui_running":true}}
 ```
 
-- `slot` and `drawing` are `null` until you register them. `drawing.active` is `false` while the fallback visual shows.
+- `slot` and `drawing` are `null` until you register them. `drawing.active` is `false` while the fallback visual shows. `drawing.server_sync` is the state of the drawing's backend copy (`synced`, `pending` or `authority_required`); `deliveries` counts Ting events only.
+- `carbon.available` is `false` while the Carbon's screen is locked (`reason:"locked"`), the display is asleep (`"asleep"`) or off (`"display_off"`). Sends then wait in `queue` and are shown when it turns `true` again. An older Peek.app that never reports presence counts as available.
 - `deliveries.authority_required` greater than 0 means answers are waiting for a valid session or Ting enrollment; `peek login status` and `peek doctor` say which.
 - `warnings` appears when there is a pending note such as `drawing_fallback_active` (attached once, to the first `peek send`, `peek register side` or `peek status` after the fallback).
 
@@ -393,7 +417,7 @@ Manage Peek.app on this Mac.
 
 ```sh
 peek daemon status --json
-# {"running":true,"pid":812,"version":"0.1.0","protocol":1,"socket":"/var/tmp/silicon-peek-501/peekd.sock","ui":{"running":true,"build":1000},"homes":3}
+# {"running":true,"pid":812,"version":"0.1.1","protocol":1,"socket":"/var/tmp/silicon-peek-501/peekd.sock","ui":{"running":true,"build":1001},"homes":3}
 peek daemon restart --json
 # the same shape, plus "restarted":true and "via" (how it was restarted)
 ```
@@ -438,6 +462,7 @@ peek report "send --ask fails with invalid_input when an option label has an emo
 - `--pr` must be `https://github.com/teamofsilicons/silicon-peek/pull/<n>`. Without it, a hint on stderr invites you to send a fix.
 - `--attach-status` adds the non-secret `peek doctor` output.
 - `--via gh` files it with your own `gh` instead (`gh issue create --repo teamofsilicons/silicon-peek`), and prints `"id":null,"status":"filed","via":"gh"`. A missing `gh` fails with `not_found` (exit 4); a failing `gh` with `gh_failed` (exit 5).
+- `--dry-run` prints the report exactly as it would be filed and sends nothing. Use it to check what you would send; reports become public GitHub issues.
 - Refused under `--test` with `conflicting_flags` (exit 2): reports go to the production tracker.
 
 peek is open source. The best report says exactly how to reproduce the bug, and links the fix. See [Development](development.md).
@@ -447,8 +472,8 @@ peek is open source. The best report says exactly how to reproduce the bug, and 
 peek never replaces itself. Honeycomb updates the CLI every minute, and the helper updates Peek.app. `peek update` tells you what is installed and how to update by hand:
 
 ```json
-{"manager":"honeycomb","app_id":"peek","current_version":"0.1.0","auto_update":true,"can_replace_running_binary":false,
- "command":"honeycomb update 'peek'","app":{"build":1000,"best_offer":1000},"message":"Honeycomb manages the peek CLI: …"}
+{"manager":"honeycomb","app_id":"peek","current_version":"0.1.1","auto_update":true,"can_replace_running_binary":false,
+ "command":"honeycomb update 'peek'","app":{"build":1001,"best_offer":1001},"message":"Honeycomb manages the peek CLI: …"}
 ```
 
 `auto_update` is `false` when `HONEYCOMB_AUTO_UPDATE` is off. `app` is `null` on Linux and Windows.
@@ -460,7 +485,7 @@ Runs every check and prints the exact fix for anything that is wrong. It always 
 ```sh
 peek doctor --json
 # {"checks":[{"name":"…","status":"ok"|"warn"|"fail","detail":"…","fix":"…"|null}, …],
-#  "summary":{"ok":9,"warn":1,"fail":0},"version":"0.1.0","platform":"macos-aarch64"}
+#  "summary":{"ok":13,"warn":1,"fail":0},"version":"0.1.1","platform":"macos-aarch64"}
 ```
 
-Checks, by `name`: `store` (permissions), `session`, `pending_login`, `revocations` and `ting` (session, rejection and enrollment state), `backend` (`/readyz`), `honeycomb` (0.5.0 or newer), and on a Mac `app` (installed, signature, build), `agent` (the background item), `install_log`, `daemon` (socket and protocol), `mic` (permission, reported by Peek.app), `hotkeys` and `outbox` (the delivery backlog). See [Troubleshooting](troubleshooting.md).
+Checks, by `name`: `store` (permissions), `session`, `pending_login` (a login whose response was lost), `revocations` (logout revocations still being retried) and `ting` (enrollment), `backend` (`/readyz`), `honeycomb` (0.5.0 or newer), and on a Mac `app` (installed, signature, build), `agent` (the background item), `install_log`, `daemon` (socket and protocol), `mic` (permission, reported by Peek.app), `hotkeys` and `outbox` (the delivery backlog). Every check is always listed; one with nothing to report is `ok`. See [Troubleshooting](troubleshooting.md).

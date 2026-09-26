@@ -85,6 +85,11 @@ public actor DaemonLink: DaemonLinking {
     private var eventSubscribers: [UUID: AsyncStream<DaemonEvent>.Continuation] = [:]
     private var stateSubscribers: [UUID: AsyncStream<DaemonLinkState>.Continuation] = [:]
     private var requestHandler: (@Sendable (DaemonRequest) async -> DaemonReply)?
+    /// The latest presence the app reported, what this connection's peekd acknowledged, and whether it refused the op.
+    private var presence: PresenceRequest?
+    private var sentPresence: PresenceRequest?
+    private var presenceUnsupported = false
+    private var presenceFlushing: FrameConnection?
 
     public init(configuration: Configuration) {
         self.configuration = configuration
@@ -150,6 +155,36 @@ public actor DaemonLink: DaemonLinking {
         requestHandler = handler
     }
 
+    public func setPresence(_ presence: PresenceRequest) async {
+        self.presence = presence
+        guard case .connected = state, let connection else { return }
+        await flushPresence(on: connection)
+    }
+
+    /// Sends the newest presence until peekd acknowledged it, one request at a time so a quick lock → unlock
+    /// never arrives out of order. An older peekd answers `unknown_op`: then nothing more is sent until the next hello.
+    private func flushPresence(on conn: FrameConnection) async {
+        guard presenceFlushing !== conn else { return }  // the running loop picks up the newest value
+        presenceFlushing = conn
+        defer { if presenceFlushing === conn { presenceFlushing = nil } }
+        while connection === conn, !presenceUnsupported, let wanted = presence, wanted != sentPresence {
+            do throws(DaemonLinkError) {
+                _ = try await perform(wanted, blobs: [], on: conn, timeout: configuration.helloTimeout)
+                guard connection === conn else { return }
+                sentPresence = wanted
+                logger.debug("peekd acknowledged presence available=\(wanted.available) reason=\(wanted.reason.rawValue)")
+            } catch {
+                if case .remote(_, let body) = error, body.code == "unknown_op" {
+                    presenceUnsupported = true
+                    logger.info("peekd does not take presence (older build); it keeps pushing peeks while the screen is locked")
+                } else {
+                    logger.notice("presence was not delivered: \(error.description)")
+                }
+                return
+            }
+        }
+    }
+
     // MARK: Connection loop
 
     private func runLoop() async {
@@ -181,6 +216,10 @@ public actor DaemonLink: DaemonLinking {
                 }
                 attempt = 0
                 logger.info("connected to peekd \(hello.peekdVersion ?? "?") at \(self.configuration.socketPath)")
+                // A new (or restarted) peekd knows nothing: presence goes first, before any bubble is pushed to nobody.
+                sentPresence = nil
+                presenceUnsupported = false
+                await flushPresence(on: conn)
                 setState(.connected(hello))
             } catch {
                 conn.close()

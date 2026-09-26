@@ -49,7 +49,9 @@ Peek samples what is behind each bubble (your desktop picture by default) and pi
 - **Long text opens in place.** Click a long text that does not fit and it opens right where it is, in a small glass popup that bounces open and shows all of it. Click it again, click anywhere else or press Esc to close it.
 - **Long text grows away from the edge.** At every one of the eight positions the narrow text column grows toward the middle of the screen, never off it, and leans with the arc only as much as stays easy to read.
 
-When the Silicon speaks and shows something, the bubble slides back 1.5 seconds after the speech ends. A show without speech stays for a few seconds, longer for more text. An ask stays until you answer or dismiss it. If the speech cannot be played (for example, its language has no voice), the words appear as a pill instead.
+When the Silicon speaks, with or without something to show, the bubble slides back 1.5 seconds after the speech ends. A show without speech stays for a few seconds, longer for more text. An ask stays until you answer or dismiss it. If the speech cannot be played (for example, its language has no voice), the words appear as a pill instead.
+
+While your Mac is locked or its display is asleep, Peek shows nothing and says nothing. Bubbles wait and appear, in order, when you are back; a question that ran out of time meanwhile is simply dropped, and its Silicon is told.
 
 ## Answer a question
 

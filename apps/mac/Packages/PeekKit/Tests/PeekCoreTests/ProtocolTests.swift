@@ -83,6 +83,11 @@ struct ProtocolTests {
         #expect(telemetry["events"] == [["id": "evt_1", "type": "glass_mode", "data": ["mode": "live"]]])
         #expect(try header(SettingsChangedRequest(key: .showTestPeeks, value: false))
             == ["v": 1, "id": "id-1", "op": "settings.changed", "key": "show_test_peeks", "value": false])
+        #expect(try header(PresenceRequest(available: false, reason: .locked))
+            == ["v": 1, "id": "id-1", "op": "presence", "available": false, "reason": "locked"])
+        #expect(try header(PresenceRequest(available: false, reason: .displayOff))["reason"] == "display_off")
+        #expect(try header(PresenceRequest.available) == ["v": 1, "id": "id-1", "op": "presence", "available": true,
+                                                          "reason": "ok"])
     }
 
     @Test("ops are the §1.6 names")

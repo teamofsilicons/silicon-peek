@@ -54,6 +54,15 @@ impl Show {
     /// # Errors
     /// `invalid_input`, `too_many_elements`, `text_too_long`, `caption_too_long`.
     pub fn from_input(value: &Value) -> Result<Self> {
+        Self::parse_input(value).map_err(|e| {
+            e.with_input_context(
+                "show",
+                "see `peek docs show` for the element types, their fields and limits",
+            )
+        })
+    }
+
+    fn parse_input(value: &Value) -> Result<Self> {
         let obj = value.as_object().ok_or_else(|| {
             Error::invalid_input(format!("--show must be a JSON object, got {}", kind(value)))
         })?;

@@ -704,7 +704,8 @@ impl Shared {
             let _ = std::fs::remove_file(self.paths.recording(subject));
         }
         if !matches!(outcome, Outcome::Accepted { .. }) {
-            tracing::info!(event = %row.event_id, status, code = ?outcome.code(), "delivery attempt did not complete");
+            let code = outcome.code().unwrap_or("none");
+            tracing::info!(event = %row.event_id, status, code, "delivery attempt did not complete");
         }
         let mut rec = Record::new(
             "delivery.attempt",

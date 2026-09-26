@@ -102,7 +102,7 @@ Then, in order (every step changes remote state):
    ```
 5. Register the six Ting types in the test context, with descriptions byte-identical to production ([Ting events](ting.md)), using a test Ting session (`IAM_TEST_APP_SECRET=$TING_TS IAM_TEST_KEY=$ROOT ting login --token-stdin`).
 6. Log the test Silicon in to peek: `printf %s "$PEEK_TS" | SILICON_HOME=$H SILICON_ORG=tos peek --app-secret-file - login si:peek-tester`.
-7. Give the test Silicon a Ting webhook (`ting login`, `ting org use tos`, `ting webhook http://127.0.0.1:18777/events`) and run the loop above.
+7. Give the test Silicon a Ting webhook (`ting login`, `ting org use tos`, `ting webhook http://127.0.0.1:18777/events`; the same steps as [Receive answers without Stemcell](ting.md#receive-answers-without-stemcell)) and run the loop above.
 
 After `honeycomb environments action $ENV clean`, repeat steps 2 to 7. The repository ships `scripts/testing/bootstrap.sh`, which does this idempotently.
 

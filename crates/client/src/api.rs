@@ -188,12 +188,21 @@ pub struct RefreshRequest {
     pub refresh_token: Secret,
 }
 
-/// `POST /api/v1/auth/logout` body: exactly `{"token":"ort_…"}`.
+/// `POST /api/v1/auth/logout` body: `{"token":"ort_…"}`, plus
+/// `"revoke_ting":true` only for `peek logout --revoke-ting`.
+///
+/// The Ting recipient grant belongs to the Silicon, not to one home: other
+/// homes of the same Silicon (Stemcell plus a hand-run home) keep receiving
+/// answers through it, so a plain logout leaves it alone. `revoke_ting` is
+/// omitted when false, so a default logout stays `{"token"}` for any backend.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogoutRequest {
     /// The refresh token to revoke.
     pub token: Secret,
+    /// Also revoke the Silicon's Ting recipient grant (needs the bearer).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub revoke_ting: bool,
 }
 
 /// Ting enrollment state reported by login, `me` and `ting enroll`.
@@ -797,8 +806,17 @@ mod tests {
         assert_eq!(serde_json::to_string(&r)?, r#"{"refresh_token":"ort_x"}"#);
         let l = LogoutRequest {
             token: Secret::new("ort_x"),
+            revoke_ting: false,
         };
         assert_eq!(serde_json::to_string(&l)?, r#"{"token":"ort_x"}"#);
+        let l = LogoutRequest {
+            token: Secret::new("ort_x"),
+            revoke_ting: true,
+        };
+        assert_eq!(
+            serde_json::to_string(&l)?,
+            r#"{"token":"ort_x","revoke_ting":true}"#
+        );
         let s = SpeechTokenRequest {
             purpose: SpeechPurpose::Stt,
         };

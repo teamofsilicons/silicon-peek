@@ -508,6 +508,62 @@ impl Op for UiStatusReport {
     type Output = Empty;
 }
 
+/// Why the Carbon can or cannot see bubbles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PresenceReason {
+    /// The screen is on and unlocked.
+    #[default]
+    Ok,
+    /// The screen is locked (or the session is inactive, e.g. fast user
+    /// switching).
+    Locked,
+    /// The displays are asleep.
+    Asleep,
+    /// No display is on.
+    DisplayOff,
+    /// A reason this peekd does not know (a newer app); read as sent by the
+    /// `available` flag alone.
+    #[serde(other)]
+    Other,
+}
+
+/// `presence` (UI → peekd, additive): whether the Carbon can see bubbles.
+/// Peek.app sends it right after its `hello` and on every change (screen
+/// locked/unlocked, displays asleep/awake, session resigned/active).
+///
+/// While `available` is false peekd pushes no `peek.show` and starts no
+/// speech: new sends wait in their Silicon's queue (status `queued`, warning
+/// `carbon_away`) and asks keep their expiry clock. When it turns true again
+/// the queued sends are shown in order. An app that never sends `presence`
+/// is treated as available.
+///
+/// ```json
+/// {"available":false,"reason":"locked"}
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Presence {
+    /// Whether bubbles can be seen.
+    pub available: bool,
+    /// Why.
+    #[serde(default)]
+    pub reason: PresenceReason,
+}
+
+impl Default for Presence {
+    fn default() -> Self {
+        Self {
+            available: true,
+            reason: PresenceReason::Ok,
+        }
+    }
+}
+
+impl Op for Presence {
+    const NAME: &'static str = "presence";
+    type Output = Empty;
+}
+
 /// `message`: a typed Carbon message with no pending ask.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageOp {
@@ -753,6 +809,34 @@ mod tests {
         let old: VoiceSubmitResult =
             serde_json::from_value(json!({})).map_err(|e| Error::internal(e.to_string()))?;
         assert_eq!(old.message_id, None);
+        Ok(())
+    }
+
+    #[test]
+    fn presence_round_trips_and_reads_new_reasons() -> Result<()> {
+        let e = |e: serde_json::Error| Error::internal(e.to_string());
+        let p: Presence =
+            serde_json::from_value(json!({"available": false, "reason": "display_off"}))
+                .map_err(e)?;
+        assert_eq!(
+            p,
+            Presence {
+                available: false,
+                reason: PresenceReason::DisplayOff
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(Presence::default()).map_err(e)?,
+            json!({"available": true, "reason": "ok"})
+        );
+        let newer: Presence =
+            serde_json::from_value(json!({"available": false, "reason": "screensaver"}))
+                .map_err(e)?;
+        assert_eq!(newer.reason, PresenceReason::Other);
+        let bare: Presence = serde_json::from_value(json!({"available": true})).map_err(e)?;
+        assert_eq!(bare, Presence::default());
+        let req = Request::new(&p, None, Vec::new())?;
+        assert_eq!(req.op, "presence");
         Ok(())
     }
 

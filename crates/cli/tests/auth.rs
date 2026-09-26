@@ -268,8 +268,6 @@ async fn status_after_logout_is_logged_out() {
             "idempotency-key",
             format!("peek-revoke-{}", blake3::hash(b"ort_x").to_hex()).as_str(),
         ))
-        .and(header("authorization", "Bearer oat_x"))
-        .and(header("x-org-id", "tos"))
         .and(body_string(r#"{"token":"ort_x"}"#))
         .respond_with(ResponseTemplate::new(204))
         .expect(1)
@@ -279,6 +277,11 @@ async fn status_after_logout_is_logged_out() {
     env.login_as("oat_x", "ort_x", unix_now() + 1800);
     let out = env.run(&["logout", "--json"]).await;
     assert_eq!(out.code, 0, "{}", out.stderr);
+    let reqs = server.received_requests().await.unwrap_or_default();
+    assert!(
+        !reqs[0].headers.contains_key("authorization"),
+        "a plain logout keeps the Ting grant other homes of the Silicon use"
+    );
     assert_eq!(
         out.json(),
         json!({"authenticated": false, "remote_revocation": "confirmed"})
@@ -291,6 +294,28 @@ async fn status_after_logout_is_logged_out() {
     assert_eq!(status.code, 0);
     assert_eq!(status.json()["reason"], "logged_out");
     assert_eq!(status.json()["authenticated"], false);
+}
+
+#[tokio::test]
+async fn logout_revoke_ting_sends_the_flag_and_the_bearer() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/auth/logout"))
+        .and(header("authorization", "Bearer oat_x"))
+        .and(header("x-org-id", "tos"))
+        .and(body_string(r#"{"token":"ort_x","revoke_ting":true}"#))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let env = Env::new(&server.uri());
+    env.login_as("oat_x", "ort_x", unix_now() + 1800);
+    let out = env.run(&["logout", "--revoke-ting", "--json"]).await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        out.json(),
+        json!({"authenticated": false, "remote_revocation": "confirmed"})
+    );
 }
 
 #[tokio::test]
@@ -831,6 +856,51 @@ async fn report_goes_through_the_backend() {
         .await;
     assert_eq!(bad.code, 2);
     assert_eq!(bad.error()["code"], "invalid_input");
+}
+
+#[tokio::test]
+async fn report_dry_run_prints_the_payload_and_sends_nothing() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/reports"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let env = Env::new(&server.uri());
+    let run = env
+        .run(&[
+            "report",
+            "dogfood check\nplease ignore",
+            "--dry-run",
+            "--json",
+        ])
+        .await;
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let v = run.json();
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(v["via"], "backend");
+    assert_eq!(v["would_send"]["method"], "POST");
+    assert_eq!(
+        v["would_send"]["url"],
+        format!("{}/api/v1/reports", server.uri())
+    );
+    assert_eq!(
+        v["would_send"]["body"]["message"],
+        "dogfood check\nplease ignore"
+    );
+    let gh = env
+        .run(&[
+            "report",
+            "a title\nbody",
+            "--via",
+            "gh",
+            "--dry-run",
+            "--json",
+        ])
+        .await;
+    assert_eq!(gh.code, 0, "{}", gh.stderr);
+    assert_eq!(gh.json()["would_send"]["title"], "a title");
 }
 
 #[tokio::test]

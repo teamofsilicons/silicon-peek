@@ -649,7 +649,7 @@ mod tests {
             json!({"kind":"single_choice","option_id":"keep","label":"Keep it"})
         );
         assert_eq!(v["via"], "voice");
-        assert_eq!(v["answered_at"], "2026-09-26T10:00:07Z");
+        assert_eq!(v["answered_at"], "2026-09-26T10:00:07.000Z");
         assert_eq!(v["slot"], 3);
         assert_eq!(v["context"], "production");
         let back = TingData::from_value(TingType::AskAnswered, v)?;

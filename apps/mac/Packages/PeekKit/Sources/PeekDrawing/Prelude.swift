@@ -386,7 +386,7 @@ enum Prelude {
     return true;
   }
   function unsupported(name, hint) {
-    return function () { throw new TypeError(`ctx.${name} is not supported in peek drawings${hint ? ': ' + hint : ''} (visual.md A5)`); };
+    return function () { throw new TypeError(`ctx.${name} is not supported in peek drawings${hint ? ': ' + hint : ''} (https://peek.teamofsilicons.com/docs/drawing#not-supported)`); };
   }
 
   const measureCache = new Map();

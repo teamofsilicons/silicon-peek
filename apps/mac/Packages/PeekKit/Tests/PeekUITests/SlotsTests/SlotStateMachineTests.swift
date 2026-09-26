@@ -90,12 +90,35 @@ struct SlotStateMachineTests {
         #expect(leaving.sent == [.shownDone(.speechDone, visibleMs: 4500)])
     }
 
-    @Test("--duration after speech replaces the 1.5 s linger")
+    @Test("speak + show: the show's own duration does not apply after speech; the bubble lingers 1.5 s")
     func durationAfterSpeech() {
-        var machine = F.visibleMachine(F.show("s", speak: "hi", durationMs: 2500))
+        // peekd fills duration_ms with the show's default (here 4.02 s), which must not replace the 1.5 s linger.
+        var machine = F.visibleMachine(F.show("s", speak: "hi", texts: ["Dogfood sync", "16:35"], durationMs: 4020))
         _ = machine.handle(.speechStarted, now: 1)
         let effects = machine.handle(.speechFinished(stoppedByUser: false), now: 2)
-        #expect(effects.schedules(.autoDismiss) == 2.5)
+        #expect(effects.schedules(.autoDismiss) == 1.5)
+        let leaving = machine.handle(.timerFired(.autoDismiss), now: 3.5)
+        #expect(leaving.sent.first == .shownDone(.speechDone, visibleMs: 3500))
+    }
+
+    @Test("speak only: slides back 1.5 s after the speech ends, even with peekd's pill duration set")
+    func speakOnlyLinger() {
+        var machine = F.visibleMachine(F.show("s", speak: "Reminder, the dogfood sync starts in five minutes.", texts: [],
+                                              durationMs: 6000))
+        _ = machine.handle(.speechStarted, now: 1)
+        #expect(machine.phase == .speaking)
+        let effects = machine.handle(.speechFinished(stoppedByUser: false), now: 4)
+        #expect(effects.schedules(.autoDismiss) == 1.5)
+        let leaving = machine.handle(.timerFired(.autoDismiss), now: 5.5)
+        #expect(leaving.sent.first == .shownDone(.speechDone, visibleMs: 5500))
+        #expect(leaving.contains(.slideOut))
+    }
+
+    @Test("speech stopped by the Carbon also lingers 1.5 s")
+    func stoppedSpeechLinger() {
+        var machine = F.visibleMachine(F.show("s", speak: "hello", texts: ["Hi"], durationMs: 9000))
+        _ = machine.handle(.speechStarted, now: 1)
+        #expect(machine.handle(.speechFinished(stoppedByUser: true), now: 2).schedules(.autoDismiss) == 1.5)
     }
 
     @Test("TTS failure before audio: the speak text becomes a pill, then the bubble auto-dismisses")

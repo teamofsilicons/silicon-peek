@@ -17,6 +17,9 @@ struct ValidationStep: Sendable {
 /// with a sample image and text, an ask of each type with a moving value, speech and mic levels as sine
 /// waves, hover on and off with the pointer circling, one click, one move, every context and both glass
 /// modes, plus enter / send / answer / leave events.
+///
+/// Only combinations a real bubble can have: a send shows (frames 0–29, spoken over in 20–29) or asks (30–79,
+/// `show` null, as `--show` and `--ask` never go together); `speech` exists only while that send speaks.
 enum ValidationSchedule {
     static let frameCount = DrawingLimits.validationFrames
     static let frameInterval = 1.0 / 60
@@ -95,15 +98,13 @@ enum ValidationSchedule {
 
         let wave = 0.5 + 0.5 * sin(Double(i) * 0.9)
         var speech: InputSnapshot.Speech?
-        if (10..<40).contains(i) {
-            let speaking = phase == .speaking
-            speech = InputSnapshot.Speech(text: "Here is the mix for tonight, enjoy it",
-                                          level: speaking ? wave : 0, progress: min(1, Double(i - 10) / 29),
-                                          done: i == 39)
+        if phase == .speaking {
+            speech = InputSnapshot.Speech(text: "Here is the mix for tonight, enjoy it", level: wave,
+                                          progress: min(1, Double(i - 20) / 9), done: i == 29)
         }
         let micLevel = phase == .listening ? 0.5 + 0.5 * sin(Double(i) * 1.3) : 0
         let typing = phase == .typing ? InputSnapshot.Typing(text: String("on my way".prefix(i - 49))) : nil
-        let show = i < 60 ? Self.show : nil
+        let show = i < 30 ? Self.show : nil
         let ask = self.ask(at: i)
 
         let context: InputContext = (80..<85).contains(i) ? .testing : (85..<90).contains(i) ? .simulation : .production
@@ -118,7 +119,7 @@ enum ValidationSchedule {
         switch i {
         case 0:
             events = [.enter, .send(show: show, ask: nil, speech: nil)]
-        case 10:
+        case 20:
             events = [.send(show: show, ask: nil, speech: speech)]
         case 30, 40, 50, 60, 70:
             events = [.send(show: show, ask: ask, speech: speech)]

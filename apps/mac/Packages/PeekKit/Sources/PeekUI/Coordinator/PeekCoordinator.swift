@@ -47,6 +47,8 @@ public final class PeekCoordinator: PeekPresenting {
     public private(set) var registeredHotkeys: [String] = []
     /// Hotkeys macOS refused (`ctrl+cmd+3` form).
     public private(set) var failedHotkeys: [String] = []
+    /// Whether the Carbon can see bubbles (screen unlocked, displays awake), as last reported to peekd (`presence`).
+    public private(set) var carbonPresence: PresenceRequest = .available
 
     /// Runs `peek app uninstall` (unregister the login item and agent, recycle the bundle, quit). Set by the app
     /// target, which owns SMAppService; without it `app.uninstall` is refused.
@@ -73,6 +75,8 @@ public final class PeekCoordinator: PeekPresenting {
     @ObservationIgnored private var telemetryBuffer: [TelemetryEvent] = []
     @ObservationIgnored private var reportedGlassMode = false
     @ObservationIgnored private var screenObserver: (any NSObjectProtocol)?
+    @ObservationIgnored private var presenceMonitor: PresenceMonitor?
+    @ObservationIgnored private var presenceTask: Task<Void, Never>?
     @ObservationIgnored private var lastSentStatus: UIStatusReport?
     @ObservationIgnored private var statusUnsupported = false
     @ObservationIgnored private let settingsURL: URL?
@@ -195,6 +199,8 @@ public final class PeekCoordinator: PeekPresenting {
         hotKeys = nil
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         screenObserver = nil
+        presenceMonitor?.stop()
+        presenceMonitor = nil
         if let request = takeTelemetry() {
             do throws(DaemonLinkError) {
                 _ = try await link.send(request, blobs: [], timeout: .seconds(2))
@@ -210,6 +216,8 @@ public final class PeekCoordinator: PeekPresenting {
         speech.onFinished = { [weak self] finished in
             previousFinished?(finished)
             guard let self else { return }
+            self.logger.info("speech done for \(finished.sendID): played \(finished.playedMs) of \(finished.totalMs) ms"
+                + (finished.stoppedByUser ? ", stopped by the Carbon" : ""))
             self.sendSpeechDone(finished)
             self.slotManager.speechFinished(finished)
         }
@@ -217,7 +225,7 @@ public final class PeekCoordinator: PeekPresenting {
         speech.onFailed = { [weak self] sendID, error in
             previousFailed?(sendID, error)
             guard let self else { return }
-            self.logger.notice("speech for \(sendID) is unavailable: \(error.description)")
+            self.logger.info("speech failed for \(sendID): \(error.description)")
             self.slotManager.speechFailed(sendID: sendID)
         }
         let previousBackdrop = backdrop.onChange
@@ -240,6 +248,28 @@ public final class PeekCoordinator: PeekPresenting {
                 self?.slotManager.screensChanged()
                 self?.record("display_changed", ["screens": .int(Int64(NSScreen.screens.count))], context: .production)
             }
+        }
+        // Before link.start(): the first hello is followed by the real presence (the app may launch while locked).
+        let monitor = PresenceMonitor { [weak self] presence in self?.presenceChanged(presence) }
+        presenceMonitor = monitor
+        monitor.start()
+    }
+
+    /// The screen was locked or unlocked, the displays slept or woke: tell peekd, in order (`presence`).
+    public func presenceChanged(_ presence: PresenceRequest) {
+        let previous = carbonPresence
+        carbonPresence = presence
+        let state = presence.available ? "available" : "away (\(presence.reason.rawValue)); peekd holds new peeks until they can be seen"
+        if presenceTask == nil {
+            logger.info("presence at launch: \(state)")
+        } else if presence != previous {
+            logger.info("presence changed: \(state)")
+        }
+        let link = self.link
+        let before = presenceTask
+        presenceTask = Task {
+            await before?.value
+            await link.setPresence(presence)
         }
     }
 
@@ -510,6 +540,7 @@ public final class PeekCoordinator: PeekPresenting {
 
     private func drawingFailed(_ key: SiliconKey, _ failure: DrawingFailure) {
         record("fallback_visual", ["reason": .string(failure.reason.rawValue)], context: key.context)
+        logger.info("drawing error for \(key): \(failure.reason.rawValue): \(failure.message); showing the fallback visual")
         guard !key.actorID.isEmpty else { return }
         sendInBackground(DrawingErrorRequest(context: key.context, orgID: key.orgID, actorID: key.actorID,
                                              reason: failure.reason, message: failure.message, stack: failure.stack))

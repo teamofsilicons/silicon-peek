@@ -51,7 +51,7 @@ pub async fn run(cli: Cli, path: &[String], g: &Globals) -> Result<()> {
     match cli.command {
         Command::Iam => iam::run(g, out).await,
         Command::Login(args) => login::run(g, out, args).await,
-        Command::Logout => login::logout(g, out).await,
+        Command::Logout(a) => login::logout(g, &a, out).await,
         Command::Config { command } => config::run(g, out, command).await,
         Command::Ting {
             command: TingCommand::Enroll,

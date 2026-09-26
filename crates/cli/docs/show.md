@@ -19,7 +19,7 @@ Both return immediately with `{"send_id":"snd_…","status":"showing",…}`. You
 | Length | 1–2000 characters (Unicode scalar values). Longer fails with `speak_too_long`, exit 2. 2000 is Deepgram Aura's per-request limit. |
 | Engine | Deepgram Aura-2, streamed as 24 kHz mono PCM, either directly from Deepgram or relayed by the peek backend ([Privacy](privacy.md)). Playback starts after about 100 ms of audio has arrived. |
 | Languages | English, Spanish, German, French, Dutch, Italian, Japanese. |
-| Language choice | `--lang`, else detection from the text, else config `language` when detection is ambiguous. |
+| Language choice | `--lang` (any BCP 47 tag; its primary subtag is used, so `es-MX` means Spanish), else detection from the text, else config `language` when detection is ambiguous. |
 | Voice choice | `--voice`, else config `voice`, else the default for the language (below). |
 
 Default voices:
@@ -91,13 +91,17 @@ The CLI reads each image's bytes and hands them to Peek.app, which copies them i
 | `--speak` and `--show` | 1.5 s after the speech ends, or `--duration` seconds after it ends when given |
 | `--show` only | after `--duration` seconds, default `clamp(3 + 0.06 × visible characters, 4, 15)` |
 
+The text-length default applies only to a show without speech; it never adds to the time after speech.
+
+Nothing is shown to nobody. While the Carbon's screen is locked or the display is asleep, the send is queued (`status:"queued"` with a `carbon_away` warning) and shown in order when the Carbon is back. Speech starts only when the bubble is actually on screen, and the clocks above start then too.
+
 The Carbon can close it earlier with the down-arrow: one click slides it away and lets the speech finish; a double click also stops the speech.
 
 A new `--show` replaces one that is still visible. While one of your asks is on screen, new sends queue behind it (at most 5, then `slot_busy`).
 
 ## Know when it was seen
 
-Speech and show events are opt-in, because every event costs a Ting delivery and Stemcell's default flow sends unknown types to `intuit`:
+Speech and show events are opt-in, because every event costs a Ting delivery and a catch-all flow branch forwards each one as a message:
 
 ```sh
 peek send --speak "Stand-up in five minutes." --notify speech_finished

@@ -18,6 +18,8 @@ struct DumpTests {
         #expect(dump["frame"] == 30)
         #expect(dump["again"]?.boolValue != nil)
         #expect(dump["input"]?.stringValue?.contains("phase=asking") == true)
+        // Asks carry no show (as with real sends), so the shell has its default tint, not the cover art's.
+        #expect(dump["input"]?.stringValue?.contains("show=null") == true)
         let layers = try #require(dump["layers"]?.arrayValue)
         #expect(layers.count == 2)
 
@@ -26,7 +28,7 @@ struct DumpTests {
         #expect(glass["rule"] == "evenodd")
         #expect(glass["style"] == "clear")
         #expect(glass["interactive"] == true)
-        #expect(glass["tint"] == "rgba(200, 53, 43, 0.3)")
+        #expect(glass["tint"] == "rgba(232, 217, 184, 0.3)")
         #expect(glass["transform"] == [1, 0, 0, 1, 0, 0])
         let path = try #require(glass["path"]?.stringValue)
         #expect(path.hasPrefix("M12 21 L88 21 C"), "\(path)")

@@ -44,6 +44,11 @@ final class ServiceRegistration {
         self.environment = environment
     }
 
+    /// `Contents/Library/LaunchAgents/ai.tos.peek.daemon.plist` inside this bundle.
+    var agentPlistURL: URL {
+        bundle.bundleURL.appendingPathComponent("Contents/Library/LaunchAgents/\(Self.agentPlistName)")
+    }
+
     /// False under `PEEK_NO_SERVICES=1`: then nothing here touches SMAppService or spawns peekd.
     var servicesEnabled: Bool { !environment.noServices }
 
@@ -73,15 +78,22 @@ final class ServiceRegistration {
                 logger.notice("unregistering the previous peekd agent after the update failed: \(Self.describe(error))")
             }
         }
-        if afterUpdate || agent.status == .notRegistered {
+        // A never-registered agent reports .notFound (not .notRegistered) on current macOS, so both mean
+        // "register now". Only a register() that fails while the plist is really absent means a broken build.
+        var registrationError: String?
+        if afterUpdate || agent.status == .notRegistered || agent.status == .notFound {
             do {
                 try agent.register()
             } catch {
-                report.problems.append("peekd agent registration failed: \(Self.describe(error))")
+                registrationError = Self.describe(error)
             }
         }
         report.agent = agent.status
+        if let registrationError, agent.status != .enabled, agent.status != .requiresApproval {
+            report.problems.append("peekd agent registration failed: \(registrationError)")
+        }
 
+        logger.info("peekd agent status after registration: \(Self.describe(agent.status))")
         switch agent.status {
         case .enabled:
             logger.info("peekd agent enabled")
@@ -89,7 +101,12 @@ final class ServiceRegistration {
             report.spawnedFallback = spawnFallbackDaemon(into: &report)
             showApprovalNoticeOnce()
         case .notFound:
-            report.problems.append("the agent plist Contents/Library/LaunchAgents/\(Self.agentPlistName) is missing from this build")
+            if !FileManager.default.fileExists(atPath: agentPlistURL.path) {
+                report.problems.append("the agent plist Contents/Library/LaunchAgents/\(Self.agentPlistName) is missing from this build")
+            } else if registrationError == nil {
+                report.problems.append("macOS still reports the peekd agent \(Self.agentPlistName) as not found after "
+                    + "registering it; Peek runs peekd itself while the app is open")
+            }
             report.spawnedFallback = spawnFallbackDaemon(into: &report)
         case .notRegistered:
             report.spawnedFallback = spawnFallbackDaemon(into: &report)
@@ -196,6 +213,16 @@ final class ServiceRegistration {
         alert.addButton(withTitle: "Later")
         if alert.runModal() == .alertFirstButtonReturn {
             SMAppService.openSystemSettingsLoginItems()
+        }
+    }
+
+    private static func describe(_ status: SMAppService.Status) -> String {
+        switch status {
+        case .notRegistered: "not registered"
+        case .enabled: "enabled"
+        case .requiresApproval: "requires approval in System Settings › General › Login Items"
+        case .notFound: "not found"
+        @unknown default: "unknown (\(status.rawValue))"
         }
     }
 

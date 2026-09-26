@@ -9,7 +9,7 @@ This page is for Silicons and the people who write them. It covers what is manda
 | Be logged in to peek | Stemcell does it when `peek` is in `silicon.apps`. By hand: `peek login <SLT>`. |
 | Hold exactly one position | `peek register side <1-8>`. Your ISIs share it. |
 | Have a registered drawing | `peek register drawing ./logo.js`. It is your face on the Carbon's screen. |
-| Route peek events in your flow | Answers arrive as Ting events (`peek.ask.answered` and friends). Without a flow branch they reach `intuit` through Stemcell's default branch. |
+| Route peek events in your flow | Answers arrive as Ting events (`peek.ask.answered` and friends). Stemcell has no default flow: add a branch such as [Flow A](#flow-a-send-every-peek-event-to-one-isi), or events are dropped. Without Stemcell, register a webhook of your own ([below](#receive-answers-without-stemcell)). |
 | Keep asks self-contained | The Carbon sees only the bubble: at most 80 characters of question, and options that make sense on their own. |
 | Dedupe by ting `id` | Delivery is at least once. The answer also carries `ask_id`. |
 
@@ -36,7 +36,7 @@ silicon:
       delivery_max_age_hours: 48
 ```
 
-Then compile and connect:
+Merge these keys into your existing `silicon.yaml`: `silicon compile` also needs your `isi`, `access` and `flow` sections, and `flow` needs a peek branch ([Flow A](#flow-a-send-every-peek-event-to-one-isi) is the minimum). Then compile and connect:
 
 ```sh
 silicon compile /abs/path/silicon.yaml
@@ -63,9 +63,7 @@ si auth setup peek       # forces a fresh login if peek reports logged out
 | `api_url` | https URL or null | null | the peek backend (same as `--api`) |
 | `delivery_max_age_hours` | int 1..168 | 168 | how long undelivered answers keep retrying |
 
-### Availability before public listing
-
-Until peek's public listing is approved, only members of org `tos` can install it or log in. Any other org gets `403 private_application_organization_required`. Stemcell installs apps without a Honeycomb session, so `silicon connect` with `apps: [peek]` can fail for such an org until then. Leave `peek` out of `silicon.apps` and use a Carbon-installed `peek` with `SILICON_HOME=<your home>` in the meantime (see "Log in without Stemcell" below).
+peek is a public app on Honeycomb: `honeycomb install 'peek'` needs no Honeycomb login, and any org can log in.
 
 ## Log in without Stemcell
 
@@ -73,7 +71,7 @@ A Silicon's peek state lives in `$SILICON_HOME/.peek/` (or `~/.peek/` when `SILI
 
 ```sh
 H=/abs/path/to/silicon/home
-SLT=$(iam -o json silicon-login --app-id peek --grant-org tos --approve-scopes | jq -r .slt)
+SLT=$(SILICON_HOME=$H iam -o json silicon-login --app-id peek --grant-org <org> --approve-scopes | jq -r .slt)
 SILICON_HOME=$H peek login "$SLT"            # or: printf %s "$SLT" | SILICON_HOME=$H peek login --token-file -
 SILICON_HOME=$H peek login status --json
 ```
@@ -81,6 +79,8 @@ SILICON_HOME=$H peek login status --json
 Set `SILICON_HOME` per command, as above. Do not `export` it in a shell you use for other tools: it re-roots IAM, Honeycomb, Ting and Space Station state at the same time.
 
 The SLT is single use and lives two minutes. If the login response was lost (network drop), `peek login --recover` retries the same exchange within 10 minutes. Details: [IAM and sessions](iam.md).
+
+`peek logout` ends this home's session but keeps your Ting grant, because other homes of the same Silicon (a Stemcell home and a hand-run one, say) share it. `peek logout --revoke-ting` removes the grant too; then every home of this Silicon needs `peek ting enroll` before answers flow again.
 
 ## One-time setup: position and drawing
 
@@ -116,7 +116,16 @@ Output with `--json`:
  "speech":{"status":"pending","model":"aura-2-thalia-en","chars":25},"warnings":[]}
 ```
 
-`status` is `queued` when an earlier ask of yours is still on screen; up to 5 sends wait behind it, then `slot_busy` (exit 4). Keep the `ask_id`: it is in the answer, and `peek ask get <ASK_ID>` shows the local state at any time.
+`status` is `queued` when an earlier ask of yours is still on screen, or when the Carbon is away; up to 5 sends wait, then `slot_busy` (exit 4). Keep the `ask_id`: it is in the answer, and `peek ask get <ASK_ID>` shows the local state at any time.
+
+Warnings in the result tell you what the Carbon will or will not get. The send itself still went through:
+
+| Warning | Meaning | What to do |
+|---|---|---|
+| `carbon_away` | The Carbon's screen is locked or the display is asleep. The send waits in your queue and is shown, in order, when the Carbon is back. An ask keeps its `--expires-in` clock while it waits, and speech starts only when the bubble is actually shown. | Nothing. `peek status --json` shows `"carbon":{"available":false,"reason":"locked"\|"asleep"\|"display_off"}`. |
+| `ting_not_enrolled` | You are not a Ting recipient for peek (the grant was revoked, or enrollment failed), so answers cannot reach you. They wait on the Mac. | `peek ting enroll`; waiting answers are then retried right away. |
+| `isi_ignored` | `$ISI` was invalid (over 160 characters, or more than one line), so it was dropped from this send and its events carry no `metadata.isi`. | Fix `ISI`, or unset it. |
+| `speak_language_unsupported` | The speech language has no voice; the text shows as a pill instead. | Speak one of en, es, de, fr, nl, it, ja, or pass `--lang`. |
 
 The JSON schemas, limits and defaults are in [Speak and show](show.md) and [Ask a question](ask.md).
 
@@ -134,9 +143,40 @@ first time: `peek register side N` and `peek register drawing ./path.js`. `peek 
 keep asks self-contained: the carbon sees nothing but the bubble. dedupe answers by ask_id.
 ```
 
+## Receive answers without Stemcell
+
+Without Stemcell nothing listens on `http://<handle>.<org>.localhost/events`, so give Ting a webhook of your own. Log in to Ting in the same home as peek, pick the org, and register a local URL:
+
+```sh
+H=/abs/path/to/silicon/home
+# a Silicon already logged in to IAM in this home
+SILICON_HOME=$H iam -o json silicon-login --app-id ting --grant-org <org> --approve-scopes | jq -r .slt | SILICON_HOME=$H ting login --token-stdin
+# or with the Silicon's own credentials (what Stemcell runs)
+SILICON_HOME=$H iam -o json silicon-login --sid si:<handle> --stk <STK> --app-id ting --grant-org <org> --approve-scopes | jq -r .slt | SILICON_HOME=$H ting login --token-stdin
+SILICON_HOME=$H ting org use <org>
+SILICON_HOME=$H ting webhook http://127.0.0.1:8787/peek     # reports state=connected
+```
+
+Ting then POSTs each batch to that URL. The body is the same `{"tings":[…]}` shown in the next section; answer `204` once you have stored it (anything else makes Ting retry). A ten-line Python receiver:
+
+```python
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class Peek(BaseHTTPRequestHandler):
+    def do_POST(self):
+        batch = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        for t in batch["tings"]:                      # dedupe by t["id"]; at least once
+            print(t["type"], json.dumps(t["data"]), flush=True)
+        self.send_response(204); self.end_headers()
+    def log_message(self, *a): pass
+HTTPServer(("127.0.0.1", 8787), Peek).serve_forever()
+```
+
+Details and the full walk-through: [Ting events](ting.md#receive-answers-without-stemcell).
+
 ## Receive answers in your flow
 
-peek records `$ISI` with every send and puts it in the event's `metadata.isi`, so your flow can route an answer back to the ISI that asked. A Carbon-initiated message carries the ISI of the most recent send in that position, if any. `ISI` is optional context: peek works the same without it, and it never grants authority.
+peek records `$ISI` with every send and puts it in the event's `metadata.isi`, so your flow can route an answer back to the ISI that asked. A Carbon-initiated message carries the ISI of the most recent send in that position, if any. `ISI` is optional context: peek works the same without it, and it never grants authority. An invalid `ISI` never fails a send; it is dropped with an `isi_ignored` warning.
 
 Your Stemcell webhook receives:
 
@@ -145,10 +185,10 @@ Your Stemcell webhook receives:
   "data":{"schema":1,"ask_id":"ask_0192…","send_id":"snd_0192…","question":"Delete old builds?","ask_type":"single_choice",
           "answer":{"kind":"single_choice","option_id":"1","label":"Delete"},"via":"click","transcript":null,
           "asked_at":"2026-09-26T10:00:00Z","answered_at":"2026-09-26T10:00:07Z","slot":3,"context":"production"},
-  "metadata":{"isi":"deliberate","peek_version":"0.1.0"},"key":"si:cleanup/ask_0192…/answered"}]}
+  "metadata":{"isi":"deliberate","peek_version":"0.1.1"},"key":"si:cleanup/ask_0192…/answered"}]}
 ```
 
-Both flows below were compiled with `silicon compile` and executed against a sample batch.
+Stemcell has no default flow, so without one of these branches peek events are dropped (an empty `flow: []` compiles and drops every ting). Both flows below were compiled with `silicon compile` and executed against a sample batch.
 
 ### Flow A: send every peek event to one ISI
 
@@ -224,12 +264,12 @@ peek send --json --ask '{"question":"Ship it?","type":"single_choice","options":
 # timeout:  {"ask_id":"ask_…","send_id":"snd_…","state":"pending","delivery":"ting"}
 ```
 
-An answer printed to a live `--wait` **replaces** the Ting event, so each answer reaches you through exactly one channel. If the wait times out or the process dies, the answer is delivered by Ting as usual. Model tool calls often time out after about two minutes; keep `--wait` short there, or do not use it.
+Whatever a live `--wait` prints **replaces** the Ting event: an answer, and also a dismissal or an expiry (`{"state":"dismissed"}`, `{"state":"expired"}`, `{"state":"cancelled"}`). So each outcome reaches you through exactly one channel. If the wait times out or the process dies, the outcome is delivered by Ting as usual. Model tool calls often time out after about two minutes; keep `--wait` short there, or do not use it.
 
 ## Check your state
 
 ```sh
-peek status --json            # position, drawing, queue, pending asks, deliveries, app and helper
+peek status --json            # position, drawing, queue, pending asks, deliveries, Carbon presence, app and helper
 peek ask get ask_0192…        # pending | answered | dismissed | expired | cancelled, with the answer
 peek ask list --state pending
 peek history --limit 20       # your recent sends on this Mac
@@ -244,6 +284,7 @@ peek doctor                   # every check, with the exact fix
 | `drawing_not_registered` | 4 | "no drawing registered for si:cleanup; run `peek register drawing ./logo.js` first" |
 | `side_taken` | 4 | Another Silicon holds it; `details.free` lists the free ones. |
 | `slot_busy` | 4 | Five sends already wait behind a pending ask. Wait for the answer, or `peek ask cancel`. |
+| `invalid_input` | 2 | The JSON does not match the schema, for example two options with the same label. `details.field` names the offending field. |
 | `not_logged_in`, `session_rejected` | 3 | Log in again (`si auth setup peek`, or a new SLT and `peek login`). |
 | `platform_unsupported` | 4 | This `peek` runs on Linux or Windows; bubbles need macOS. See [Platforms](platforms.md). |
 | `peek_service_unavailable` | 5 | Peek.app or its helper did not start. Run `peek doctor`. |

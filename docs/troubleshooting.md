@@ -7,7 +7,26 @@ peek doctor              # readable
 peek doctor --json       # {"checks":[{"name","status":"ok"|"warn"|"fail","detail","fix"}],"summary":{"ok","warn","fail"},"version","platform"}
 ```
 
-`peek doctor` always exits 0. It checks: this home's store permissions; the session and whether IAM rejected it; the backend's `/readyz`; the Honeycomb version (0.5.0 or newer); the helper's socket and protocol; Peek.app (installed, signature, build); whether macOS approved the background item; the last lines of the install log; microphone permission; registered hotkeys; the delivery backlog; Ting enrollment.
+`peek doctor` always exits 0. Its checks, by `name`:
+
+| Check | What it looks at |
+|---|---|
+| `store` | this home's store permissions |
+| `session` | the session, and whether IAM rejected it |
+| `pending_login` | a login whose response was lost (`peek login --recover` finishes it within 10 minutes) |
+| `revocations` | logout revocations that could not reach the backend yet and are still being retried |
+| `ting` | Ting enrollment (`peek ting enroll` when it is missing) |
+| `backend` | the backend's `/readyz` |
+| `honeycomb` | the Honeycomb version (0.5.0 or newer) |
+| `app` | Peek.app: installed, signature, build (Mac only, like the rows below) |
+| `agent` | whether macOS approved the background item |
+| `install_log` | the last lines of the install log |
+| `daemon` | the helper's socket and protocol |
+| `mic` | microphone permission, as Peek.app reports it |
+| `hotkeys` | shortcuts macOS refused |
+| `outbox` | the delivery backlog |
+
+A check that has nothing to report (no pending login, no pending revocation) is `ok`.
 
 ## Error codes
 
@@ -23,7 +42,7 @@ peek doctor --json       # {"checks":[{"name","status":"ok"|"warn"|"fail","detai
 | `text_too_long`, `caption_too_long`, `question_too_long`, `speak_too_long` | 2 | Over 160, 50, 80 or 2000 characters. | Shorten it. |
 | `too_many_elements`, `too_many_options` | 2 | More than 3 show elements, or 6 options. | Split it, or ask a text question. |
 | `image_unreadable`, `image_unsupported`, `image_too_large` | 2 | The path (relative to your current directory) cannot be read, is not PNG/JPEG/HEIC/WebP/GIF, or is over 10 MiB. | Check the path and format. |
-| `invalid_input`, `invalid_json` | 2 | The JSON does not match the schema; `details` names the field. | See [Speak and show](show.md) and [Ask a question](ask.md). |
+| `invalid_input`, `invalid_json` | 2 | The input does not match the schema (for example an unknown field, or two options with the same label); `details.field` names the offending field. | See [Speak and show](show.md) and [Ask a question](ask.md). |
 | `unknown_config_key` | 2 | `peek config set` (or `app_configs.peek`) has a key peek does not know. | Use a key from `details.valid_keys`. |
 | `invalid_silicon_home` | 2 | `SILICON_HOME` is set but empty or does not exist. | Point it at an existing directory, or unset it. |
 | `not_logged_in` | 3 | This home has no peek session. | Under Stemcell: `si auth setup peek`. By hand: mint an SLT, `peek login "$SLT"`. |
@@ -32,8 +51,7 @@ peek doctor --json       # {"checks":[{"name","status":"ok"|"warn"|"fail","detai
 | `login_attempt_expired` | 3 | `peek login --recover` ran more than 10 minutes later. | Mint a new SLT. |
 | `slt_is_public_id` | 2 | A public id such as `si:x` was passed as the SLT in production. | Use a real SLT; public ids work only in testing environments. |
 | `reconsent_required` | 3 | The session lacks a scope peek needs. | Log in again with `--approve-scopes`. |
-| `private_application_organization_required` | 4 | peek is not yet publicly listed and your org is not `tos`. | Wait for publication, or use an org that is allowed. |
-| `recipient_not_registered` | 4 | You are not a Ting recipient for peek, so answers cannot be delivered. | `peek ting enroll`. |
+| `recipient_not_registered` | 4 | You are not a Ting recipient for peek, so answers cannot be delivered. | `peek ting enroll`; waiting answers are retried right away. |
 | `not_org_admin` | 4 | Managing the org's Deepgram key needs owner or admin. | Ask an org admin. |
 | `ask_not_found` | 4 | No such ask for this Silicon on this Mac. | `peek ask list`. |
 | `platform_unsupported` | 4 | This command needs a Mac. | Run on macOS 26+, or use `dm` ([Platforms](platforms.md)). |
@@ -71,12 +89,15 @@ peek doctor --json       # {"checks":[{"name","status":"ok"|"warn"|"fail","detai
 | Answers never reach the Silicon's flow | No flow branch, a muted peek in Ting (`silent:true`), missing enrollment, or a rejected session | `peek ask get <ASK_ID> --json` shows `delivery`; `peek login status --json` shows `ting` and `reason`; add Flow A or B ([Peek for Silicons](silicon.md)). |
 | Answers arrive twice | Delivery is at least once | Dedupe by ting `id` or `ask_id`. |
 | `peek status` shows `authority_required` greater than 0 | Answers wait for a valid session or enrollment | Log in again, or `peek ting enroll`. |
+| `peek send` says `queued` with a `carbon_away` warning | The Carbon's screen is locked or the display is asleep, so nothing is shown to nobody | Nothing. The sends are shown in order when the Carbon is back; asks keep their `--expires-in` clock. `peek status --json` shows `carbon.available` and `reason`. |
+| `peek send` carries a `ting_not_enrolled` warning | This Silicon has no Ting grant for peek (for example after `peek logout --revoke-ting` in any of its homes) | `peek ting enroll`. Answers that waited are delivered right away. |
+| `peek send` carries an `isi_ignored` warning | `$ISI` is over 160 characters or spans lines | Fix or unset `ISI`. The send itself went out, without `metadata.isi`. |
 | The drawing shows a plain circle with an initial | Your drawing threw 10 times in a row, overran 30 times in 5 s, or ran out of memory | The next `peek send`, `peek register side` or `peek status` result has a `drawing_fallback_active` warning with the stack, and `peek status` shows `drawing.active: false` with `drawing.last_error`; fix it and `peek register drawing` again. |
 | Glass looks frosted, not clear | Live Liquid Glass is unavailable on this system (`input.glass === 'frosted'`) | Nothing to fix; peek falls back on purpose. |
 | macOS asks to let Peek access Documents, Desktop or Downloads | A `SILICON_HOME` lives there | Move the home out of those folders, or allow Peek in Privacy & Security → Files and Folders. |
-| `silicon connect` fails while installing peek | peek not yet public for your org, or Honeycomb older than 0.5.0 | See [Peek for Silicons](silicon.md) "Availability"; update Honeycomb. |
+| `silicon connect` fails while installing peek | Honeycomb older than 0.5.0, or Honeycomb could not reach its registry | Update Honeycomb (`silicon update`) and connect again. peek is public, so no Honeycomb login is needed. |
 | The installer says Honeycomb is too old | Honeycomb < 0.5.0 | Stemcell users: `silicon update`. Otherwise `honeycomb self-update`. |
-| The installer says `honeycomb install 'peek' failed` | peek is not yet public and Honeycomb is not signed in as a `tos` member | `honeycomb login`, then run the installer again. |
+| The installer says `honeycomb install 'peek' failed` | Honeycomb could not download the package (network, or a Honeycomb problem) | Run `honeycomb install 'peek'` yourself to see Honeycomb's error, then run the installer again. No Honeycomb login is needed. |
 
 ## Logs
 
@@ -92,8 +113,11 @@ Logs never contain tokens.
 ## Report a bug
 
 ```sh
+peek report "exact steps, the command, the error code and what you expected" --attach-status --dry-run   # prints what would be filed; sends nothing
 peek report "exact steps, the command, the error code and what you expected" --attach-status
 peek report "…" --pr https://github.com/teamofsilicons/silicon-peek/pull/<n>     # if you fixed it
 ```
+
+A report becomes a public GitHub issue on `teamofsilicons/silicon-peek`. Use `--dry-run` to check what you would send, and never file test reports.
 
 See [Development](development.md) for building and testing a fix.

@@ -76,6 +76,52 @@ struct DaemonLinkTests {
         #expect(await link.currentState == .stopped)
     }
 
+    @Test("presence goes right after hello, again after every reconnect, and on change; unknown_op is tolerated")
+    func presence() async throws {
+        let server = try FakePeekd()
+        defer { server.shutdown() }
+        let link = DaemonLink(configuration: configuration(server))
+        await link.setPresence(PresenceRequest(available: false, reason: .locked))  // before the first hello
+        await link.start()
+
+        let connection = try await server.acceptHandshake()
+        let first = try await connection.nextFrame()
+        #expect(first["op"] == "presence")
+        #expect(first["available"] == false)
+        #expect(first["reason"] == "locked")
+        #expect(await link.currentState.isConnected == false, "connected only after presence was answered")
+        try connection.write(FrameCoding.okReply(id: first["id"]!.stringValue!, result: [:]))
+        try await waitForState(link) { $0.isConnected }
+
+        // A change while connected is sent at once; the same value again is not.
+        async let unlocked: Void = link.setPresence(.available)
+        let change = try await connection.nextFrame()
+        #expect(change["op"] == "presence")
+        #expect(change["available"] == true)
+        #expect(change["reason"] == "ok")
+        try connection.write(FrameCoding.okReply(id: change["id"]!.stringValue!, result: [:]))
+        await unlocked
+        await link.setPresence(.available)
+
+        // A restarted peekd hears the current presence right after its hello.
+        connection.close()
+        let second = try await server.acceptHandshake()
+        let again = try await second.nextFrame()
+        #expect(again["op"] == "presence")
+        #expect(again["available"] == true)
+        // An older peekd refuses the op: the link connects anyway and stops sending presence.
+        try second.write(FrameCoding.errorReply(
+            id: again["id"]!.stringValue!, error: IPCErrorBody(code: "unknown_op", message: "unknown op presence")))
+        try await waitForState(link) { $0.isConnected }
+        await link.setPresence(PresenceRequest(available: false, reason: .asleep))
+        async let focus = link.send(FocusRequest(slot: .top))
+        let next = try await second.nextFrame()
+        #expect(next["op"] == "focus", "no presence after unknown_op")
+        try second.write(FrameCoding.okReply(id: next["id"]!.stringValue!, result: [:]))
+        _ = try await focus
+        await link.stop()
+    }
+
     @Test("replies are matched to requests by id, in any order; error replies throw .remote")
     func correlation() async throws {
         let server = try FakePeekd()

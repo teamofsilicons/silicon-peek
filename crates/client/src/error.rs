@@ -422,6 +422,50 @@ impl Error {
         self
     }
 
+    /// Completes an input error (`invalid_input`, `invalid_json`) so agents
+    /// can route on it: `details.field` names the offending field and a hint
+    /// says what to do. Values already set are kept; other codes pass
+    /// through unchanged.
+    ///
+    /// The field is the first field path quoted in the message
+    /// (`` `ask.options[1].label` ``), else a flag it starts with (`--lang`),
+    /// else a bare quoted key qualified with `scope` (`ask.step`), else
+    /// `scope` itself. A `scope` that is a flag (`--lang`) always wins.
+    #[must_use]
+    pub fn with_input_context(self, scope: &str, hint: &str) -> Self {
+        let field = infer_field(&self.0.message, scope);
+        self.with_input_field(&field, hint)
+    }
+
+    /// [`Error::with_input_context`] with the field given exactly.
+    #[must_use]
+    pub fn with_input_field(mut self, field: &str, hint: &str) -> Self {
+        if !matches!(
+            self.0.code,
+            ErrorCode::InvalidInput | ErrorCode::InvalidJson
+        ) {
+            return self;
+        }
+        let has_field = self
+            .0
+            .details
+            .as_ref()
+            .and_then(|d| d.get("field"))
+            .is_some_and(|f| !f.is_null());
+        if !has_field {
+            match self.0.details.as_mut() {
+                Some(Value::Object(m)) => {
+                    m.insert("field".to_owned(), Value::String(field.to_owned()));
+                }
+                _ => self.0.details = Some(json!({ "field": field })),
+            }
+        }
+        if self.0.hint.as_deref().is_none_or(str::is_empty) && !hint.is_empty() {
+            self.0.hint = Some(hint.to_owned());
+        }
+        self
+    }
+
     /// Overrides retryability.
     #[must_use]
     pub fn with_retryable(mut self, retryable: bool) -> Self {
@@ -552,6 +596,56 @@ impl Error {
     #[must_use]
     pub fn envelope(&self) -> Value {
         json!({ "error": self.to_object() })
+    }
+}
+
+/// See [`Error::with_input_context`].
+fn infer_field(message: &str, scope: &str) -> String {
+    if scope.starts_with("--") {
+        return scope.to_owned();
+    }
+    let is_path = |t: &str| {
+        !t.is_empty()
+            && t.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '[' | ']' | '-'))
+    };
+    let quoted: Vec<&str> = message
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|t| is_path(t))
+        .collect();
+    if let Some(t) = quoted
+        .iter()
+        .find(|t| t.contains('.') || t.contains('[') || t.starts_with("--"))
+    {
+        return (*t).to_owned();
+    }
+    if scope.is_empty() {
+        let flag = message
+            .split_whitespace()
+            .map(|w| w.trim_end_matches([':', ',', ';', '.']))
+            .find(|w| w.starts_with("--") && w.len() > 2 && is_path(w));
+        if let Some(f) = flag {
+            return f.to_owned();
+        }
+        let env = message.split_whitespace().find(|w| {
+            w.len() > 2
+                && w.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+                && w.chars().any(|c| c.is_ascii_uppercase())
+        });
+        if let Some(e) = env {
+            return e.to_owned();
+        }
+        return quoted
+            .first()
+            .map_or_else(|| "argument".to_owned(), |t| (*t).to_owned());
+    }
+    match quoted.first() {
+        Some(t) if t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {
+            format!("{scope}.{t}")
+        }
+        _ => scope.to_owned(),
     }
 }
 

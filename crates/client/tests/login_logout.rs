@@ -345,12 +345,10 @@ async fn recovery_after_the_replay_window_is_refused() {
 }
 
 #[tokio::test]
-async fn logout_revokes_with_the_bearer_and_deletes_the_slot() {
+async fn logout_keeps_the_ting_grant_and_deletes_the_slot() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(LOGOUT))
-        .and(header("authorization", "Bearer oat_1"))
-        .and(header("x-org-id", "tos"))
         .and(body_string(r#"{"token":"ort_1"}"#))
         .respond_with(ResponseTemplate::new(204))
         .expect(1)
@@ -358,11 +356,16 @@ async fn logout_revokes_with_the_bearer_and_deletes_the_slot() {
         .await;
     let f = fixture(&server.uri());
     write_slot(&f, "oat_1", "ort_1", unix_now() + 1800);
-    let out = logout(&f.store, &f.client, Context::Production)
+    let out = logout(&f.store, &f.client, Context::Production, false)
         .await
         .expect("logout");
     assert_eq!(out.remote_revocation, RemoteRevocation::Confirmed);
     assert_eq!(out.actor.map(|a| a.to_string()), Some("si:cleanup".into()));
+    let reqs = server.received_requests().await.unwrap();
+    assert!(
+        !reqs[0].headers.contains_key("authorization"),
+        "without the bearer no backend revokes the shared Ting grant"
+    );
     let file = f.store.read_session().unwrap();
     assert!(file.slot(&f.key).is_none());
     assert!(file.pending_revocations.is_empty());
@@ -370,6 +373,27 @@ async fn logout_revokes_with_the_bearer_and_deletes_the_slot() {
         file.logged_out.as_ref().map(|l| l.actor.as_str()),
         Some("si:cleanup")
     );
+}
+
+#[tokio::test]
+async fn logout_with_revoke_ting_sends_the_bearer_and_the_flag() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(LOGOUT))
+        .and(header("authorization", "Bearer oat_1"))
+        .and(header("x-org-id", "tos"))
+        .and(body_string(r#"{"token":"ort_1","revoke_ting":true}"#))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let f = fixture(&server.uri());
+    write_slot(&f, "oat_1", "ort_1", unix_now() + 1800);
+    let out = logout(&f.store, &f.client, Context::Production, true)
+        .await
+        .expect("logout");
+    assert_eq!(out.remote_revocation, RemoteRevocation::Confirmed);
+    assert!(f.store.read_session().unwrap().slot(&f.key).is_none());
 }
 
 #[tokio::test]
@@ -382,7 +406,7 @@ async fn an_unconfirmed_logout_still_logs_out_locally() {
         .await;
     let f = fixture(&server.uri());
     write_slot(&f, "oat_1", "ort_1", unix_now() + 1800);
-    let out = logout(&f.store, &f.client, Context::Production)
+    let out = logout(&f.store, &f.client, Context::Production, false)
         .await
         .expect("logout");
     assert_eq!(out.remote_revocation, RemoteRevocation::Pending);
@@ -392,7 +416,7 @@ async fn an_unconfirmed_logout_still_logs_out_locally() {
     assert_eq!(file.pending_revocations.len(), 1);
     assert_eq!(file.pending_revocations[0].token.expose(), "ort_1");
     // Logging out again is a no-op.
-    let again = logout(&f.store, &f.client, Context::Production)
+    let again = logout(&f.store, &f.client, Context::Production, false)
         .await
         .expect("again");
     assert!(again.actor.is_none());

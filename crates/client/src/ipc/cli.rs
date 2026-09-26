@@ -52,6 +52,14 @@ pub mod warnings {
     pub const DRAWING_FALLBACK_ACTIVE: &str = "drawing_fallback_active";
     /// The drawing's glass outline changes in more than 10% of test frames.
     pub const GLASS_OUTLINE_CHURN: &str = "glass_outline_churn";
+    /// The Carbon's screen is locked or asleep: the send waits in the queue
+    /// and is shown (and spoken) when the Carbon is back.
+    pub const CARBON_AWAY: &str = "carbon_away";
+    /// The Silicon is not an active Ting recipient: answers and notifications
+    /// cannot be delivered until `peek ting enroll`.
+    pub const TING_NOT_ENROLLED: &str = "ting_not_enrolled";
+    /// `$ISI` was invalid and was left out of the send.
+    pub const ISI_IGNORED: &str = "isi_ignored";
 }
 
 /// The bundled Peek.app a CLI copy carries (from its package's `Peek.app.info`).
@@ -213,16 +221,39 @@ pub struct DrawingStatus {
     /// The last runtime error, if any.
     #[serde(default)]
     pub last_error: Option<String>,
+    /// The backend copy: `synced`, `pending` or `authority_required`
+    /// (additive; kept apart from the Ting `deliveries`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_sync: Option<String>,
+}
+
+/// Whether the Carbon can see bubbles right now (Peek.app's `presence`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CarbonStatus {
+    /// False while the screen is locked or asleep: sends wait in the queue.
+    pub available: bool,
+    /// Why.
+    pub reason: crate::ipc::ui::PresenceReason,
+}
+
+impl Default for CarbonStatus {
+    fn default() -> Self {
+        Self {
+            available: true,
+            reason: crate::ipc::ui::PresenceReason::Ok,
+        }
+    }
 }
 
 /// The Silicon's queue.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueStatus {
-    /// Sends waiting behind a pending ask.
+    /// Sends waiting behind a pending ask (or for the Carbon to come back).
     pub pending: u32,
 }
 
-/// The Silicon's deliveries.
+/// The Silicon's Ting deliveries (the drawing's backend copy is
+/// [`DrawingStatus::server_sync`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeliveriesStatus {
     /// Rows still being delivered.
@@ -249,6 +280,9 @@ pub struct StatusResult {
     pub deliveries: DeliveriesStatus,
     /// Whether Peek.app is connected.
     pub ui_running: bool,
+    /// Whether the Carbon can see bubbles (additive; absent from older peekd).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carbon: Option<CarbonStatus>,
     /// Pending notes (e.g. `drawing_fallback_active`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<Warning>,
@@ -738,8 +772,9 @@ pub struct HistoryItem {
     /// Its ask's state.
     #[serde(default)]
     pub ask_state: Option<AskState>,
-    /// What went wrong after the send returned, e.g. `speech_failed` or
-    /// `speech_unavailable` when its speech became a text pill.
+    /// The warnings the send returned (e.g. `carbon_away`,
+    /// `speak_language_unsupported`), then what went wrong after it
+    /// returned, e.g. `speech_failed` when its speech became a text pill.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<Warning>,
 }
@@ -1173,6 +1208,17 @@ mod tests {
             "queue":{"pending":0},"pending_asks":1,"deliveries":{"pending":0,"authority_required":0,"last_error":null},
             "ui_running":true,"future":1})).map_err(|e| Error::internal(e.to_string()))?;
         assert_eq!(r.slot.map(|s| s.index.get()), Some(3));
+        assert_eq!(r.carbon, None, "older peekd has no presence");
+        let r: StatusResult = serde_json::from_value(json!({"slot":null,"drawing":null,
+            "queue":{"pending":2},"pending_asks":0,"deliveries":{"pending":0,"authority_required":0,"last_error":null},
+            "ui_running":true,"carbon":{"available":false,"reason":"locked"}})).map_err(|e| Error::internal(e.to_string()))?;
+        assert_eq!(
+            r.carbon,
+            Some(CarbonStatus {
+                available: false,
+                reason: crate::ipc::ui::PresenceReason::Locked
+            })
+        );
         let h = History {
             limit: Some(201),
             before: None,

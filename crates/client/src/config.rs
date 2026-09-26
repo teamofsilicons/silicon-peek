@@ -126,6 +126,15 @@ impl Config {
     /// # Errors
     /// `unknown_config_key` or `invalid_input`.
     pub fn set(&mut self, key: &str, value: &Value) -> Result<()> {
+        self.set_value(key, value).map_err(|e| {
+            e.with_input_field(
+                key,
+                "see `peek config --help` for every key and its accepted values",
+            )
+        })
+    }
+
+    fn set_value(&mut self, key: &str, value: &Value) -> Result<()> {
         let bad = |expected: &str| {
             Error::invalid_input(format!(
                 "config `{key}` must be {expected}, got {}",

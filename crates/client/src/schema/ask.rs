@@ -206,6 +206,15 @@ impl Ask {
     /// # Errors
     /// `invalid_input`, `question_too_long`, `too_many_options`, `text_too_long`.
     pub fn from_input(value: &Value) -> Result<Self> {
+        Self::parse_input(value).map_err(|e| {
+            e.with_input_context(
+                "ask",
+                "see `peek docs ask` for every ask type, its fields and limits",
+            )
+        })
+    }
+
+    fn parse_input(value: &Value) -> Result<Self> {
         let obj = value.as_object().ok_or_else(|| {
             Error::invalid_input(format!("--ask must be a JSON object, got {}", kind(value)))
         })?;
@@ -580,7 +589,9 @@ fn check_options(options: &[AskOption], hop: ImageHop) -> Result<()> {
         return Err(Error::invalid_input(format!(
             "the ask has {n} option(s); a choice ask needs at least {}",
             limits::OPTIONS_MIN
-        )));
+        ))
+        .with_hint("give 2–6 options, or use a text ask")
+        .with_details(json!({"field": "ask.options", "limit": limits::OPTIONS_MIN, "actual": n})));
     }
     for (i, o) in options.iter().enumerate() {
         let valid_id = (1..=limits::OPTION_ID_MAX_CHARS).contains(&o.id.len())
@@ -597,7 +608,23 @@ fn check_options(options: &[AskOption], hop: ImageHop) -> Result<()> {
             return Err(Error::invalid_input(format!(
                 "option id `{}` is used twice (options without an id default to their position, \"1\", \"2\", …)",
                 o.id
-            )));
+            ))
+            .with_hint("give every option a distinct id, or leave ids out")
+            .with_details(json!({"field": format!("ask.options[{i}].id"), "duplicate_of": format!("ask.options[{}].id", options[..i].iter().position(|p| p.id == o.id).unwrap_or(0))})));
+        }
+        // Labels are what the Carbon reads, says or types: two that match
+        // (ignoring case and surrounding spaces) cannot be told apart.
+        let label = o.label.trim().to_lowercase();
+        if let Some(j) = options[..i]
+            .iter()
+            .position(|p| p.label.trim().to_lowercase() == label)
+        {
+            return Err(Error::invalid_input(format!(
+                "`ask.options[{i}].label` \"{}\" repeats `ask.options[{j}].label`; labels must be distinct (ignoring case and spaces)",
+                o.label.trim()
+            ))
+            .with_hint("give every option a distinct label: the Carbon picks by what it reads, says or types")
+            .with_details(json!({"field": format!("ask.options[{i}].label"), "duplicate_of": format!("ask.options[{j}].label")})));
         }
         check_text(
             &format!("ask.options[{i}].label"),

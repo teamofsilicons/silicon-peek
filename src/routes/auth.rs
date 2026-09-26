@@ -488,8 +488,11 @@ pub(crate) async fn refresh(
     result.map(json_response)
 }
 
-/// `POST /api/v1/auth/logout` `{"token"}`, optionally with the bearer so the
-/// Ting grant is revoked too. Unknown tokens succeed (no oracle).
+/// `POST /api/v1/auth/logout` `{"token","revoke_ting"?}`. The Silicon's Ting
+/// grant is revoked too only with `"revoke_ting":true` and the bearer: it is
+/// shared by every home of the Silicon, so a plain logout (including every
+/// 0.1.0 CLI, which always sent the bearer) leaves it alone. Unknown tokens
+/// succeed (no oracle).
 pub(crate) async fn logout(
     State(state): State<AppState>,
     Extension(meta): Extension<RequestMeta>,
@@ -524,7 +527,8 @@ async fn logout_inner(
         ));
     };
     let iam = plane.iam()?;
-    if let Ok(Some(bearer)) = Bearer::from_headers(headers)
+    if request.revoke_ting
+        && let Ok(Some(bearer)) = Bearer::from_headers(headers)
         && let Ok(principal) = auth::authenticate(plane, bearer, &state.0.config.iam.app_id).await
     {
         revoke_ting_grant(state, plane, &principal).await;

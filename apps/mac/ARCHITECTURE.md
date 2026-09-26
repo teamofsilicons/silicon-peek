@@ -142,6 +142,7 @@ public protocol DaemonLinking: Sendable {
 | UI → peekd | `telemetry` | `TelemetryRequest(events: [TelemetryEvent])` |
 | UI → peekd | `settings.changed` | `SettingsChangedRequest(key: PeekSettings.Key, value: JSONValue)` |
 | UI → peekd | `ui.status` | `UIStatusReport(mic, hotkeys, glass, services, appBuild, appVersion)` (additive; peekd keeps the latest for `peek doctor`) |
+| UI → peekd | `presence` | `PresenceRequest(available, reason: .ok/.locked/.asleep/.displayOff)` (additive; `PresenceMonitor` → `DaemonLink.setPresence`, sent right after every hello and on change; while unavailable peekd queues new sends with `carbon_away`; `unknown_op` from an older peekd is tolerated) |
 | peekd → UI event | `slots.state` | `DaemonEvent.slotsState(SlotsStateEvent)` |
 | peekd → UI event | `peek.show` | `.peekShow(PeekShowEvent)` |
 | peekd → UI event | `tts.begin` / `tts.chunk` / `tts.end` / `tts.error` | `.ttsBegin` / `.ttsChunk(TTSChunk incl. pcm Data)` / `.ttsEnd` / `.ttsError` |

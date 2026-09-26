@@ -17,7 +17,7 @@ Keep the `ask_id`. It is in the answer, and `peek ask get <ASK_ID>` shows its st
 - **Short.** The question is at most 80 characters and is always text. It curves along its own arc above the answers.
 - **Speak the context, ask the decision.** Use `--speak` for the sentence of background, and keep the question itself tight.
 - **Give options ids** when your code routes on them; labels are for humans and may change.
-- **Expect voice.** Carbons may say "keep it" or "the second one". Distinct, short labels match best.
+- **Expect voice.** Carbons may say "keep it" or "the second one". Distinct, short labels match best; two options with the same label are rejected.
 
 ## Schema
 
@@ -42,7 +42,7 @@ Option items:
 | Field | Rule |
 |---|---|
 | `id` | optional, `^[a-z0-9_-]{1,32}$`, unique within the ask. Defaults to `"1"`, `"2"`, … in order. |
-| `label` | 1–40 characters. |
+| `label` | 1–40 characters, unique within the ask (`invalid_input`). |
 | `image` | optional path relative to the current directory; the same formats and 10 MiB limit as show images ([Speak and show](show.md)). |
 
 ## Examples by type
@@ -104,7 +104,7 @@ The full event, with `ask_id`, `question`, `via`, `transcript` and timestamps, i
 
 | State | How it gets there | You receive |
 |---|---|---|
-| `pending` | the ask is on screen or queued | – |
+| `pending` | the ask is on screen or queued (behind your earlier ask, or while the Carbon is away) | – |
 | `answered` | the Carbon answered | `peek.ask.answered` (or the `--wait` output) |
 | `dismissed` | the Carbon closed it without answering (Esc, the down-arrow once or twice) | `peek.ask.dismissed` with the `gesture` |
 | `expired` | it had `--expires-in` and the time ran out | `peek.ask.expired` |
@@ -118,14 +118,16 @@ peek ask cancel ask_0192…
 
 An ask without `--expires-in` waits until it is answered, dismissed or cancelled. While it is pending, your later sends queue behind it (at most 5, then `slot_busy`, exit 4), so the Carbon never faces a stack of your questions.
 
+While the Carbon's screen is locked or the display is asleep, nothing is shown: the send returns `status:"queued"` with a `carbon_away` warning and appears when the Carbon is back. Its `--expires-in` clock keeps running from the send, so an ask that expires while the Carbon is away is never shown and you receive `peek.ask.expired`.
+
 ## Wait for the answer inline
 
 ```sh
 peek send --json --ask '{"question":"Ship it?","type":"single_choice","options":["Ship","Hold"]}' --wait=60
 ```
 
-- Answered in time: one JSON value with `ask_id`, `send_id`, `state:"answered"`, `answer`, `via`, `transcript` and `answered_at`. **No Ting event is sent for it**: each answer reaches you through exactly one channel.
-- Dismissed, expired or cancelled while waiting: `{"ask_id","send_id","state":"dismissed"|"expired"|"cancelled"}`.
+- Answered in time: one JSON value with `ask_id`, `send_id`, `state:"answered"`, `answer`, `via`, `transcript` and `answered_at`. **No Ting event is sent for it**: each outcome reaches you through exactly one channel.
+- Dismissed, expired or cancelled while waiting: `{"ask_id","send_id","state":"dismissed"|"expired"|"cancelled"}`. This too replaces the Ting event: no `peek.ask.dismissed` or `peek.ask.expired` follows.
 - Timeout (default 120 s, at most 600): `{"ask_id","send_id","state":"pending","delivery":"ting"}`, exit 0, and the answer goes through Ting later.
 - Write the number with `=` (`--wait=60`); a bare `--wait` waits 120 s.
 
@@ -137,7 +139,7 @@ Agent tool calls often time out after about two minutes. Prefer Ting delivery in
 |---|---|---|
 | `question_too_long` | 2 | more than 80 characters |
 | `too_many_options` | 2 | more than 6 options |
-| `invalid_input` | 2 | a missing field, fewer than 2 options, a duplicate id, `max ≤ min`, an unknown field |
+| `invalid_input` | 2 | a missing field, fewer than 2 options, a duplicate id or label, `max ≤ min`, an unknown field; `details.field` names it |
 | `conflicting_flags` | 2 | `--ask` together with `--show`, or `--duration` with `--ask` |
 | `image_unreadable`, `image_unsupported`, `image_too_large` | 2 | an option image |
 | `slot_busy` | 4 | five sends already wait behind a pending ask |
