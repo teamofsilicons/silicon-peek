@@ -1,0 +1,237 @@
+name: Release candidate
+
+# Builds a reviewable Honeycomb release candidate from a v* tag: six native CLI builds, the signed
+# universal Peek.app, then honeycomb validate/pack and the loopback install test.
+# It NEVER uploads to Honeycomb: publishing is a separate, approved operator action
+# (deploy/README.md P10, BLUEPRINT §4.5).
+#
+# Repository secrets (all optional; without the first two no Peek.app.zip and no package are
+# produced, because peek never ships ad-hoc signed apps):
+#   PEEK_SIGNING_P12_BASE64, PEEK_SIGNING_P12_PASSWORD  Developer ID Application (or Apple Development) identity
+#   PEEK_SIGN_IDENTITY                                  identity name, if the .p12 holds several
+#   PEEK_NOTARY_APPLE_ID, PEEK_NOTARY_APP_PASSWORD      notarization (Developer ID only)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.98.0"
+  HONEYCOMB_CLI_VERSION: "0.5.0"
+
+jobs:
+  versions:
+    name: One version everywhere (and equal to the tag)
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: check
+        run: |
+          python3 scripts/package-honeycomb.py --check-versions | tee versions.json
+          echo "version=$(python3 -c 'import json; print(json.load(open("versions.json"))["version"])')" >> "$GITHUB_OUTPUT"
+
+  cli:
+    name: CLI ${{ matrix.target }}
+    needs: versions
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, target: macos-aarch64, triple: aarch64-apple-darwin, binary: peek }
+          - { runner: macos-15-intel, target: macos-x86_64, triple: x86_64-apple-darwin, binary: peek }
+          - { runner: ubuntu-24.04, target: linux-x86_64, triple: x86_64-unknown-linux-musl, binary: peek }
+          - { runner: ubuntu-24.04-arm, target: linux-aarch64, triple: aarch64-unknown-linux-musl, binary: peek }
+          - { runner: windows-2025, target: windows-x86_64, triple: x86_64-pc-windows-msvc, binary: peek.exe }
+          - { runner: windows-11-arm, target: windows-aarch64, triple: aarch64-pc-windows-msvc, binary: peek.exe }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      RUSTFLAGS: ${{ startsWith(matrix.target, 'windows-') && '-C target-feature=+crt-static' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.triple }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.triple }}
+      - name: musl toolchain
+        if: startsWith(matrix.target, 'linux-')
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Tests
+        run: cargo test --locked -p silicon-peek-client -p silicon-peek-cli --target ${{ matrix.triple }}
+      - name: Build
+        run: cargo build --release --locked -p silicon-peek-cli --target ${{ matrix.triple }}
+      - name: Smoke test (peek iam --json names the app and the release version)
+        shell: bash
+        run: |
+          ./target/${{ matrix.triple }}/release/${{ matrix.binary }} iam --json > iam.json
+          python3 -c 'import json,sys; d=json.load(open("iam.json")); assert d["app_id"]=="peek" and d["version"]==sys.argv[1], d' "${{ needs.versions.outputs.version }}"
+      - name: Stage
+        shell: bash
+        run: |
+          mkdir -p "out/${{ matrix.target }}"
+          cp "target/${{ matrix.triple }}/release/${{ matrix.binary }}" "out/${{ matrix.target }}/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: out
+          if-no-files-found: error
+
+  mac-app:
+    name: Peek.app (universal, signed)
+    needs: versions
+    runs-on: macos-26
+    timeout-minutes: 90
+    outputs:
+      signed: ${{ steps.build.outputs.signed }}
+    env:
+      HAS_SIGNING: ${{ secrets.PEEK_SIGNING_P12_BASE64 != '' && secrets.PEEK_SIGNING_P12_PASSWORD != '' }}
+      HAS_NOTARY: ${{ secrets.PEEK_NOTARY_APPLE_ID != '' && secrets.PEEK_NOTARY_APP_PASSWORD != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          [ -n "$xcode" ] || { echo "No Xcode 26 on this runner image" >&2; exit 1; }
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+      - name: Install xcodegen
+        run: brew install xcodegen
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Import the signing identity into a temporary keychain
+        if: env.HAS_SIGNING == 'true'
+        env:
+          P12_BASE64: ${{ secrets.PEEK_SIGNING_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.PEEK_SIGNING_P12_PASSWORD }}
+          NOTARY_APPLE_ID: ${{ secrets.PEEK_NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.PEEK_NOTARY_APP_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/peek-signing.keychain-db"
+          password=$(openssl rand -hex 24)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/identity.p12"
+          security import "$RUNNER_TEMP/identity.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          rm -P "$RUNNER_TEMP/identity.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          echo "PEEK_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          if [ "$HAS_NOTARY" = true ]; then
+            xcrun notarytool store-credentials peek-notary --apple-id "$NOTARY_APPLE_ID" --team-id LTBSK59BJ2 \
+              --password "$NOTARY_PASSWORD" --keychain "$keychain"
+            echo "NOTARY_PROFILE=peek-notary" >> "$GITHUB_ENV"
+            echo "NOTARY_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          fi
+      - name: Build, sign, zip and verify
+        id: build
+        env:
+          SIGN_IDENTITY: ${{ secrets.PEEK_SIGN_IDENTITY }}
+        run: |
+          if [ "$HAS_SIGNING" = true ]; then
+            scripts/build-mac-release.sh
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No signing identity secret: compiling Peek.app only. peek never ships ad-hoc builds, so no Peek.app.zip or Honeycomb package is produced."
+            MACOSX_DEPLOYMENT_TARGET=26.0 cargo build --locked --release -p silicon-peek-daemon
+            mkdir -p dist && cp target/release/peekd dist/peekd
+            (cd apps/mac && xcodegen generate --spec project.yml)
+            xcodebuild -project apps/mac/Peek.xcodeproj -scheme Peek -configuration Release \
+              -destination 'generic/platform=macOS' -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO build
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: steps.build.outputs.signed == 'true'
+        with:
+          name: mac-app
+          path: |
+            dist/Peek.app.zip
+            dist/Peek.app.build.json
+          if-no-files-found: error
+      - name: Remove the temporary keychain
+        if: always() && env.PEEK_KEYCHAIN != ''
+        run: security delete-keychain "$PEEK_KEYCHAIN" || true
+
+  package:
+    name: Honeycomb package (validate, pack, loopback install)
+    needs: [versions, cli, mac-app]
+    if: needs.mac-app.outputs.signed == 'true'
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.versions.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: release-binaries
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: mac-app
+          path: dist
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Install the pinned Honeycomb packager (isolated root)
+        run: |
+          cargo install silicon-honeycomb-cli --locked --version "$HONEYCOMB_CLI_VERSION" --root "$RUNNER_TEMP/honeycomb"
+          echo "HONEYCOMB=$RUNNER_TEMP/honeycomb/bin/honeycomb" >> "$GITHUB_ENV"
+      - name: Stage (formats, architectures, zip hygiene, signature round trip, versions)
+        run: python3 scripts/package-honeycomb.py --version "$VERSION" --out dist/stage --binaries-dir release-binaries --app-zip dist/Peek.app.zip --honeycomb "$HONEYCOMB"
+      - name: Validate, pack, validate
+        run: |
+          home=$(mktemp -d)
+          hc() { env SILICON_HOME="$home" HONEYCOMB_AUTO_UPDATE=0 HONEYCOMB_NO_SERVICE=1 HONEYCOMB_TELEMETRY=0 HONEYCOMB_NO_MODIFY_PATH=1 "$HONEYCOMB" "$@" </dev/null; }
+          hc validate dist/stage --json
+          hc pack dist/stage --output "dist/peek-$VERSION.tar.gz" --json
+          hc validate "dist/peek-$VERSION.tar.gz" --json
+          python3 scripts/package-honeycomb.py --verify-archive "dist/peek-$VERSION.tar.gz" --out dist/stage
+          (cd dist && shasum -a 256 "peek-$VERSION.tar.gz" > "peek-$VERSION.tar.gz.sha256")
+      - name: Loopback install test (fake API on 127.0.0.1, PATH removed)
+        run: python3 scripts/loopback-install-test.py --archive "dist/peek-$VERSION.tar.gz" --honeycomb "$HONEYCOMB"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: peek-honeycomb-${{ env.VERSION }}
+          path: |
+            dist/peek-${{ env.VERSION }}.tar.gz
+            dist/peek-${{ env.VERSION }}.tar.gz.sha256
+            dist/peek-${{ env.VERSION }}-stage.sha256
+            dist/Peek.app.build.json
+          if-no-files-found: error
+      - name: Summary
+        run: |
+          {
+            echo "## peek $VERSION release candidate"
+            echo
+            echo "Bundle: $(sed -n 's/^bundle_id=//p' dist/stage/targets/macos-aarch64/Peek.app.info), team_id '$(sed -n 's/^team_id=//p' dist/stage/targets/macos-aarch64/Peek.app.info)'"
+            echo
+            echo '```'
+            cat "dist/peek-$VERSION.tar.gz.sha256"
+            echo '```'
+            echo
+            echo "Candidate artifacts only. Uploading to Honeycomb is a separate, approved operator action (deploy/README.md P10)."
+          } >> "$GITHUB_STEP_SUMMARY"

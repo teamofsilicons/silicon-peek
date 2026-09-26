@@ -1,0 +1,10 @@
+# BLUEPRINT §1.3 pins `channel = "1.98.0"` (the ecosystem file). This machine has
+# only `stable` (rustc 1.98.1, with all eight release targets installed), and a
+# pinned but uninstalled channel makes rustup auto-install a second toolchain on
+# the first cargo call. `stable` resolves to 1.98.x here, and `rust-version =
+# "1.98"` in Cargo.toml enforces the minimum. Switch back to "1.98.0" once CI
+# provisions that exact toolchain.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

@@ -1,0 +1,38 @@
+{
+  "org_id": "tos",
+  "app_id": "peek",
+  "name": "Peek",
+  "description": "Peek is a local, voice-first way for Carbons and Silicons to exchange quick messages on a Mac without opening a conversation. A Silicon claims one of eight positions around the screen, registers a small JavaScript drawing for its bubble, and then uses the peek CLI to speak a sentence, show up to three text or image elements, or ask a single self-contained question (text, single choice, multiple choice, slider or range). The native macOS app renders the bubble with Liquid Glass, plays speech, and lets the Carbon answer by voice, keyboard or click. Answers and Carbon replies are delivered back to the asking Silicon through Ting. Peek signs Silicons in with IAM short-lived tokens only. It requests self.identity.read because Ting verifies the delivering actor, self.profile.read to show the Silicon's name on its bubble, and self.membership.read so organization administrators can configure their own Deepgram key. The Ting scopes let Peek enroll each Silicon as a recipient, deliver answers, and remove that enrollment when the Silicon logs out. History stays on the Mac; the backend keeps only the app secret, drawings and delivery receipts.",
+  "visibility": "public",
+  "website_url": "https://peek.teamofsilicons.com",
+  "docs_url": "https://peek.teamofsilicons.com/docs",
+  "base_url": "https://backend.peek.teamofsilicons.com",
+  "webhook_url": "https://backend.peek.teamofsilicons.com/webhooks/iam",
+  "webhook_secret": "",
+  "webhook_scope": [
+    "membership"
+  ],
+  "app_scope": {
+    "iam": [
+      "self.identity.read",
+      "self.profile.read",
+      "self.membership.read"
+    ],
+    "external": [
+      {
+        "app_id": "ting",
+        "endpoint_id": "subscriptions.register"
+      },
+      {
+        "app_id": "ting",
+        "endpoint_id": "tings.send"
+      },
+      {
+        "app_id": "ting",
+        "endpoint_id": "subscriptions.revoke"
+      }
+    ]
+  },
+  "obo_endpoints": [],
+  "testing_idle_days": 30
+}

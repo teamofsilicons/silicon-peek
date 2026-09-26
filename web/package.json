@@ -1,0 +1,30 @@
+{
+  "name": "@teamofsilicons/peek-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Landing page and documentation for peek, prerendered for https://peek.teamofsilicons.com.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 4317 --strictPort",
+    "check": "tsc --noEmit",
+    "build": "npm run check && vite build && node scripts/build-docs.mjs && node scripts/check-docs.mjs",
+    "preview": "vite preview --host 127.0.0.1 --port 4318 --strictPort",
+    "test": "node --test \"scripts/*.test.mjs\" \"src/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "5.3.0",
+    "@teamofsilicons/space-station-web": "0.1.0",
+    "solid-js": "1.9.15"
+  },
+  "devDependencies": {
+    "@types/node": "26.5.1",
+    "marked": "18.0.14",
+    "typescript": "7.0.2",
+    "vite": "8.3.1",
+    "vite-plugin-solid": "2.11.14"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

@@ -1,0 +1,160 @@
+[workspace]
+members = [".", "crates/client", "crates/cli", "crates/daemon"]
+resolver = "3"
+
+# One version for everything: honeycomb.yaml `version`, Peek.app's
+# CFBundleShortVersionString and the git tag `v0.1.0` must all agree.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+repository = "https://github.com/teamofsilicons/silicon-peek"
+homepage = "https://peek.teamofsilicons.com"
+authors = ["Team of Silicons"]
+
+# Pinned per BLUEPRINT §1.4. Members opt into extra features locally, e.g.
+# `tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }`.
+[workspace.dependencies]
+silicon-peek-client = { path = "crates/client", version = "=0.1.0" }
+silicon-iam-client = "=4.0.0"
+space-station = "=0.1.1"
+
+aes-gcm = "0.10.3"
+anyhow = "1.0.100"
+axum = { version = "0.8.9", features = ["http2", "json", "macros", "matched-path"] }
+base64 = "0.22.1"
+blake3 = "1.8.2"
+bytes = "1.11.0"
+clap = { version = "4.5.48", features = ["derive", "env", "wrap_help"] }
+dotenvy = "0.15.7"
+futures-util = "0.3.31"
+getrandom = "0.4"
+hex = "0.4.3"
+http = "1.3.1"
+libc = "0.2.189"
+nix = { version = "0.31.3", default-features = false }
+# `rustls-no-provider`: every binary installs rustls' ring provider first
+# (BLUEPRINT §1.4), so the CLI and peekd never compile aws-lc-sys (a second
+# crypto provider that needs a C toolchain for every cross target).
+# peek-server still gets aws-lc through silicon-iam-client's own features.
+reqwest = { version = "0.13.4", default-features = false, features = [
+  "json",
+  "query",
+  "rustls-no-provider",
+  "http2",
+  "stream",
+] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+secrecy = { version = "0.10.3", features = ["serde"] }
+semver = "1.0.27"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+subtle = "2.6.1"
+thiserror = "2.0.17"
+time = { version = "0.3.55", features = ["formatting", "parsing"] }
+tokio = { version = "1.53.1" }
+tower = "0.5.2"
+tower-http = { version = "0.7", features = ["trace", "limit", "timeout"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
+url = { version = "2.5.7", features = ["serde"] }
+uuid = { version = "1.26.0", features = ["v4", "v7", "serde"] }
+whatlang = "0.18"
+tempfile = "3.27"
+wiremock = "0.6.5"
+
+# `unsafe_code` is `deny` (not `forbid`) workspace-wide so the CLI and the
+# daemon can allow it in exactly one module each (libc `renamex_np`,
+# `getpeereid`, `umask`). The client library and the server raise it to
+# `forbid` with a crate-level `#![forbid(unsafe_code)]`.
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+
+[package]
+name = "silicon-peek"
+description = "peek-server: the backend for Peek (IAM app secret, Ting delivery, Deepgram token minting, drawings, reports)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+publish = false
+default-run = "peek-server"
+
+[[bin]]
+name = "peek-server"
+path = "src/main.rs"
+
+# Server dependencies per BLUEPRINT §1.4 ("server" column). The server
+# component owns src/, migrations/ and tests/; these are declared here because
+# this manifest is also the workspace root.
+[dependencies]
+silicon-peek-client.workspace = true
+silicon-iam-client.workspace = true
+space-station.workspace = true
+aes-gcm.workspace = true
+# `dyn`-compatible async traits for the IAM seam (tests swap the IAM base URL,
+# the trait keeps the handlers independent of the SDK's concrete client).
+async-trait = "0.1.89"
+axum.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+dotenvy.workspace = true
+hex.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = [
+  "rt-multi-thread",
+  "macros",
+  "signal",
+  "net",
+  "time",
+  "sync",
+  "fs",
+  "process",
+] }
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+# Signs IAM webhook fixtures exactly as IAM does (HMAC-SHA256).
+hmac = "0.12.1"
+# Reads streamed response bodies frame by frame (speech proxy tests).
+http-body-util = "0.1.3"
+tempfile.workspace = true
+tower = { workspace = true, features = ["util"] }
+wiremock.workspace = true
+
+[lints]
+workspace = true
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+strip = "symbols"

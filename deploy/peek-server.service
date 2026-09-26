@@ -1,0 +1,64 @@
+# /etc/systemd/system/peek-server.service, installed by deploy/install.sh (BLUEPRINT §5.2).
+# peek-server reads its whole configuration from /etc/peek/runtime.env (0600, rendered from
+# Secrets Manager silicon-peek/production/runtime) and listens on 127.0.0.1:8080 behind Caddy.
+# It handles SIGTERM with a graceful shutdown; state lives only in /var/lib/peek.
+[Unit]
+Description=Silicon Peek backend (peek-server)
+Documentation=https://github.com/teamofsilicons/silicon-peek/blob/main/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=peek
+Group=peek
+WorkingDirectory=/var/lib/peek
+EnvironmentFile=/etc/peek/runtime.env
+ExecStart=/opt/peek/current/peek-server
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=30
+UMask=0077
+LimitNOFILE=65536
+# Defense in depth on the shared 2 GB host: peek-server needs tens of MB (plus 4 MiB audio bodies
+# in flight); a runaway is OOM-killed inside its own cgroup and restarted, leaving Caddy alone.
+MemoryHigh=768M
+MemoryMax=1G
+
+# Hardening: the server needs outbound TCP (IAM, Ting, Deepgram, Space Station, GitHub), the
+# loopback listener and its SQLite directory; nothing else.
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/peek
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

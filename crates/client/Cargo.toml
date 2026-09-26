@@ -1,0 +1,63 @@
+[package]
+name = "silicon-peek-client"
+description = "Wire types, validators and a stateless HTTP client for Peek; the `runtime` feature adds the per-home store, session refresh and the peekd IPC client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["peek", "silicon", "iam", "ting", "ipc"]
+categories = ["api-bindings"]
+
+[lib]
+name = "silicon_peek_client"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Stateful pieces shared by the CLI and peekd: the `$SILICON_HOME/.peek` store,
+# `fresh_session`, login/logout bookkeeping and the peekd IPC client.
+runtime = ["dep:getrandom", "dep:nix", "tokio/net", "tokio/rt", "tokio/fs"]
+
+[dependencies]
+blake3.workspace = true
+bytes.workspace = true
+hex.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["io-util", "time", "sync"] }
+url.workspace = true
+uuid.workspace = true
+
+getrandom = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, optional = true, features = ["user", "fs"] }
+
+# Windows on ARM builds blake3 without its C code. When aarch64-pc-windows-msvc is cross-built from a
+# Mac (cargo xwin --cross-compiler clang, BLUEPRINT §4.4), cargo-xwin puts MSVC's arm_neon.h (whose
+# vreinterpretq_* macros expand to nothing) ahead of clang's, and blake3's c/blake3_neon.c stops
+# compiling. peek only hashes short idempotency keys, and the pure-Rust implementation gives the
+# same digests. Every other target keeps blake3's C and assembly code.
+[target.'cfg(all(windows, target_arch = "aarch64"))'.dependencies]
+blake3 = { workspace = true, features = ["pure"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time", "sync"] }
+wiremock.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true

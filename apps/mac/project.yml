@@ -1,0 +1,90 @@
+# Peek.app (BLUEPRINT §8.1). Generate with `xcodegen generate`; Peek.xcodeproj is git-ignored.
+#
+# Layout (supersedes the single-target layout of §8.1/§8.2, see ARCHITECTURE.md):
+#   Sources/App/            the app target: PeekApp (@main), AppDelegate, ServiceRegistration, SelfUpdateHooks
+#   Packages/PeekKit/       everything else, as SwiftPM library targets (PeekCore, PeekIPC, PeekDrawing,
+#                           PeekAudio, PeekInput, PeekUI) with unit tests
+#   Packages/CQuickJS/      vendored quickjs-ng v0.17.0 + the peek_qjs shim (scripts/vendor-quickjs.sh)
+#
+# Bundle layout produced:
+#   Peek.app/Contents/MacOS/Peek
+#   Peek.app/Contents/Helpers/peekd                              (scripts/embed-peekd.sh)
+#   Peek.app/Contents/Library/LaunchAgents/ai.tos.peek.daemon.plist
+#   Peek.app/Contents/Resources/Assets.car
+# No embedded frameworks, so no symlinks (Honeycomb rejects links).
+name: Peek
+options:
+  bundleIdPrefix: ai.tos
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+  xcodeVersion: "26.4"
+packages:
+  PeekKit:
+    path: Packages/PeekKit
+  CQuickJS:
+    path: Packages/CQuickJS
+settings:
+  base:
+    DEVELOPMENT_TEAM: LTBSK59BJ2
+    CODE_SIGN_STYLE: Automatic                # dev: "Apple Development: Shubham Gupta (MAP74QT7U4)"
+    ENABLE_HARDENED_RUNTIME: YES
+    SWIFT_VERSION: "6.0"                      # Swift 6 language mode (compiler 6.3.1)
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1000"           # == Peek.app.info bundle_version
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO         # the embed-peekd phase writes into the bundle and reads ../../dist
+  configs:
+    Release:
+      CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO  # no get-task-allow (notarization rejects it)
+      OTHER_CODE_SIGN_FLAGS: "--timestamp"
+targets:
+  Peek:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/App
+      - path: Resources
+        excludes:
+          - Info.plist
+          - Peek.entitlements
+          - "LaunchAgents/**"
+      - path: Resources/LaunchAgents/ai.tos.peek.daemon.plist
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Library/LaunchAgents
+    dependencies:
+      - package: PeekKit
+        product: PeekUI
+      - package: PeekKit
+        product: PeekCore
+      - package: PeekKit
+        product: PeekIPC
+      - sdk: ServiceManagement.framework
+    postBuildScripts:
+      - name: Embed peekd
+        script: '"$SRCROOT/scripts/embed-peekd.sh"'
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/peekd
+        basedOnDependencyAnalysis: false
+      - name: Configure LaunchAgent
+        script: '"$SRCROOT/scripts/configure-launch-agent.sh"'
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_NAME: Peek
+        PRODUCT_BUNDLE_IDENTIFIER: ai.tos.peek
+        CODE_SIGN_ENTITLEMENTS: Resources/Peek.entitlements
+        INFOPLIST_FILE: Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        COMBINE_HIDPI_IMAGES: YES
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
+        SWIFT_STRICT_CONCURRENCY: complete
+        LM_FILTER_WARNINGS: YES                  # Peek has no App Intents: silence "Metadata extraction skipped"
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: ai.tos.peek.dev   # dev builds never share TCC rows or LaunchServices identity with prod
+    scheme:
+      testTargets: []

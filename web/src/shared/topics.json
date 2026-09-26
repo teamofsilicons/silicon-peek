@@ -1,0 +1,117 @@
+{
+  "groups": [
+    {
+      "id": "use",
+      "title": "Use peek",
+      "kind": "Instructive"
+    },
+    {
+      "id": "learn",
+      "title": "How it works",
+      "kind": "Informative"
+    }
+  ],
+  "topics": [
+    {
+      "slug": "start",
+      "title": "Start here",
+      "group": "use",
+      "summary": "Install once, then four steps for Carbons and four for Silicons."
+    },
+    {
+      "slug": "carbon",
+      "title": "Peek for Carbons",
+      "group": "use",
+      "summary": "Shortcuts, answering by voice or keyboard, dismissing, Settings."
+    },
+    {
+      "slug": "silicon",
+      "title": "Peek for Silicons",
+      "group": "use",
+      "summary": "silicon.yaml, tools.md, registering, sending, and routing answers in flows."
+    },
+    {
+      "slug": "cli",
+      "title": "CLI reference",
+      "group": "use",
+      "summary": "Every command, flag, JSON output, error code and exit code."
+    },
+    {
+      "slug": "show",
+      "title": "Speak and show",
+      "group": "use",
+      "summary": "--speak voices and languages, --show text and images, timing."
+    },
+    {
+      "slug": "ask",
+      "title": "Ask a question",
+      "group": "use",
+      "summary": "Text, choice, slider and range questions, and how answers come back."
+    },
+    {
+      "slug": "drawing",
+      "title": "Drawing the visual",
+      "group": "use",
+      "summary": "The JavaScript canvas API for your bubble, Liquid Glass, examples."
+    },
+    {
+      "slug": "ting",
+      "title": "Ting events",
+      "group": "use",
+      "summary": "The six event types, exact payloads, delivery and flow routing."
+    },
+    {
+      "slug": "iam",
+      "title": "IAM and sessions",
+      "group": "learn",
+      "summary": "Scopes and why, SLT login, client token custody, refresh."
+    },
+    {
+      "slug": "testing",
+      "title": "Testing environments",
+      "group": "learn",
+      "summary": "Isolated test worlds with the same code path as production."
+    },
+    {
+      "slug": "telemetry",
+      "title": "Telemetry",
+      "group": "learn",
+      "summary": "What is recorded, what never is, and every opt-out."
+    },
+    {
+      "slug": "privacy",
+      "title": "Privacy",
+      "group": "learn",
+      "summary": "Where voice, text and drawings go, and what the backend keeps."
+    },
+    {
+      "slug": "platforms",
+      "title": "Platforms",
+      "group": "learn",
+      "summary": "macOS 26+ for bubbles; the IAM-only CLI on Linux and Windows."
+    },
+    {
+      "slug": "development",
+      "title": "Development",
+      "group": "learn",
+      "summary": "Architecture, building from source, the IPC protocol, contributing."
+    },
+    {
+      "slug": "versioning",
+      "title": "Versioning and compatibility",
+      "group": "learn",
+      "summary": "API v1, IPC protocol 1, the compatibility matrix, deprecation."
+    },
+    {
+      "slug": "troubleshooting",
+      "title": "Troubleshooting",
+      "group": "learn",
+      "summary": "Every error code with its fix, symptoms, logs, peek doctor."
+    }
+  ],
+  "index": {
+    "slug": "index",
+    "title": "Peek documentation",
+    "summary": "Every topic, grouped: instructive pages first, informative pages after."
+  }
+}

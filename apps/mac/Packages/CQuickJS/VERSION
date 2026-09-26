@@ -1,0 +1,4 @@
+quickjs-ng v0.17.0
+url    https://codeload.github.com/quickjs-ng/quickjs/tar.gz/refs/tags/v0.17.0
+sha256 559bc4c420475e55c7ab4510adbc562f55d7524d75e8e89d79ce4bb02f5687d9
+files  quickjs.c libregexp.c libunicode.c dtoa.c quickjs.h cutils.h list.h libregexp.h libregexp-opcode.h libunicode.h libunicode-table.h dtoa.h quickjs-atom.h quickjs-opcode.h quickjs-c-atomics.h builtin-array-fromasync.h builtin-iterator-zip-keyed.h builtin-iterator-zip.h

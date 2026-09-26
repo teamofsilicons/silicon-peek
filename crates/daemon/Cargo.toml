@@ -1,0 +1,52 @@
+[package]
+name = "silicon-peek-daemon"
+description = "peekd: the per-user Peek daemon (slots, queue, Deepgram, delivery outbox)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "peekd"
+path = "src/main.rs"
+
+[dependencies]
+silicon-peek-client = { workspace = true, features = ["runtime"] }
+hex.workspace = true
+libc.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = [
+  "rt-multi-thread",
+  "macros",
+  "signal",
+  "net",
+  "time",
+  "sync",
+  "fs",
+  "process",
+  "io-util",
+] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+uuid.workspace = true
+whatlang.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true
+
+[lints]
+workspace = true

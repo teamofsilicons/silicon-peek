@@ -1,0 +1,30 @@
+.ref/
+target/
+node_modules/
+dist/
+.DS_Store
+*.xcuserstate
+xcuserdata/
+.build/
+build/
+.env
+# Generated Xcode projects (xcodegen generates them from apps/mac/project.yml)
+*.xcodeproj/
+DerivedData/
+.swiftpm/
+# Python caches from scripts/ and deploy/
+__pycache__/
+*.pyc
+# Private operator material: never commit these (see deploy/README.md)
+/application.json
+runtime.json
+*.p12
+*.mobileprovision
+.env.*
+!.env.example
+.vercel/
+*.log
+.vercel/
+
+# Reference mockups contain third-party imagery; kept out of the public repo
+understanding/*.jpg

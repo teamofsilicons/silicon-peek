@@ -1,0 +1,11 @@
+# /etc/systemd/system/peek-backup.timer: hourly snapshots (BLUEPRINT §5.2).
+[Unit]
+Description=Hourly Silicon Peek database backup
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,36 @@
+# /etc/systemd/system/caddy.service, installed by deploy/install.sh (copied from
+# silicon-ting/deploy/caddy.service). Caddy terminates TLS for backend.peek.teamofsilicons.com,
+# obtains certificates over ACME (port 80 stays open) and proxies to peek-server on 127.0.0.1:8080.
+[Unit]
+Description=Peek HTTPS gateway (Caddy)
+Documentation=https://caddyserver.com/docs/
+After=network-online.target peek-server.service
+Wants=network-online.target
+
+[Service]
+User=caddy
+Group=caddy
+Environment=HOME=/var/lib/caddy
+ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/caddy
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

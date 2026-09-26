@@ -1,0 +1,40 @@
+# /etc/caddy/Caddyfile, installed by deploy/install.sh (BLUEPRINT §5.2). Keep port 80 open for ACME.
+# The backend enforces its own per-route limits; the edge bounds every request body first:
+#   - POST /api/v1/speech/listen (the speech proxy) carries recorded audio: up to 4 MiB
+#     (LISTEN_MAX_BYTES, a 120 s 16 kHz mono WAV), so the edge allows 5 MiB there;
+#   - every other route is bounded at 1 MB (drawings are <= 256 KiB, JSON bodies far smaller).
+# The two matchers are mutually exclusive: nested limits would apply the smaller one.
+{
+    email ops@teamofsilicons.com
+}
+(secure_headers) {
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        X-Frame-Options DENY
+        -Server
+    }
+}
+backend.peek.teamofsilicons.com {
+    import secure_headers
+    @speech_listen path /api/v1/speech/listen
+    request_body @speech_listen {
+        max_size 5MiB
+    }
+    @other_routes not path /api/v1/speech/listen
+    request_body @other_routes {
+        max_size 1MB
+    }
+    reverse_proxy 127.0.0.1:8080
+    # A body over the edge limit gets peek's JSON error envelope, so the CLI and peekd report
+    # payload_too_large with a reason instead of a bare 413.
+    handle_errors {
+        @too_large expression {err.status_code} == 413
+        handle @too_large {
+            import secure_headers
+            header Content-Type application/json
+            respond `{"error":{"code":"payload_too_large","message":"the request body is larger than peek's edge limit (4 MiB of recorded audio on /api/v1/speech/listen, 1 MB elsewhere)","hint":"send less data (a voice answer records at most 120 s)","retryable":false,"details":{"reason":"edge_body_limit"}}}` 413
+        }
+    }
+}

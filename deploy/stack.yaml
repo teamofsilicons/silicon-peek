@@ -1,0 +1,205 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Silicon Peek backend (peek-server) on one ARM64 EC2 host with Caddy HTTPS, systemd, encrypted
+  S3 artifacts and backups, and Secrets Manager. Administration is SSM only; no SSH port.
+  Adapted from silicon-ting/deploy/stack.yaml (BLUEPRINT §5.3). Deploy in us-east-1:
+  aws --region us-east-1 cloudformation deploy --stack-name silicon-peek-production
+  --template-file deploy/stack.yaml --capabilities CAPABILITY_NAMED_IAM
+  --parameter-overrides Vpc=vpc-04b23a487cfe0bd8e Subnet=subnet-07945746462c26b2d AllocateEip=true
+  --tags Service=silicon-peek Environment=production
+
+Parameters:
+  Ami:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    Description: Amazon Linux 2023, arm64 (t4g is Graviton); used only while PinnedImageId is empty
+  PinnedImageId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^(ami-[0-9a-f]{8,17})?$'
+    Description: >-
+      The AMI the running instance was created from. CloudFormation re-resolves the Ami SSM
+      parameter on every stack update, and a newer AMI would REPLACE the instance (new IP, empty
+      /var/lib/peek). After the first deploy, always pass PinnedImageId=<the instance's ImageId>.
+  Vpc:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC of the public subnet
+  Subnet:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet (route to an internet gateway) for the instance
+  AllocateEip:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: >-
+      true allocates an Elastic IP. The account is over its EIP quota (14 in use, 10 applied), so
+      'false' may be needed: the auto-assigned public IP survives reboots but changes on stop/start,
+      so never stop the instance and update the backend.peek A record if it is replaced (BLUEPRINT §5.5).
+
+Conditions:
+  CreateEip: !Equals [!Ref AllocateEip, 'true']
+  UsePinnedImage: !Not [!Equals [!Ref PinnedImageId, '']]
+
+Resources:
+  Artifacts:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration: {Status: Enabled}
+      LifecycleConfiguration:
+        Rules:
+          - Id: ShortLivedRecoverySnapshots
+            Status: Enabled
+            Prefix: backups/
+            ExpirationInDays: 7
+            NoncurrentVersionExpiration: {NoncurrentDays: 1}
+          - Id: SupersededReleaseVersions
+            Status: Enabled
+            Prefix: releases/
+            NoncurrentVersionExpiration: {NoncurrentDays: 30}
+          - Id: AbortIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload: {DaysAfterInitiation: 1}
+      Tags:
+        - {Key: Service, Value: silicon-peek}
+
+  ArtifactsPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Artifacts
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt Artifacts.Arn
+              - !Sub '${Artifacts.Arn}/*'
+            Condition:
+              Bool: {'aws:SecureTransport': 'false'}
+
+  Runtime:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: silicon-peek/production/runtime
+      Description: >-
+        peek-server runtime configuration and secrets as one JSON object of strings (keys in
+        deploy/runtime.json.example). Rendered to /etc/peek/runtime.env (0600) by deploy/install.sh.
+      Tags:
+        - {Key: Service, Value: silicon-peek}
+
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: silicon-peek production host (SSM, release downloads, backups, runtime secret)
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore]
+      Policies:
+        - PolicyName: PeekRuntime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - {Effect: Allow, Action: 's3:GetObject', Resource: !Sub '${Artifacts.Arn}/releases/*'}
+              - {Effect: Allow, Action: 's3:PutObject', Resource: !Sub '${Artifacts.Arn}/backups/*'}
+              - {Effect: Allow, Action: 'secretsmanager:GetSecretValue', Resource: !Ref Runtime}
+      Tags:
+        - {Key: Service, Value: silicon-peek}
+
+  Profile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref Role]
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Peek HTTP (ACME) and HTTPS only; administration through SSM
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: ACME HTTP-01 and redirect to HTTPS}
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS API}
+      Tags:
+        - {Key: Service, Value: silicon-peek}
+
+  Instance:
+    Type: AWS::EC2::Instance
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ImageId: !If [UsePinnedImage, !Ref PinnedImageId, !Ref Ami]
+      InstanceType: t4g.small
+      IamInstanceProfile: !Ref Profile
+      DisableApiTermination: true
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          SubnetId: !Ref Subnet
+          AssociatePublicIpAddress: true
+          GroupSet: [!Ref SecurityGroup]
+      MetadataOptions: {HttpTokens: required, HttpPutResponseHopLimit: 1, HttpEndpoint: enabled}
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: {VolumeSize: 20, VolumeType: gp3, Encrypted: true, DeleteOnTermination: false}
+      Tags:
+        - {Key: Name, Value: silicon-peek-production}
+        - {Key: Service, Value: silicon-peek}
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          # First boot only. Every release is installed later by deploy/install.sh through SSM.
+          set -euo pipefail
+          dnf install -y python3 sqlite
+          id peek >/dev/null 2>&1 || useradd --system --home-dir /var/lib/peek --shell /sbin/nologin peek
+          id caddy >/dev/null 2>&1 || useradd --system --home-dir /var/lib/caddy --shell /sbin/nologin caddy
+          install -d -o peek -g peek -m 0700 /var/lib/peek /var/lib/peek/telemetry
+          install -d -o caddy -g caddy -m 0700 /var/lib/caddy
+          install -d -m 0700 /etc/peek
+          install -d -m 0755 /opt/peek /opt/peek/releases /etc/caddy /etc/systemd/journald.conf.d
+          printf '[Journal]\nStorage=persistent\nSystemMaxUse=256M\nMaxRetentionSec=30day\n' > /etc/systemd/journald.conf.d/peek.conf
+          systemctl restart systemd-journald
+          systemctl enable --now amazon-ssm-agent
+
+  Address:
+    Type: AWS::EC2::EIP
+    Condition: CreateEip
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref Instance
+      Tags:
+        - {Key: Service, Value: silicon-peek}
+
+Outputs:
+  InstanceId:
+    Value: !Ref Instance
+  ImageId:
+    Description: Pass as PinnedImageId on every later stack update
+    Value: !If [UsePinnedImage, !Ref PinnedImageId, !Ref Ami]
+  PublicIp:
+    Description: Point the Namecheap A record backend.peek here (TTL 300, BLUEPRINT §5.4)
+    Value: !If [CreateEip, !Ref Address, !GetAtt Instance.PublicIp]
+  ArtifactBucket:
+    Value: !Ref Artifacts
+  RuntimeSecret:
+    Value: !Ref Runtime
+  SecurityGroup:
+    Value: !Ref SecurityGroup
