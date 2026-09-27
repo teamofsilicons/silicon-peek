@@ -543,7 +543,7 @@ export default function Hero() {
       case "listening":
         return "Listening. Click the waveform to stop.";
       case "typing":
-        return "Typing an answer. Press Return to send, Escape to cancel.";
+        return "Typing an answer. Press Return to send, Escape to throw it away.";
       case "transcribing":
         return "Transcribing.";
       default:

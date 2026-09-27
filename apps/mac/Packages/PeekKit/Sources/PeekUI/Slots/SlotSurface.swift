@@ -49,12 +49,21 @@ public protocol SlotSurface: AnyObject {
     var onTick: (() -> Void)? { get set }
     /// B9 for the drawing: is this unit point over a drawn pixel or glass?
     var visualHitTest: ((CGPoint) -> Bool)? { get set }
+    /// The pointer is over the bubble's content (chrome, down-arrow, popup or drawn pixels), polled every frame: the
+    /// Esc router holds Esc while it is (hover-Esc).
+    var pointerOverContent: Bool { get }
+    /// This surface does not pre-warm (Debug A/B captures with `PEEK_DEBUG_PREWARM=none`): the bubble slides in at once,
+    /// as in peek 0.1.1.
+    var skipsPrewarm: Bool { get }
 
     /// Sizes and places the panel for `layout`. Only called while the panel is hidden.
     func configure(layout: SlotLayout)
-    /// Shows the panel and springs the content in from beyond the screen edge.
+    /// Orders the panel in where nobody sees it, with the content at rest, so the glass reaches its live look and the
+    /// drawing and backdrop are ready before ``slideIn()`` (peek 0.1.2). Frames tick meanwhile.
+    func prewarm()
+    /// Shows the panel (from the pre-warm or from hidden) and springs the content in from beyond the screen edge.
     func slideIn()
-    /// Slides the content back out and hides the panel once it is gone.
+    /// Slides the content back out and hides the panel once it is gone; a panel still pre-warming hides at once.
     func slideOut()
     func setInteraction(_ interaction: SlotInteraction)
     /// Allows (and takes) or gives up key focus, never activating the app.
@@ -76,12 +85,20 @@ public final class HeadlessSlotSurface: SlotSurface {
         didSet { updateTicking() }
     }
     public var visualHitTest: ((CGPoint) -> Bool)?
+    /// Set by tests to simulate the pointer over the bubble.
+    public var pointerOverContent = false
+    public var skipsPrewarm = false
 
     public private(set) var layout: SlotLayout?
     public private(set) var slideIns = 0
     public private(set) var slideOuts = 0
+    public private(set) var prewarms = 0
     public private(set) var interaction: SlotInteraction = .none
     public private(set) var isOnScreen = false
+    /// Ordered in off screen, warming up.
+    public private(set) var isPrewarming = false
+    /// Every surface call in order (`configure`, `prewarm`, `slideIn`, `slideOut`), for ordering tests.
+    public private(set) var calls: [String] = []
     private var ticker: Task<Void, Never>?
 
     public init(chrome: SlotChromeModel) {
@@ -89,19 +106,35 @@ public final class HeadlessSlotSurface: SlotSurface {
     }
 
     public func configure(layout: SlotLayout) {
+        calls.append("configure")
         self.layout = layout
         visualView.frame = layout.visualRect
         chrome.setSlotLayout(layout)
     }
 
+    public func prewarm() {
+        calls.append("prewarm")
+        prewarms += 1
+        isPrewarming = true
+        updateTicking()
+    }
+
     public func slideIn() {
+        calls.append("slideIn")
         slideIns += 1
+        isPrewarming = false
         isOnScreen = true
         updateTicking()
     }
 
     public func slideOut() {
-        slideOuts += 1
+        calls.append("slideOut")
+        if isPrewarming {
+            // Never seen: just ordered out.
+            isPrewarming = false
+        } else {
+            slideOuts += 1
+        }
         isOnScreen = false
         updateTicking()
     }
@@ -118,9 +151,9 @@ public final class HeadlessSlotSurface: SlotSurface {
     @discardableResult
     public func press(_ key: KeyInput) -> Bool { onKey?(key) ?? false }
 
-    /// A 20 Hz tick while "on screen", so level polling works without a display link.
+    /// A 20 Hz tick while "on screen" or pre-warming, so level polling works without a display link.
     private func updateTicking() {
-        if isOnScreen, onTick != nil {
+        if isOnScreen || isPrewarming, onTick != nil {
             guard ticker == nil else { return }
             ticker = Task { [weak self] in
                 while !Task.isCancelled {

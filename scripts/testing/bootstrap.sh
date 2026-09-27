@@ -38,7 +38,8 @@ ORG=tos
 CARBON=peek-admin
 SILICON=peek-tester
 
-# BLUEPRINT §3.1: final names and descriptions, byte-identical in every context.
+# BLUEPRINT §3.1 (+ the three 0.1.2 types, contract §3.10): final names and descriptions,
+# byte-identical in every context (types cannot be deleted or re-described).
 TING_TYPES=(
     "peek.ask.answered|A Carbon answered a peek --ask (voice, keyboard or click)."
     "peek.ask.dismissed|A Carbon dismissed a peek --ask without answering."
@@ -46,6 +47,9 @@ TING_TYPES=(
     "peek.message.received|A Carbon spoke or typed to the Silicon from its peek with no pending ask."
     "peek.speech.finished|A peek --speak finished playing or was stopped by the Carbon."
     "peek.show.dismissed|A Carbon closed a peek --show before it retracted."
+    "peek.send.expired|A peek --speak or --show reached its --expires-in or --expires-at deadline before it finished; the data says whether it was shown."
+    "peek.schedule.due|A scheduled peek send (--in or --at) came due; the data says whether it was shown, queued, expired or replaced the active peek."
+    "peek.send.shown|A peek send appeared on screen for the Carbon (always for scheduled sends; opt-in with --notify shown)."
 )
 
 die() {
@@ -334,8 +338,10 @@ fi
 
 # ---------------------------------------------------------------------------------------- D. Ting types
 
-phase "D. register the six peek Ting types in the test context (descriptions byte-identical to production)"
-if ! have ting_types.done; then
+phase "D. register the nine peek Ting types in the test context (descriptions byte-identical to production)"
+# The marker carries the type count: an environment bootstrapped with the six 0.1.1 types
+# registers the three 0.1.2 ones on the next run (re-registering an identical type is a no-op).
+if ! have ting_types_9.done; then
     if mutate "log the test Carbon in to Ting (test headers from the Ting test secret and root key)" \
         "iam4 --test $ENV -o json login --app-id ting --grant-org $ORG --approve-scopes | jq -r .slt | SILICON_HOME=$CARBON_HOME IAM_TEST_APP_SECRET=<ting_ts> IAM_TEST_KEY=<root_key> ting login --token-stdin" \
         carbon_ting_login; then
@@ -346,7 +352,7 @@ if ! have ting_types.done; then
                 { say "  $ting_type: registration failed (409 type_exists = a different description exists; fix it with ting types update)"; registered=0; }
         done
         SILICON_HOME="$CARBON_HOME" "$PEEK_TING_BIN" --org "$ORG" types list --app peek --json >&2
-        ((registered)) && save_state ting_types.done 1
+        ((registered)) && save_state ting_types_9.done 1
     fi
 fi
 

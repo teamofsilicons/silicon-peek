@@ -219,8 +219,17 @@ error_codes! {
     SideTaken = "side_taken" => Refused, false;
     /// The drawing failed validation.
     DrawingInvalid = "drawing_invalid" => Refused, false;
-    /// Five sends already wait behind a pending ask in this slot.
+    /// Deprecated alias of `queue_full`: sent only to CLIs older than 0.1.2
+    /// (and by peekd 0.1.1).
     SlotBusy = "slot_busy" => Refused, false;
+    /// The Silicon's queue already has one send on screen and five waiting.
+    QueueFull = "queue_full" => Refused, true;
+    /// No send with that ID belongs to this Silicon.
+    SendNotFound = "send_not_found" => Refused, false;
+    /// No scheduled send with that ID belongs to this Silicon.
+    ScheduleNotFound = "schedule_not_found" => Refused, false;
+    /// 500 sends are already scheduled for this Silicon.
+    ScheduleFull = "schedule_full" => Refused, false;
     /// No ask with that ID belongs to this Silicon.
     AskNotFound = "ask_not_found" => Refused, false;
     /// The command needs macOS.
@@ -708,6 +717,10 @@ mod tests {
             ("side_taken", 4),
             ("drawing_invalid", 4),
             ("slot_busy", 4),
+            ("queue_full", 4),
+            ("send_not_found", 4),
+            ("schedule_not_found", 4),
+            ("schedule_full", 4),
             ("ask_not_found", 4),
             ("platform_unsupported", 4),
             ("cli_outdated", 4),
@@ -778,5 +791,22 @@ mod tests {
         assert!(!o.retryable);
         assert!(o.hint.is_none());
         Ok(())
+    }
+
+    #[test]
+    fn queue_codes_are_refusals() {
+        assert!(ErrorCode::QueueFull.default_retryable());
+        assert!(!ErrorCode::SendNotFound.default_retryable());
+        assert!(!ErrorCode::ScheduleNotFound.default_retryable());
+        assert!(!ErrorCode::ScheduleFull.default_retryable());
+        for c in [
+            ErrorCode::QueueFull,
+            ErrorCode::SendNotFound,
+            ErrorCode::ScheduleNotFound,
+            ErrorCode::ScheduleFull,
+            ErrorCode::SlotBusy,
+        ] {
+            assert_eq!(c.exit_code(), ExitCode::Refused, "{c}");
+        }
     }
 }

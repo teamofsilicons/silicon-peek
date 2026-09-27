@@ -20,6 +20,8 @@ public enum ChromeTarget: Hashable, Sendable {
     case mic
     case keyboard
     case down
+    /// The `^` that expands a compact ask (peek 0.1.2).
+    case expand
     /// The open tap-to-expand popup.
     case popup
 }
@@ -45,6 +47,9 @@ extension ChromeLayout {
     /// The topmost piece of chrome under `point` (panel-local), not counting the drawing or overlays.
     public func target(at point: CGPoint) -> ChromeTarget? {
         if hypot(point.x - buttons.down.x, point.y - buttons.down.y) <= buttons.downRadius + 3 { return .down }
+        if let expand = buttons.expand, hypot(point.x - expand.x, point.y - expand.y) <= buttons.downRadius + 2 {
+            return .expand
+        }
         if hypot(point.x - buttons.mic.x, point.y - buttons.mic.y) <= buttons.radius + 2 { return .mic }
         if hypot(point.x - buttons.keyboard.x, point.y - buttons.keyboard.y) <= buttons.radius + 2 { return .keyboard }
         if let field {
@@ -108,6 +113,7 @@ extension ChromeLayout {
         case .mic: return Self.circleBox(buttons.mic, buttons.radius)
         case .keyboard: return Self.circleBox(buttons.keyboard, buttons.radius)
         case .down: return Self.circleBox(buttons.down, buttons.downRadius)
+        case .expand: return buttons.expand.map { Self.circleBox($0, buttons.downRadius) }
         case .popup: return nil
         }
     }

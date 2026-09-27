@@ -1,12 +1,12 @@
-# honeycomb.yaml — package format 1. No install_script: Honeycomb < 0.5.0 rejects it and would abort `silicon connect`.
+# honeycomb.yaml — package format 1, Manifest A: the macOS targets run install-app.sh (Honeycomb >= 0.5.0; every client is).
 format_version: 1
 app_id: "peek"
-version: "0.1.1"            # == every Cargo.toml version == CFBundleShortVersionString; git tag v0.1.1
+version: "0.1.2"            # == every Cargo.toml version == CFBundleShortVersionString; git tag v0.1.2
 bin:
   peek: "cli"
 targets:
-  macos-aarch64:   { root: "targets/macos-aarch64",   executables: { cli: "bin/peek" } }
-  macos-x86_64:    { root: "targets/macos-x86_64",    executables: { cli: "bin/peek" } }
+  macos-aarch64:   { root: "targets/macos-aarch64",   executables: { cli: "bin/peek" }, install_script: "install-app.sh" }
+  macos-x86_64:    { root: "targets/macos-x86_64",    executables: { cli: "bin/peek" }, install_script: "install-app.sh" }
   linux-x86_64:    { root: "targets/linux-x86_64",    executables: { cli: "bin/peek" } }
   linux-aarch64:   { root: "targets/linux-aarch64",   executables: { cli: "bin/peek" } }
   windows-x86_64:  { root: "targets/windows-x86_64",  executables: { cli: "bin/peek.exe" } }

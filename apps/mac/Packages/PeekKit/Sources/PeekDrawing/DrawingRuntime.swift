@@ -109,4 +109,7 @@ public final class FallbackDrawingHost: DrawingHosting {
     public func validate(_ script: DrawingScript, options: ValidationOptions) async -> ValidationReport {
         await DrawingValidator.validate(script, options: options, glassMode: glassMode)
     }
+
+    /// The fallback visual is static: it is drawn as soon as it is attached.
+    public func awaitFrame(timeout: Duration) async -> Bool { true }
 }

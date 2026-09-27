@@ -2,7 +2,12 @@
 //! pipeline, answers through the outbox, `--wait`, voice answers, drawings,
 //! queueing and restart persistence.
 
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::too_many_lines)]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::too_many_lines,
+    clippy::many_single_char_names
+)]
 
 mod common;
 
@@ -45,6 +50,10 @@ fn send_op() -> SendOp {
         duration_ms: None,
         expires_in_s: None,
         wait: false,
+        expires_at: None,
+        due_at: None,
+        tz: None,
+        replace: false,
     }
 }
 
@@ -627,6 +636,17 @@ async fn terminal_and_parked_delivery_outcomes() {
         r.warnings
     );
     let _ = ui.expect("peek.show").await;
+    // Always queue: the show must finish before the next ask appears.
+    ui.request(
+        &ShownDone {
+            send_id: r.send_id.clone(),
+            visible_ms: 4000,
+            reason: silicon_peek_client::ipc::ui::ShownReason::Auto,
+        },
+        vec![],
+    )
+    .await
+    .unwrap();
     drop(m);
     // `peek ting enroll` re-attaches the home: the parked row is retried at
     // once instead of at the next ten-minute retry.
@@ -1340,6 +1360,8 @@ async fn sends_queue_behind_a_pending_ask_up_to_five() {
     op.ask = Some(keep_or_delete());
     let (first, _) = h.call(&home, &op, vec![]).await.unwrap();
     assert_eq!(first.status, SendStatus::Showing);
+    assert_eq!(first.queue_position, Some(0));
+    assert_eq!(first.waiting, Some(0));
     let _ = ui.expect("peek.show").await;
     let mut queued = Vec::new();
     for i in 0..5 {
@@ -1352,25 +1374,50 @@ async fn sends_queue_behind_a_pending_ask_up_to_five() {
         );
         let (r, _) = h.call(&home, &s, vec![]).await.unwrap();
         assert_eq!(r.status, SendStatus::Queued);
+        assert_eq!(r.queue_position, Some(i + 1));
+        assert_eq!(r.waiting, Some(i + 1));
+        let badge = ui.expect("queue.state").await;
+        assert_eq!(badge.fields["send_id"], first.send_id.as_str());
+        assert_eq!(badge.fields["waiting"], i + 1);
+        assert_eq!(badge.fields["slot"], 5);
         queued.push(r.send_id);
     }
     let mut s = send_op();
     s.speak = Some("one too many".into());
     let e = h.call(&home, &s, vec![]).await.err().unwrap();
-    assert_eq!(*e.code(), ErrorCode::SlotBusy);
+    assert_eq!(*e.code(), ErrorCode::QueueFull);
     assert_eq!(e.exit_code().code(), 4);
-    assert_eq!(e.details().unwrap()["limit"], 5);
-    let blocking = first.ask_id.clone().unwrap();
-    assert_eq!(e.details().unwrap()["ask_id"], blocking.as_str());
-    assert!(
-        e.hint()
-            .unwrap()
-            .contains(&format!("peek ask cancel {blocking}")),
-        "{:?}",
-        e.hint()
+    assert!(e.retryable());
+    assert_eq!(
+        e.message(),
+        "position 5's queue is full: 1 send on screen and 5 waiting (at most 5); remove one with `peek cancel <send_id>` or `peek queue clear`"
     );
+    assert_eq!(
+        e.hint(),
+        Some("peek queue    lists the waiting sends and their IDs")
+    );
+    let d = e.details().unwrap();
+    assert_eq!(d["queued"], 5);
+    assert_eq!(d["limit"], 5);
+    assert_eq!(d["on_screen"], first.send_id.as_str());
+    assert_eq!(
+        d["waiting"],
+        json!(queued.iter().map(SendId::as_str).collect::<Vec<_>>())
+    );
+    assert_eq!(d["due_waiting"], 0);
+    assert_eq!(d["held"], Value::Null);
+    // A CLI older than 0.1.2 gets the same error as `slot_busy`.
+    let mut legacy = common::DaemonCli::legacy(&h, "0.1.1").await;
+    let e = legacy.call(&home, &s).await.err().unwrap();
+    assert_eq!(*e.code(), ErrorCode::SlotBusy);
+    assert!(e.message().starts_with("position 5's queue is full"));
+    assert_eq!(e.details().unwrap()["queued"], 5);
     let (st, _) = h.call(&home, &StatusOp {}, vec![]).await.unwrap();
     assert_eq!(st.queue.pending, 5);
+    assert_eq!(st.queue.waiting, 5);
+    assert_eq!(st.queue.limit, 5);
+    assert_eq!(st.queue.on_screen.as_ref(), Some(&first.send_id));
+    assert_eq!(st.queue.held, None);
     assert_eq!(st.pending_asks, 1);
 
     // Cancelling the ask withdraws it and shows the next queued send.
@@ -1415,7 +1462,7 @@ async fn sends_queue_behind_a_pending_ask_up_to_five() {
     .unwrap();
     let next = ui.expect("peek.show").await;
     assert_eq!(next.fields["send_id"], queued[1].as_str());
-    // A new show replaces a visible show (no ask pending, queue drained later).
+    assert_eq!(next.fields["queued_behind"], 3);
     let (lst, _) = h
         .call(
             &home,
@@ -1444,6 +1491,7 @@ async fn a_locked_screen_holds_bubbles_until_the_carbon_is_back() {
         &Presence {
             available: false,
             reason: PresenceReason::Locked,
+            paused: false,
         },
         vec![],
     )
@@ -1552,7 +1600,7 @@ async fn a_send_warns_when_the_session_has_no_ting_enrollment() {
 }
 
 #[tokio::test]
-async fn a_new_show_replaces_a_visible_show() {
+async fn a_new_show_waits_behind_a_visible_show() {
     let h = Harness::start().await;
     let (home, ui) = ready_home(&h, "si:dj-bot", 1).await;
     let show = |t: &str| {
@@ -1569,20 +1617,59 @@ async fn a_new_show_replaces_a_visible_show() {
         .call(&home, &show("Now playing: Kasoor"), vec![])
         .await
         .unwrap();
+    let (c, _) = h
+        .call(&home, &show("Now playing: Tu Hai Kahan"), vec![])
+        .await
+        .unwrap();
     assert_eq!(a.status, SendStatus::Showing);
-    assert_eq!(b.status, SendStatus::Showing);
+    assert_eq!(
+        b.status,
+        SendStatus::Queued,
+        "always queue: nothing is replaced"
+    );
+    assert_eq!((b.queue_position, b.waiting), (Some(1), Some(1)));
+    assert_eq!((c.queue_position, c.waiting), (Some(2), Some(2)));
     let first = ui.expect("peek.show").await;
-    let second = ui.expect("peek.show").await;
     assert_eq!(first.fields["send_id"], a.send_id.as_str());
-    assert_eq!(second.fields["send_id"], b.send_id.as_str());
-    let db = h.db();
-    let reason: String = query_one(
-        &db,
-        "SELECT close_reason FROM sends WHERE send_id = ?1",
+    assert!(
+        ui.try_expect("peek.show", Duration::from_millis(300))
+            .await
+            .is_none(),
+        "the second show waits for the first"
+    );
+    let closed: Option<i64> = query_one(
+        &h.db(),
+        "SELECT closed_at FROM sends WHERE send_id = ?1",
         &[&a.send_id.as_str()],
+    );
+    assert!(closed.is_none(), "the first show is still current");
+    // Strict FIFO: B, then C.
+    ui.request(
+        &ShownDone {
+            send_id: a.send_id.clone(),
+            visible_ms: 4000,
+            reason: silicon_peek_client::ipc::ui::ShownReason::Auto,
+        },
+        vec![],
     )
+    .await
     .unwrap();
-    assert_eq!(reason, "replaced");
+    let second = ui.expect("peek.show").await;
+    assert_eq!(second.fields["send_id"], b.send_id.as_str());
+    assert_eq!(second.fields["queued_behind"], 1);
+    ui.request(
+        &ShownDone {
+            send_id: b.send_id.clone(),
+            visible_ms: 4000,
+            reason: silicon_peek_client::ipc::ui::ShownReason::Auto,
+        },
+        vec![],
+    )
+    .await
+    .unwrap();
+    let third = ui.expect("peek.show").await;
+    assert_eq!(third.fields["send_id"], c.send_id.as_str());
+    assert_eq!(third.fields["queued_behind"], 0);
 }
 
 #[tokio::test]
@@ -1597,9 +1684,10 @@ async fn state_survives_a_restart() {
     let (asked, _) = h.call(&home, &op, vec![]).await.unwrap();
     assert_eq!(
         asked.status,
-        SendStatus::Showing,
-        "shown when Peek.app connects"
+        SendStatus::Queued,
+        "held: shown when Peek.app connects"
     );
+    assert_eq!(asked.queue_position, Some(0));
     let mut s = send_op();
     s.speak = Some("queued behind the ask".into());
     let (queued, _) = h.call(&home, &s, vec![]).await.unwrap();
@@ -1923,4 +2011,57 @@ async fn a_side_without_a_local_drawing_adopts_the_validated_server_copy() {
         Some(serde_json::from_value(json!({"elements":[{"type":"text","text":"back"}]})).unwrap());
     let (r, _) = h.call(&home, &op, vec![]).await.unwrap();
     assert_eq!(r.status, SendStatus::Showing);
+}
+
+#[tokio::test]
+async fn a_failed_drawing_says_whether_a_previous_one_stays_active() {
+    let h = Harness::start().await;
+    let ui = h.ui().await;
+    let home = h.home("si:firstdraw");
+    let reg = |check_only: bool| RegisterDrawing {
+        filename: "logo.js".into(),
+        check_only,
+        preview: false,
+        dump_frame: None,
+    };
+    *ui.validate.lock().unwrap() = Validate::Fail("TypeError: x is null".into());
+    let broken = b"export default function draw() { x.y(); }".to_vec();
+    let flags = |e: &silicon_peek_client::Error| {
+        let d = e.details().unwrap();
+        (d["check_only"].clone(), d["previous_active"].clone())
+    };
+    // No drawing yet: nothing "stays active".
+    let e = h
+        .call(&home, &reg(false), vec![broken.clone()])
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(flags(&e), (json!(false), json!(false)));
+    assert!(!e.hint().unwrap().contains("previous drawing stays active"));
+    let e = h
+        .call(&home, &reg(true), vec![broken.clone()])
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(flags(&e), (json!(true), json!(false)));
+    // With a drawing registered, a failure keeps it; --check registers nothing either way.
+    *ui.validate.lock().unwrap() = Validate::Ok;
+    h.call(&home, &reg(false), vec![DRAWING.to_vec()])
+        .await
+        .unwrap();
+    *ui.validate.lock().unwrap() = Validate::Fail("TypeError: x is null".into());
+    let e = h
+        .call(&home, &reg(false), vec![broken.clone()])
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(flags(&e), (json!(false), json!(true)));
+    assert!(
+        e.hint()
+            .unwrap()
+            .contains("the previous drawing stays active")
+    );
+    let e = h.call(&home, &reg(true), vec![broken]).await.err().unwrap();
+    assert_eq!(flags(&e), (json!(true), json!(true)));
+    assert!(!e.hint().unwrap().contains("previous drawing stays active"));
 }

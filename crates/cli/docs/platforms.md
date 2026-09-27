@@ -39,7 +39,7 @@ Why log in at all on Linux? Stemcell installs and authenticates every app in `si
 honeycomb install 'peek'
 ```
 
-The website installer (`install.sh`) is macOS-only: on other systems it stops and prints this command.
+The website installer (`install.sh`) is macOS-only: on other systems it stops and prints this command. On a Mac the same command also installs and starts Peek.app, through the install script of the package's macOS targets; the Linux and Windows targets have none.
 
 ## macOS details
 
@@ -49,7 +49,7 @@ The website installer (`install.sh`) is macOS-only: on other systems it stops an
 | App location | `~/Applications/Peek.app` (your real home; no admin rights needed) |
 | Bundle ids | `ai.tos.peek` (app), `ai.tos.peek.daemon` (the helper's signing identifier), `ai.tos.peek.dev` (development builds) |
 | Background helper | `peekd`, inside the app at `Contents/Helpers/peekd`, registered as a login item agent |
-| Permissions | Microphone (asked the first time you answer by voice); Screen Recording only if you opt in to screen backdrop sampling; no Accessibility permission (global shortcuts do not need it) |
+| Permissions | Microphone (asked the first time you answer by voice); Screen Recording only if you opt in to screen backdrop sampling; no Accessibility or Input Monitoring permission (global shortcuts do not need it, and Esc is claimed the same way, only for 3 s after a bubble appears or while the pointer is over one) |
 | Displays | the main screen by default, or the screen under the pointer |
 
 **Liquid Glass.** On systems where peek can render real glass inside its always-inactive panels, drawings get `input.glass === 'live'`. Otherwise peek uses the public frosted material and tells drawings `input.glass === 'frosted'`; everything still works, it just looks more frosted. See [Drawing the visual](drawing.md).

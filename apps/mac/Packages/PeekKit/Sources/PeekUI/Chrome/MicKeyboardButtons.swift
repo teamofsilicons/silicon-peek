@@ -84,6 +84,11 @@ struct CornerButtonsView: View {
         return abs(rotation - quarter * .pi / 2) < 0.05 ? "chevron.down" : "arrow.down"
     }
 
+    /// The `^` of a compact ask: the down-arrow's glyph turned around (it points away from the edge).
+    static func expandSymbol(rotation: Double) -> String {
+        downSymbol(rotation: rotation) == "chevron.down" ? "chevron.up" : "arrow.up"
+    }
+
     var body: some View {
         let shade = model.shade
         let listening = model.content.input == .listening
@@ -113,6 +118,57 @@ struct CornerButtonsView: View {
                 .allowsHitTesting(false)
                 .help("Close (double-click also stops the voice)")
                 .accessibilityLabel("Close")
+            if let expand = buttons.expand {
+                GlassCircleButton(
+                    symbol: Self.expandSymbol(rotation: buttons.expandRotation), radius: buttons.downRadius,
+                    tint: shade.tint, ink: shade.ink, glass: glass, rotation: buttons.expandRotation,
+                    hovered: model.isHovered(.expand), forcePressed: model.isPressed(.expand),
+                    accessibilityLabel: "Expand the question", help: "Expand the question to answer it",
+                    action: model.actions.expand
+                )
+                .position(expand)
+                .transition(.scale(scale: 0.4).combined(with: .opacity))
+            }
+            if let badge = buttons.badge, let size = buttons.badgeSize, model.content.waiting > 0 {
+                WaitingBadgeView(count: model.content.waiting, size: size, shade: shade, glass: glass)
+                    .position(badge)
+                    .allowsHitTesting(false)
+                    .transition(.scale(scale: 0.5).combined(with: .opacity))
+            }
         }
+        .animation(ChromeFeel.spring, value: buttons.expand)
+        .animation(ChromeFeel.spring, value: buttons.badge)
+    }
+}
+
+/// "+N": how many more of this Silicon's peeks wait behind the bubble (peek 0.1.2). Static chrome (no hover reaction,
+/// never a target), upright, in the pill shade; it bumps 1.0 → 1.15 → 1.0 when N changes. The glass is resized for the
+/// bump, never scale-effected.
+struct WaitingBadgeView: View {
+    let count: Int
+    let size: CGSize
+    let shade: PillShade
+    let glass: Bool
+    @State private var bumped = false
+
+    var body: some View {
+        let scale: CGFloat = bumped ? 1.15 : 1
+        Text("+\(count)")
+            .font(.system(size: ChromeMetrics.waitingBadgeFont.size * scale, weight: .semibold).monospacedDigit())
+            .foregroundStyle(shade.ink)
+            .lineLimit(1)
+            .fixedSize()
+            .frame(width: size.width * scale, height: size.height * scale)
+            .chromeGlass(Capsule(), tint: shade.strongFill, glass: glass)
+            .frame(width: size.width * 1.2, height: size.height * 1.2)
+            .animation(ChromeFeel.spring, value: bumped)
+            .onChange(of: count) { _, _ in
+                bumped = true
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(140))
+                    bumped = false
+                }
+            }
+            .accessibilityLabel(count == 1 ? "1 more peek waiting" : "\(count) more peeks waiting")
     }
 }

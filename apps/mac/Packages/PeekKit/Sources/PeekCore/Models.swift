@@ -780,12 +780,19 @@ public struct PeekShowEvent: Codable, Sendable, Equatable {
     public var ask: AskPayload?
     /// How long a show stays up without speech, or after it (§7.4 `--duration`). `nil` = the default formula.
     public var durationMs: Int?
-    /// Sends waiting behind this one in the slot.
+    /// Sends of this Silicon waiting behind this one (peek 0.1.2: waiting + due-waiting): the "+N" badge's first value.
     public var queuedBehind: Int
+    /// When the send expires (RFC 3339), for every kind since peek 0.1.2 (asks only before). Informational: peekd
+    /// withdraws an expired bubble with `peek.cancel{reason: "expired"}`.
+    public var expiresAt: String?
+    /// `--replace`: the send this one takes over (Peek.app already got `peek.cancel{reason: "replaced"}` for it).
+    public var replaces: String?
+    /// `sch_…` when the send came from `peek send --in/--at`.
+    public var scheduleID: String?
 
     public init(sendID: String, askID: String? = nil, slot: SlotIndex, context: PeekContext = .production,
                 speak: SpeakInfo? = nil, show: ShowPayload? = nil, ask: AskPayload? = nil, durationMs: Int? = nil,
-                queuedBehind: Int = 0) {
+                queuedBehind: Int = 0, expiresAt: String? = nil, replaces: String? = nil, scheduleID: String? = nil) {
         self.sendID = sendID
         self.askID = askID
         self.slot = slot
@@ -795,6 +802,9 @@ public struct PeekShowEvent: Codable, Sendable, Equatable {
         self.ask = ask
         self.durationMs = durationMs
         self.queuedBehind = queuedBehind
+        self.expiresAt = expiresAt
+        self.replaces = replaces
+        self.scheduleID = scheduleID
     }
 
     enum CodingKeys: String, CodingKey {
@@ -803,6 +813,9 @@ public struct PeekShowEvent: Codable, Sendable, Equatable {
         case slot, context, speak, show, ask
         case durationMs = "duration_ms"
         case queuedBehind = "queued_behind"
+        case expiresAt = "expires_at"
+        case replaces
+        case scheduleID = "schedule_id"
     }
 
     private enum NestedAskKeys: String, CodingKey { case askID = "ask_id" }
@@ -816,7 +829,10 @@ public struct PeekShowEvent: Codable, Sendable, Equatable {
         show = try c.decodeIfPresent(ShowPayload.self, forKey: .show)
         ask = try c.decodeIfPresent(AskPayload.self, forKey: .ask)
         durationMs = try c.decodeIfPresent(Int.self, forKey: .durationMs)
-        queuedBehind = try c.decodeIfPresent(Int.self, forKey: .queuedBehind) ?? 0
+        queuedBehind = max(0, try c.decodeIfPresent(Int.self, forKey: .queuedBehind) ?? 0)
+        expiresAt = try c.decodeIfPresent(String.self, forKey: .expiresAt)
+        replaces = try c.decodeIfPresent(String.self, forKey: .replaces)
+        scheduleID = try c.decodeIfPresent(String.self, forKey: .scheduleID)
         if let top = try c.decodeIfPresent(String.self, forKey: .askID) {
             askID = top
         } else if (try? c.decodeNil(forKey: .ask)) == false,
@@ -839,6 +855,9 @@ public struct PeekShowEvent: Codable, Sendable, Equatable {
         try c.encode(ask, forKey: .ask)
         try c.encode(durationMs, forKey: .durationMs)
         try c.encode(queuedBehind, forKey: .queuedBehind)
+        try c.encodeIfPresent(expiresAt, forKey: .expiresAt)
+        try c.encodeIfPresent(replaces, forKey: .replaces)
+        try c.encodeIfPresent(scheduleID, forKey: .scheduleID)
     }
 
     /// Visible characters of the show (text and captions), used by the default duration.

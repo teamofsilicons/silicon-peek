@@ -1,7 +1,7 @@
 //! Identifier formats (BLUEPRINT D25), idempotency keys and Ting keys.
 //!
 //! Local IDs are a prefix plus the 32-hex simple form of a `UUIDv7`, so they sort
-//! by creation time: `ask_…`, `snd_…`, `cmsg_…`, `evt_…`.
+//! by creation time: `ask_…`, `snd_…`, `sch_…`, `cmsg_…`, `evt_…`.
 
 use std::{fmt, str::FromStr};
 
@@ -98,6 +98,11 @@ prefixed_id!(
     /// A send, created by peekd for every `peek send`.
     SendId,
     "snd_"
+);
+prefixed_id!(
+    /// A scheduled send (`peek send --in/--at`), created by peekd.
+    ScheduleId,
+    "sch_"
 );
 prefixed_id!(
     /// A Carbon-initiated message (ctrl+cmd+N, then voice or typing).
@@ -239,6 +244,12 @@ pub enum TingKeyEvent {
     SpeechFinished,
     /// `peek.show.dismissed`.
     ShowDismissed,
+    /// `peek.send.expired`.
+    SendExpired,
+    /// `peek.schedule.due`.
+    Due,
+    /// `peek.send.shown`.
+    Shown,
 }
 
 impl TingKeyEvent {
@@ -252,6 +263,9 @@ impl TingKeyEvent {
             Self::Message => "message",
             Self::SpeechFinished => "speech_finished",
             Self::ShowDismissed => "show_dismissed",
+            Self::SendExpired => "send_expired",
+            Self::Due => "due",
+            Self::Shown => "shown",
         }
     }
 }
@@ -303,6 +317,24 @@ mod tests {
         assert!(SendId::generate().as_str().starts_with("snd_"));
         assert!(MessageId::generate().as_str().starts_with("cmsg_"));
         assert!(EventId::generate().as_str().starts_with("evt_"));
+        Ok(())
+    }
+
+    #[test]
+    fn schedule_ids() -> Result<()> {
+        let s = ScheduleId::generate();
+        assert!(s.as_str().starts_with("sch_"));
+        assert_eq!(s.as_str().len(), 36);
+        assert_eq!(ScheduleId::parse(s.as_str())?, s);
+        assert_eq!(ScheduleId::PREFIX, "sch_");
+        assert!(ScheduleId::parse(SendId::generate().as_str()).is_err());
+        assert!(ScheduleId::parse("sch_").is_err());
+        let v4 = Uuid::new_v4().simple().to_string();
+        assert!(
+            ScheduleId::parse(&format!("sch_{v4}")).is_err(),
+            "must be v7"
+        );
+        assert!(serde_json::from_str::<ScheduleId>("\"sch_1\"").is_err());
         Ok(())
     }
 
@@ -360,6 +392,20 @@ mod tests {
         assert!(ting_key(&actor, "a/b", TingKeyEvent::Message).is_err());
         let long = ActorId::parse(&format!("si:{}", "a".repeat(50)))?;
         assert!(ting_key(&long, &"x".repeat(150), TingKeyEvent::ShowDismissed).is_err());
+        let snd = SendId::generate();
+        let sch = ScheduleId::generate();
+        assert_eq!(
+            ting_key(&actor, snd.as_str(), TingKeyEvent::SendExpired)?,
+            format!("si:cleanup/{snd}/send_expired")
+        );
+        assert_eq!(
+            ting_key(&actor, sch.as_str(), TingKeyEvent::Due)?,
+            format!("si:cleanup/{sch}/due")
+        );
+        assert_eq!(
+            ting_key(&actor, snd.as_str(), TingKeyEvent::Shown)?,
+            format!("si:cleanup/{snd}/shown")
+        );
         Ok(())
     }
 }

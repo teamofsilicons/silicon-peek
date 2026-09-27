@@ -28,7 +28,7 @@ use tokio::{net::UnixListener, sync::watch, task::JoinHandle};
 
 use crate::{
     config::DaemonConfig,
-    db::Db,
+    db::{Db, SqlResult as _},
     net::Net,
     paths::Paths,
     settings::SettingsStore,
@@ -156,6 +156,7 @@ pub async fn start(cfg: DaemonConfig) -> Result<DaemonHandle> {
         last_launch: Mutex::new(None),
         instance_id: uuid::Uuid::now_v7().hyphenated().to_string(),
         started: Instant::now(),
+        clock: crate::state::WallClock::default(),
         cfg,
     });
     let queued = shared.load_queues().await?;
@@ -259,6 +260,84 @@ impl DaemonHandle {
     #[must_use]
     pub fn ui_connected(&self) -> bool {
         self.shared.ui.is_connected()
+    }
+
+    /// Moves peekd's wall clock forward by `by` and wakes the timers, as if
+    /// the Mac had slept that long (tests; the wall-clock jump is detected and
+    /// overdue expiries and scheduled sends are handled at once).
+    pub fn advance_wall_clock(&self, by: std::time::Duration) {
+        self.shared.clock.advance(by);
+        self.shared.timers_wake.notify_one();
+    }
+
+    /// Runs one expiry/scheduling pass now (tests and diagnostics).
+    pub async fn timers_now(&self) {
+        self.shared.timer_pass().await;
+    }
+
+    /// Whether every Silicon's queue keeps the contract §6.2 invariants and
+    /// matches the database (tests and diagnostics): no current ⇒ nothing
+    /// waits, overflow only while five wait, at most five wait, every queued
+    /// send is open, and `sends.overflow` marks exactly the overflow sends.
+    ///
+    /// # Errors
+    /// Database failures.
+    pub async fn check_queues(&self) -> Result<Vec<String>> {
+        let core = self.shared.core.lock().await;
+        let mut problems = Vec::new();
+        let mut expect: Vec<(String, bool)> = Vec::new();
+        for (k, q) in &core.queues {
+            if !q.invariants_hold() {
+                problems.push(format!(
+                    "{}: current {} waiting {} overflow {}",
+                    k.actor,
+                    q.current.is_some(),
+                    q.waiting.len(),
+                    q.overflow.len()
+                ));
+            }
+            if q.is_empty() {
+                problems.push(format!("{}: an empty queue is kept", k.actor));
+            }
+            for b in q.current.iter().chain(q.waiting.iter()) {
+                expect.push((b.send_id.as_str().to_owned(), false));
+            }
+            for b in &q.overflow {
+                expect.push((b.send_id.as_str().to_owned(), true));
+            }
+        }
+        drop(core);
+        let open: Vec<(String, bool)> = self
+            .shared
+            .db
+            .call(|c| {
+                let mut st = c
+                    .prepare("SELECT send_id, overflow FROM sends WHERE closed_at IS NULL")
+                    .sql()?;
+                let v = st
+                    .query_map([], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0))
+                    })
+                    .sql()?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .sql()?;
+                Ok(v)
+            })
+            .await?;
+        for e in &expect {
+            if !open.contains(e) {
+                problems.push(format!(
+                    "queued send {} is not open with overflow={}",
+                    e.0, e.1
+                ));
+            }
+        }
+        for o in &open {
+            if !expect.iter().any(|e| e.0 == o.0) {
+                problems.push(format!("open send {} is in no queue", o.0));
+            }
+        }
+        Ok(problems)
     }
 
     /// Stops the daemon gracefully and returns the exit status.

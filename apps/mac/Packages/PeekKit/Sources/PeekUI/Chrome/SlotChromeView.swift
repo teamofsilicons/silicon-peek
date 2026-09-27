@@ -47,7 +47,10 @@ public struct SlotChromeView: View {
                 }
                 ForEach(layout.items, id: \.identity) { item in
                     ChromeItemView(model: model, item: item, glass: glass)
-                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                        // "Esc again to dismiss" fades in and out (0.2 s); everything else also scales a little.
+                        .transition(item.kind == .hint && model.content.escHint
+                            ? .opacity.animation(.easeInOut(duration: 0.2))
+                            : .opacity.combined(with: .scale(scale: 0.9)))
                 }
                 CornerButtonsView(model: model, buttons: layout.buttons, glass: glass)
                 if let tooltip {
@@ -159,7 +162,7 @@ struct ChromeItemView: View {
                         plate: ConfirmButton.plate(size: frame.size, enabled: model.confirmEnabled, shade: shade),
                         glass: glass, feel: feel)
         case .hint:
-            if let hint = model.content.hint {
+            if let hint = model.content.hintText {
                 CaptionPillView(text: hint, font: .caption, width: frame.size.width, height: frame.size.height, shade: shade)
                     .placed(frame, plate: .whole(frame.size, .capsule, tint: shade.tint), glass: glass)
             }

@@ -35,9 +35,9 @@ In `~/Library/Application Support/Peek/` (private to your macOS user):
 
 | Path | Contents |
 |---|---|
-| `peekd.sqlite` | positions, drawings in use, send history (payloads), asks and their answers and transcripts, the delivery outbox. **No tokens.** |
+| `peekd.sqlite` | positions, drawings in use, send history (payloads), queued and scheduled sends until they are shown or cancelled, asks and their answers and transcripts, the delivery outbox. **No tokens.** |
 | `drawings/…` | the active drawing of each Silicon, and the previous one |
-| `cache/images/`, `cache/tts/` | copies of shown images, synthesized speech |
+| `cache/images/`, `cache/tts/` | copies of shown images (a scheduled send's images are copied when it is scheduled and kept until it is sent or cancelled), synthesized speech |
 | `recordings/` | voice answers waiting for delivery |
 | `settings.json`, logs | Peek.app settings; `peekd.log` and `ui.log` (rotated at 10 MB × 3) |
 

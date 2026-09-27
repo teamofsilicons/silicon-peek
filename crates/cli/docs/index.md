@@ -8,7 +8,7 @@ The same pages ship inside the CLI. `peek docs <topic>` prints any of them offli
 
 ## Install
 
-One command installs Honeycomb (if missing), the `peek` CLI and Peek.app. It does not log anyone in.
+One command installs Honeycomb (if missing), the `peek` CLI and Peek.app. It does not log anyone in. With Honeycomb already installed, `honeycomb install 'peek'` also installs and starts Peek.app on a Mac.
 
 ```sh
 curl -fsSL https://peek.teamofsilicons.com/install.sh | sh

@@ -86,6 +86,41 @@ async fn relays_allowlisted_tables_with_stable_record_ids() {
 }
 
 #[tokio::test]
+async fn the_0_1_2_queue_context_keys_survive_the_scrub() {
+    let h = Harness::start().await;
+    mount_ingest(&h).await;
+    let body = json!({"table": "peekclidaemon", "events": [
+        {"id": "evt-queued", "type": "send.queued",
+         "data": {"source": "peekd", "context": {"slot": 3, "queue_waiting": 2, "scheduled": false, "speak_text": "secret words"}},
+         "metadata": {"occurred_at": "2026-09-27T12:00:00Z"}},
+        {"id": "evt-fired", "type": "schedule.fired",
+         "data": {"source": "peekd", "context": {"slot": 3, "status": "queued", "scheduled": true, "summary": "Stand-up in 5?"}},
+         "metadata": {"occurred_at": "2026-09-27T12:30:00Z"}}
+    ]});
+    let r = h.send(json_body(relay(), &body)).await;
+    assert_eq!(r.status, 204, "{}", String::from_utf8_lossy(&r.body));
+    let ingests = Harness::requests(&h.spacestation, "/api/ingest").await;
+    assert_eq!(ingests.len(), 1);
+    let sent: Value = serde_json::from_slice(&ingests[0].body).unwrap();
+    let records = sent["records"].as_array().unwrap();
+    assert_eq!(
+        records[0]["record"]["data"]["context"],
+        json!({"slot": 3, "queue_waiting": 2, "scheduled": false}),
+        "queue_waiting and scheduled are allowlisted (contract §3.11)"
+    );
+    assert_eq!(
+        records[1]["record"]["data"]["context"],
+        json!({"slot": 3, "status": "queued", "scheduled": true})
+    );
+    let raw = String::from_utf8_lossy(&ingests[0].body);
+    assert!(!raw.contains("secret words") && !raw.contains("Stand-up"));
+    assert!(
+        silicon_peek_client::telemetry::CONTEXT_KEYS.contains(&"queue_waiting")
+            && silicon_peek_client::telemetry::CONTEXT_KEYS.contains(&"scheduled")
+    );
+}
+
+#[tokio::test]
 async fn refuses_other_tables_bad_batches_and_foreign_origins() {
     let h = Harness::start().await;
     mount_ingest(&h).await;

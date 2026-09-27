@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use silicon_peek_client::{
     Error, ErrorCode, Result,
     config::Config,
-    ipc::cli::{ConfigSync, ConfigSyncConfig},
+    ipc::cli::{ConfigSync, ConfigSyncConfig, HelloResult, features},
     runtime::{
         Store, auth_block,
         fs::{read_private, remove_file, write_atomic},
@@ -18,6 +18,7 @@ use silicon_peek_client::{
             TESTING_FILE, set_home_pointer, silicon_home,
         },
     },
+    schema::send::Notify,
     telemetry::env_opt_out,
 };
 
@@ -86,6 +87,17 @@ pub fn sync_payload(config: &Config) -> ConfigSyncConfig {
     payload
 }
 
+/// [`sync_payload`] for a peekd that answered `hello`: `shown` is dropped
+/// from `notify` when that peekd does not announce `notify_shown` (it would
+/// refuse the unknown value).
+pub fn sync_payload_for(config: &Config, hello: &HelloResult) -> ConfigSyncConfig {
+    let mut payload = sync_payload(config);
+    if !hello.has_feature(features::NOTIFY_SHOWN) {
+        payload.notify.retain(|n| *n != Notify::Shown);
+    }
+    payload
+}
+
 /// Pushes the non-secret config to a running peekd (never starts it; skipped
 /// when this home has no session, because every peekd op is authenticated).
 async fn sync(g: &Globals, store: &Store, config: &Config) {
@@ -97,10 +109,9 @@ async fn sync(g: &Globals, store: &Store, config: &Config) {
         let mut s = service::connect_existing(Duration::from_millis(500))
             .await
             .ok()??;
+        let payload = sync_payload_for(config, &s.hello);
         s.call(
-            &ConfigSync {
-                config: sync_payload(config),
-            },
+            &ConfigSync { config: payload },
             Some(&auth),
             Vec::new(),
             Duration::from_secs(2),

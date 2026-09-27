@@ -193,12 +193,25 @@ class Connection:
 
 class FakeUi:
     """A scripted Peek.app. Every event is appended to `events` (header plus
-    blob sizes); TTS chunks are also collected per send in `audio`."""
+    blob sizes); TTS chunks are also collected per send in `audio`.
 
-    def __init__(self, socket_path: str, app_build: int = 1000, app_version: str = "0.1.0") -> None:
+    Like Peek.app 0.1.2 (build 1002), it reports `shown` for every `peek.show`
+    as the bubble starts to appear (peekd then records shown_at, starts the
+    speech and sends peek.send.shown when asked); `auto_shown=False` or an
+    older `app_build` turns that off (peekd then counts push time as shown)."""
+
+    def __init__(
+        self,
+        socket_path: str,
+        app_build: int = 1002,
+        app_version: str = "0.1.2",
+        auto_shown: bool | None = None,
+    ) -> None:
         self.socket_path = socket_path
         self.app_build = app_build
         self.app_version = app_version
+        self.auto_shown = app_build >= 1002 if auto_shown is None else auto_shown
+        self.shown_sent: list[str] = []
         self.lock = threading.Condition()
         self.events: list[dict] = []
         self.requests: list[dict] = []
@@ -245,6 +258,16 @@ class FakeUi:
         with self.lock:
             self.events.append(h)
             self.lock.notify_all()
+        if name == "peek.show" and self.auto_shown and h.get("send_id") not in self.shown_sent:
+            # Reported off the reader thread: the reply arrives on this same connection.
+            self.shown_sent.append(h["send_id"])
+            threading.Thread(target=self._report_shown, args=(h["send_id"],), daemon=True).start()
+
+    def _report_shown(self, send_id: str) -> None:
+        try:
+            self.call("shown", {"send_id": send_id}, timeout=10)
+        except (IpcError, TimeoutError, ConnectionError, OSError):
+            pass
 
     def wait_event(self, predicate: Callable[[dict], bool], timeout: float = 30.0, what: str = "event") -> dict:
         deadline = time.monotonic() + timeout

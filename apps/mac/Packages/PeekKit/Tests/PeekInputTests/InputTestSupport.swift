@@ -56,6 +56,8 @@ final class FakeBackdrop: BackdropSampling {
 
     func track(_ key: SiliconKey, rectOnScreen: CGRect?) { tracks.append((key, rectOnScreen)) }
     func backdrop(for key: SiliconKey) -> Backdrop { values[key] ?? .fromAppearance(.light) }
+    func warm(_ key: SiliconKey, rectOnScreen: CGRect?) {}
+    func sampleAge(for key: SiliconKey) -> Double? { values[key] == nil ? nil : 0 }
 }
 
 @MainActor

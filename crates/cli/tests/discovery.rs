@@ -157,6 +157,7 @@ async fn version_flag() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // one table of cases
 async fn commands_json_is_the_whole_tree() {
     let env = Env::new(DEAD_API);
     let run = env.run(&["commands", "--json"]).await;
@@ -237,8 +238,47 @@ async fn commands_json_is_the_whole_tree() {
         .unwrap_or_default();
     assert_eq!(
         state["possible_values"],
-        json!(["pending", "answered", "dismissed", "expired", "cancelled"])
+        json!([
+            "pending",
+            "answered",
+            "dismissed",
+            "expired",
+            "cancelled",
+            "replaced"
+        ])
     );
+    // The seven 0.1.2 command paths (plus `peek queue list`) are listed, each
+    // with its own notes.
+    for path in [
+        "peek queue",
+        "peek queue list",
+        "peek queue clear",
+        "peek cancel",
+        "peek schedule",
+        "peek schedule list",
+        "peek schedule cancel",
+        "peek schedule clear",
+    ] {
+        let entry = entries
+            .iter()
+            .find(|e| e["command"] == path)
+            .unwrap_or_else(|| panic!("{path} is listed"));
+        assert!(
+            entry["help"]
+                .as_str()
+                .is_some_and(|h| h.contains("Examples:")),
+            "{path} has examples"
+        );
+    }
+    let send_args: Vec<String> = send["arguments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p["long"].as_str().map(str::to_owned))
+        .collect();
+    for flag in ["expires-in", "expires-at", "in", "at", "tz", "replace"] {
+        assert!(send_args.iter().any(|a| a == flag), "--{flag}");
+    }
 }
 
 #[tokio::test]

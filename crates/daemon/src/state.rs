@@ -3,8 +3,11 @@
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
-    sync::{Arc, Mutex, atomic::AtomicBool},
-    time::Instant,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicI64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use silicon_peek_client::{
@@ -13,6 +16,8 @@ use silicon_peek_client::{
     ids::{AskId, SendId},
     ipc::cli::AskResult,
     runtime::Store,
+    schema::limits,
+    timestamp::Timestamp,
 };
 use tokio::sync::{Notify, oneshot, watch};
 
@@ -68,6 +73,7 @@ impl Caller {
 
 /// One send in a Silicon's queue.
 #[derive(Clone, Debug)]
+#[allow(clippy::struct_excessive_bools)] // independent facts: pushed, shown, show and speak parts
 pub struct Bubble {
     /// The send.
     pub send_id: SendId,
@@ -75,22 +81,52 @@ pub struct Bubble {
     pub ask_id: Option<AskId>,
     /// Whether `peek.show` reached the current UI connection.
     pub pushed: bool,
+    /// Whether the UI reported `shown` for it (or, for a Peek.app older than
+    /// build 1002, whether `peek.show` reached it).
+    pub shown: bool,
     /// When a non-ask bubble must be closed by peekd if the UI never reports
-    /// it done.
+    /// it done (armed when it is shown).
     pub deadline: Option<Instant>,
     /// Whether it carries a `--show`.
     pub has_show: bool,
     /// Whether it carries a `--speak`.
     pub has_speak: bool,
+    /// `--replace`: the send this one took over, for its `peek.show`.
+    pub replaces: Option<SendId>,
 }
 
-/// A Silicon's bubbles: the one on screen and up to five waiting (§7.4).
+impl Bubble {
+    /// A bubble not yet pushed to the UI.
+    #[must_use]
+    pub fn new(send_id: SendId, ask_id: Option<AskId>, has_show: bool, has_speak: bool) -> Self {
+        Self {
+            send_id,
+            ask_id,
+            pushed: false,
+            shown: false,
+            deadline: None,
+            has_show,
+            has_speak,
+            replaces: None,
+        }
+    }
+}
+
+/// A Silicon's queue (contract §6.2): the current send (on screen or held),
+/// up to five waiting, and due scheduled sends waiting for a free spot.
+///
+/// Invariants: no current ⇒ nothing waits; overflow only while five wait;
+/// at most five wait.
 #[derive(Clone, Debug, Default)]
 pub struct ActorQueue {
-    /// On screen (or to be shown when Peek.app connects).
+    /// On screen (or held until the Carbon or Peek.app is back).
     pub current: Option<Bubble>,
-    /// Waiting, oldest first.
+    /// Waiting, oldest first (at most [`limits::QUEUE_MAX`]).
     pub waiting: VecDeque<Bubble>,
+    /// Due scheduled sends waiting for a free spot (`sends.overflow = 1`).
+    pub overflow: VecDeque<Bubble>,
+    /// The waiting count last sent to the UI (`peek.show` or `queue.state`).
+    pub last_badge: Option<u32>,
 }
 
 impl ActorQueue {
@@ -99,6 +135,52 @@ impl ActorQueue {
     pub fn contains(&self, send_id: &SendId) -> bool {
         self.current.as_ref().is_some_and(|b| &b.send_id == send_id)
             || self.waiting.iter().any(|b| &b.send_id == send_id)
+            || self.overflow.iter().any(|b| &b.send_id == send_id)
+    }
+
+    /// Sends waiting behind the current one: waiting plus overflow.
+    #[must_use]
+    pub fn waiting_count(&self) -> u32 {
+        u32::try_from(self.waiting.len() + self.overflow.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Whether the queue holds nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.current.is_none() && self.waiting.is_empty() && self.overflow.is_empty()
+    }
+
+    /// Whether the §6.2 invariants hold.
+    #[must_use]
+    pub fn invariants_hold(&self) -> bool {
+        (self.current.is_some() || (self.waiting.is_empty() && self.overflow.is_empty()))
+            && (self.overflow.is_empty() || self.waiting.len() == limits::QUEUE_MAX)
+            && self.waiting.len() <= limits::QUEUE_MAX
+    }
+}
+
+/// peekd's wall clock: unix time plus an offset tests use to pretend the
+/// Mac slept ([`crate::DaemonHandle::advance_wall_clock`]). Expiry and
+/// scheduling compare these times on every timer pass, never tokio's
+/// monotonic clock (which stops while the Mac sleeps).
+#[derive(Debug, Default)]
+pub struct WallClock {
+    offset_ms: AtomicI64,
+}
+
+impl WallClock {
+    /// Now, in unix milliseconds.
+    #[must_use]
+    pub fn now_ms(&self) -> i64 {
+        Timestamp::now()
+            .unix_ms()
+            .saturating_add(self.offset_ms.load(Ordering::SeqCst))
+    }
+
+    /// Moves the clock forward.
+    pub fn advance(&self, by: Duration) {
+        let ms = i64::try_from(by.as_millis()).unwrap_or(i64::MAX);
+        self.offset_ms.fetch_add(ms, Ordering::SeqCst);
     }
 }
 
@@ -177,6 +259,8 @@ pub struct Shared {
     pub instance_id: String,
     /// When the daemon started.
     pub started: Instant,
+    /// The wall clock expiry and scheduling use.
+    pub clock: WallClock,
 }
 
 impl Shared {
@@ -192,6 +276,12 @@ impl Shared {
     #[must_use]
     pub fn shutting_down(&self) -> bool {
         *self.shutdown.borrow()
+    }
+
+    /// The wall clock, in unix milliseconds.
+    #[must_use]
+    pub fn now_ms(&self) -> i64 {
+        self.clock.now_ms()
     }
 }
 

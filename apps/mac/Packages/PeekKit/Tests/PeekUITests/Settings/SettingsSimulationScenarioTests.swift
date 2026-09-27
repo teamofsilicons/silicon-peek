@@ -19,6 +19,7 @@ struct SettingsSimulationScenarioTests {
         #expect(SimulationPreset.allCases.map(\.rawValue) == [
             "show-text", "show-cover", "ask-single", "ask-multi", "ask-slider", "ask-range", "ask-text", "speak", "compact-show",
             "show-long", "show-long-mixed", "ask-long-labels", "ask-stepped", "compact-long",
+            "queue-badge", "ask-compact", "ask-esc-hint",
         ])
         #expect(SimulationPreset.named(" Ask-Range ") == .askRange)
         #expect(SimulationPreset.named("ask") == nil)
@@ -47,6 +48,24 @@ struct SettingsSimulationScenarioTests {
         // The event survives the wire format peekd would use.
         let decoded = try JSONDecoder().decode(PeekShowEvent.self, from: JSONEncoder().encode(event))
         #expect(decoded == event)
+    }
+
+    @Test("peek 0.1.2 presets: the queue badge (with its live update), the compact ask and the Esc hint")
+    func presets012() throws {
+        let queue = try event(.queueBadge)
+        #expect(queue.queuedBehind == 3)
+        #expect(queue.show != nil && queue.ask == nil)
+        #expect(SimulationPreset.queueBadge.scenario.queueUpdate == 4)
+        let compact = try event(.askCompact)
+        #expect(compact.ask?.type == .singleChoice)
+        #expect(compact.queuedBehind == 2)
+        #expect(SimulationPreset.askCompact.scenario.askEsc == .collapsed)
+        #expect(SimulationPreset.askEscHint.scenario.askEsc == .hint)
+        #expect(try event(.askEscHint).queuedBehind == 0)
+        for preset in SimulationPreset.allCases where ![.queueBadge, .askCompact, .askEscHint].contains(preset) {
+            #expect(preset.scenario.askEsc == .none)
+            #expect(preset.scenario.queuedBehind == 0)
+        }
     }
 
     @Test("each preset shows what its name says")

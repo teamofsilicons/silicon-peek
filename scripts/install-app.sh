@@ -19,9 +19,10 @@
 #     "$SUPPORT/install.lock" (lockf(1) takes the same BSD lock as Rust File::lock).
 # Test hooks: PEEK_INSTALL_APPLICATIONS_DIR, PEEK_INSTALL_SUPPORT_DIR, PEEK_INSTALL_NO_LAUNCH=1.
 #
-# Shipped in both macOS targets as a payload. Manifest B (honeycomb.yaml for 0.1.x) does not
-# reference it, so Honeycomb never runs it; the peek CLI's ensure_app() performs the same steps.
-# Manifest A adds `install_script: "install-app.sh"` once Honeycomb's minimum client is >= 0.5.0.
+# Referenced by honeycomb.yaml Manifest A (install_script on both macOS targets, peek >= 0.1.2):
+# `honeycomb install peek` runs it, so Peek.app is installed (first copy only, Developer ID
+# verified) and launched right away. Updates stay peekd's job. The peek CLI's ensure_app()
+# performs the same steps as the fallback for `peek login` and every Mac command.
 # Reviewed copy of the version tested in notes/gap-honeycomb-app-distribution §3.5, with two
 # hardening changes: the watchdog in bounded() also stops its own sleep, so no process outlives
 # a finished command, and the final rename re-checks that no Peek.app appeared meanwhile, so the
@@ -156,7 +157,9 @@ install_locked() {
 launch() {
     # The app registers its login item and agent with SMAppService, applies newer
     # offers, and serves the per-user socket. Launching is only a head start:
-    # every peek command that needs the app starts it on demand.
+    # every peek command that needs the app starts it on demand. It runs whether
+    # the app was installed just now or already: `open` starts a Peek.app that is
+    # not running and is a no-op for one that is.
     if [ "${PEEK_INSTALL_NO_LAUNCH:-0}" = 1 ]; then
         say skip launch "PEEK_INSTALL_NO_LAUNCH=1"; return 0
     fi

@@ -33,8 +33,12 @@ public final class PeekCoordinator: PeekPresenting {
     public private(set) var settings: PeekSettings
     public private(set) var settingsWarnings: [String]
     /// Silences Silicon-initiated peeks from the menu bar: new ones wait (the Carbon's hotkey still shows them).
+    /// peekd hears it in `presence.paused` (peek 0.1.2), so it can say a send is held because Peek is paused.
     public var paused = false {
-        didSet { applyGate() }
+        didSet {
+            applyGate()
+            if paused != oldValue { sendPresence() }
+        }
     }
     public private(set) var lastProblem: String?
     /// Shortcuts macOS refused (taken by another app, …).
@@ -47,7 +51,8 @@ public final class PeekCoordinator: PeekPresenting {
     public private(set) var registeredHotkeys: [String] = []
     /// Hotkeys macOS refused (`ctrl+cmd+3` form).
     public private(set) var failedHotkeys: [String] = []
-    /// Whether the Carbon can see bubbles (screen unlocked, displays awake), as last reported to peekd (`presence`).
+    /// Whether the Carbon can see bubbles (screen unlocked, displays awake), as last reported by the presence monitor.
+    /// peekd gets it with ``paused`` merged in (`presence`).
     public private(set) var carbonPresence: PresenceRequest = .available
 
     /// Runs `peek app uninstall` (unregister the login item and agent, recycle the bundle, quit). Set by the app
@@ -75,6 +80,9 @@ public final class PeekCoordinator: PeekPresenting {
     @ObservationIgnored private var telemetryBuffer: [TelemetryEvent] = []
     @ObservationIgnored private var reportedGlassMode = false
     @ObservationIgnored private var screenObserver: (any NSObjectProtocol)?
+    @ObservationIgnored private var keyWindowObservers: [any NSObjectProtocol] = []
+    /// peekd answered `unknown_op` to `shown` (an older build during an update swap): not sent again on this link.
+    @ObservationIgnored private var shownUnsupported = false
     @ObservationIgnored private var presenceMonitor: PresenceMonitor?
     @ObservationIgnored private var presenceTask: Task<Void, Never>?
     @ObservationIgnored private var lastSentStatus: UIStatusReport?
@@ -113,6 +121,7 @@ public final class PeekCoordinator: PeekPresenting {
             let sends = self.slotManager.sends
             if self.visible != sends { self.visible = sends }
         }
+        slotManager.onEscapeProblemChanged = { [weak self] _ in self?.updateHotkeyProblems() }
         slotManager.setMode(settings.mode)
         slotManager.setDisplay(settings.display)
         applyGate()
@@ -146,7 +155,10 @@ public final class PeekCoordinator: PeekPresenting {
             speechStoppedBeforeStart: { [weak self] sendID, byUser in
                 self?.sendSpeechDone(SpeechFinished(sendID: sendID, stoppedByUser: byUser, playedMs: 0, totalMs: 0))
             },
-            telemetry: { [weak self] type, data, context in self?.record(type, data, context: context) })
+            telemetry: { [weak self] type, data, context in self?.record(type, data, context: context) },
+            // Bare Esc is only ever grabbed by the real app (never by tests or GUI-less runs).
+            escapeKeys: usesLivePanels ? CarbonEscapeKey() : InertEscapeKey(),
+            keyWindowIsOpen: { NSApp?.keyWindow != nil })
     }
 
     // MARK: Lifecycle
@@ -166,6 +178,7 @@ public final class PeekCoordinator: PeekPresenting {
                 if state.isConnected {
                     self.lastSentStatus = nil
                     self.statusUnsupported = false
+                    self.shownUnsupported = false
                     self.pushStatusIfChanged()
                 }
             }
@@ -199,6 +212,9 @@ public final class PeekCoordinator: PeekPresenting {
         hotKeys = nil
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         screenObserver = nil
+        for observer in keyWindowObservers { NotificationCenter.default.removeObserver(observer) }
+        keyWindowObservers.removeAll()
+        slotManager.releaseEscape()
         presenceMonitor?.stop()
         presenceMonitor = nil
         if let request = takeTelemetry() {
@@ -249,27 +265,40 @@ public final class PeekCoordinator: PeekPresenting {
                 self?.record("display_changed", ["screens": .int(Int64(NSScreen.screens.count))], context: .production)
             }
         }
+        // A key Peek window (typing, Settings, Simulation) takes Esc through AppKit: the Esc router lets go at once.
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+            keyWindowObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.slotManager.refreshEscape() }
+            })
+        }
         // Before link.start(): the first hello is followed by the real presence (the app may launch while locked).
         let monitor = PresenceMonitor { [weak self] presence in self?.presenceChanged(presence) }
         presenceMonitor = monitor
         monitor.start()
     }
 
-    /// The screen was locked or unlocked, the displays slept or woke: tell peekd, in order (`presence`).
+    /// The screen was locked or unlocked, the displays slept or woke: tell peekd, in order (`presence`, with
+    /// ``paused`` merged in).
     public func presenceChanged(_ presence: PresenceRequest) {
         let previous = carbonPresence
-        carbonPresence = presence
+        carbonPresence = presence.with(paused: false)
         let state = presence.available ? "available" : "away (\(presence.reason.rawValue)); peekd holds new peeks until they can be seen"
         if presenceTask == nil {
             logger.info("presence at launch: \(state)")
-        } else if presence != previous {
+        } else if carbonPresence != previous {
             logger.info("presence changed: \(state)")
         }
+        sendPresence()
+    }
+
+    /// Sends the current screen state and pause to peekd, after any presence still on its way.
+    private func sendPresence() {
+        let request = carbonPresence.with(paused: paused)
         let link = self.link
         let before = presenceTask
         presenceTask = Task {
             await before?.value
-            await link.setPresence(presence)
+            await link.setPresence(request)
         }
     }
 
@@ -287,6 +316,7 @@ public final class PeekCoordinator: PeekPresenting {
         case .peekCancel(let e): cancel(sendID: e.sendID, reason: e.reason)
         case .sttResult(let result): applySTTResult(result)
         case .restarting(let e): logger.notice("peekd is restarting into build \(e.toBuild)")
+        case .queueState(let e): slotManager.applyQueueState(e)
         case .unknown(let name, _): logger.info("ignoring unknown event \(name)")
         case .malformed(let name, let reason):
             lastProblem = "peekd sent a malformed \(name) event: \(reason)"
@@ -473,11 +503,21 @@ public final class PeekCoordinator: PeekPresenting {
         guard let hotKeys else { return }
         let wanted = HotKeyPlan.slots(for: slots)
         let problems = hotKeys.update(slots: wanted, modifier: settings.hotkeyModifier)
-        hotkeyProblems = problems
         let modifier = settings.hotkeyModifier
         registeredHotkeys = hotKeys.registered.sorted().map { modifier.label(for: $0) }
         failedHotkeys = wanted.subtracting(hotKeys.registered).sorted().map { modifier.label(for: $0) }
         if let first = problems.first { lastProblem = first }
+        updateHotkeyProblems()
+    }
+
+    /// The per-position shortcuts' problems plus Esc's (bare Esc taken by another app), for Settings and `ui.status`.
+    private func updateHotkeyProblems() {
+        var problems = hotKeys?.problems ?? []
+        if let escape = slotManager.escapeProblem {
+            problems.append(escape)
+            lastProblem = escape
+        }
+        if problems != hotkeyProblems { hotkeyProblems = problems }
         pushStatusIfChanged()
     }
 
@@ -576,9 +616,18 @@ public final class PeekCoordinator: PeekPresenting {
                 return BubbleDelivery(messageID: context.askID == nil ? reply.messageID : nil)
             case .focus:
                 _ = try await link.send(FocusRequest(slot: context.slot, context: wireContext))
+            case .shown:
+                guard let sendID = context.sendID, !shownUnsupported else { return .delivered }
+                _ = try await link.send(ShownRequest(sendID: sendID))
             }
             return .delivered
         } catch {
+            if case .shown = outbound, case .remote(_, let body) = error, body.code == "unknown_op" {
+                // An older peekd (an update swap in progress) sets shown_at when it pushes: nothing is lost.
+                shownUnsupported = true
+                logger.info("peekd does not take shown yet (older build); it counts a peek as shown when it pushes it")
+                return .delivered
+            }
             logger.error("sending \(String(describing: outbound).prefix(40)) failed: \(error.description)")
             return .failed(Self.notice(for: error))
         }

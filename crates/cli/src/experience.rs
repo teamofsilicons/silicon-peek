@@ -389,12 +389,50 @@ pub fn notes(path: &str) -> String {
              peek send --speak \"Now playing\" --show '{\"elements\":[{\"type\":\"image\",\"path\":\"./cover.jpg\",\"caption\":\"CO2\"}]}'\n  \
              peek send --ask '{\"question\":\"Delete old.zip?\",\"type\":\"single_choice\",\"options\":[\"Keep\",\"Delete\"]}'\n  \
              peek send --ask @question.json --expires-in 600 --json\n  \
-             peek send --ask '{\"question\":\"Volume?\",\"type\":\"slider\",\"min\":0,\"max\":100}' --wait=60\n\n\
+             peek send --ask '{\"question\":\"Volume?\",\"type\":\"slider\",\"min\":0,\"max\":100}' --wait=60\n  \
+             peek send --show '{\"elements\":[{\"type\":\"text\",\"text\":\"Build finished\"}]}' --expires-in 10m\n  \
+             peek send --speak \"Stand-up\" --at 09:55\n  \
+             peek send --ask @q.json --in 2h --expires-at 2026-09-27T20:00\n  \
+             peek send --speak \"Correction\" --replace\n\n\
              Limits: --speak 1–2000 chars · show 1–3 elements, text ≤160, caption ≤50, images ≤10 MiB \
-             (png, jpeg, heic, webp, gif) · question ≤80 · 2–6 options, labels ≤40.\n\n\
+             (png, jpeg, heic, webp, gif) · question ≤80 · 2–6 options, labels ≤40 · 1 on screen + 5 waiting \
+             per Silicon · --expires-in/--expires-at 10 s – 7 d · --in/--at up to 365 d, 500 scheduled.\n\n\
              Next:\n  peek ask get <ASK_ID>     the answer, locally\n  \
+             peek queue                what is on screen and waiting\n  \
+             peek schedule list        scheduled sends\n  \
              peek docs ting            route peek.ask.answered in your flow\n  peek history              recent sends",
             "show",
+        ),
+        "peek queue" | "peek queue list" => (
+            "Examples:\n  peek queue\n  peek queue --json\n  peek queue list --json | jq '.waiting[].send_id'\n\n\
+             A send that would be the sixth waiting one fails with queue_full (exit 4).\n\n\
+             Next:\n  peek cancel <SEND_ID>     withdraw one\n  \
+             peek queue clear          drop every waiting send\n  peek schedule list        scheduled sends",
+            "cli",
+        ),
+        "peek queue clear" => (
+            "Examples:\n  peek queue clear\n  peek queue clear --all      also the send on screen\n  peek queue clear --json\n\n\
+             Next:\n  peek queue                what is left",
+            "cli",
+        ),
+        "peek cancel" => (
+            "Examples:\n  peek cancel snd_0192…\n  peek cancel ask_0192… --json\n  peek cancel sch_0192…\n\n\
+             Next:\n  peek queue                what is on screen and waiting\n  \
+             peek schedule list        scheduled sends",
+            "cli",
+        ),
+        "peek schedule" | "peek schedule list" => (
+            "Examples:\n  peek schedule list\n  peek schedule list --json\n  \
+             peek send --speak \"Stand-up in 5\" --at 09:55 --tz Asia/Kolkata\n\n\
+             Next:\n  peek schedule cancel <ID>     cancel one before it is due\n  \
+             peek schedule clear           cancel all",
+            "cli",
+        ),
+        "peek schedule cancel" | "peek schedule clear" => (
+            "Examples:\n  peek schedule cancel sch_0192…\n  peek schedule cancel snd_0192… --json\n  peek schedule clear\n\n\
+             A send that already fired is in the queue: withdraw it with peek cancel <SEND_ID>.\n\n\
+             Next:\n  peek schedule list        what is left",
+            "cli",
         ),
         "peek ask" | "peek ask get" | "peek ask list" | "peek ask cancel" => (
             "Examples:\n  peek ask get ask_0192… --json\n  peek ask list --state pending --limit 20 --json\n  \
@@ -486,6 +524,15 @@ mod tests {
                 "peek {} lacks its links",
                 path.join(" ")
             );
+            let full = if path.is_empty() {
+                "peek".to_owned()
+            } else {
+                format!("peek {}", path.join(" "))
+            };
+            assert!(
+                !notes(&full).starts_with("Explore:"),
+                "{full} has no Examples/Next notes of its own"
+            );
         }
     }
 
@@ -506,6 +553,18 @@ mod tests {
             .collect();
         assert!(names.contains(&"peek send"));
         assert!(names.contains(&"peek login status"));
+        for new in [
+            "peek queue",
+            "peek queue list",
+            "peek queue clear",
+            "peek cancel",
+            "peek schedule",
+            "peek schedule list",
+            "peek schedule cancel",
+            "peek schedule clear",
+        ] {
+            assert!(names.contains(&new), "{new}");
+        }
         assert!(names.contains(&"peek org byo deepgram set"));
         assert!(!names.iter().any(|n| n.contains("__after-login")));
         let send = v

@@ -16,8 +16,10 @@ struct SlotManagerTests {
         h.manager.present(F.show("snd_1", durationMs: 40))
         #expect(h.manager.sends["snd_1"] != nil)
         let surface = h.surface(.bottom)
-        #expect(surface?.slideIns == 1)
         #expect(h.input.states[F.dj.siliconKey]?.phase == .entering)
+        #expect(await h.eventually { surface?.slideIns == 1 })
+        #expect(surface?.calls.prefix(3) == ["configure", "prewarm", "slideIn"])
+        #expect(h.sentOutbounds.first == .shown)
         #expect(h.hosts[F.dj.siliconKey]?.attached == true)
         #expect(await h.eventually { h.manager.sends.isEmpty })
         #expect(surface?.slideOuts == 1)
@@ -47,14 +49,18 @@ struct SlotManagerTests {
         #expect(h.hosts[F.dj.siliconKey]?.events.contains(.answer(value: .choice("keep"), via: .click)) == true)
     }
 
-    @Test("a new show from the same Silicon replaces the visible one")
-    func replaceShow() async {
+    @Test("peek 0.1.2: a same-Silicon peek.show while one is visible queues behind it (never replaces it)")
+    func sameSiliconQueues() async {
         let h = SlotManagerHarness()
         h.manager.updateTable([F.dj])
-        h.manager.present(F.show("a", durationMs: 5000))
+        h.manager.present(F.show("a", durationMs: 60))
+        #expect(await h.eventually { h.manager.machine(on: .bottom)?.stage == .visible })
         h.manager.present(F.show("b", durationMs: 5000))
-        #expect(h.manager.machine(on: .bottom)?.stage == .leaving)
-        #expect(await h.eventually { h.manager.machine(on: .bottom)?.id.raw == "b" })
+        #expect(h.manager.machine(on: .bottom)?.id.raw == "a")
+        #expect(h.manager.machine(on: .bottom)?.stage == .visible, "not replaced")
+        #expect(h.manager.queue(on: .bottom).map(\.id.raw) == ["b"])
+        #expect(await h.eventually { h.manager.machine(on: .bottom)?.id.raw == "b" }, "b follows once a is done")
+        #expect(h.sentOutbounds.contains { if case .shownDone(.auto, _) = $0 { true } else { false } })
         #expect(h.manager.sends["a"] == nil)
     }
 
@@ -149,8 +155,9 @@ struct SlotManagerTests {
         h.manager.summon(.bottom)
         let machine = h.manager.machine(on: .bottom)
         #expect(machine?.isSummon == true)
-        #expect(h.surface(.bottom)?.isKeyFocused == true)
+        #expect(await h.eventually { h.surface(.bottom)?.isKeyFocused == true }, "key focus once it slides in")
         #expect(await h.eventually { h.sentOutbounds.first == .focus })
+        #expect(!h.sentOutbounds.contains(.shown), "a summon is not a send")
         #expect(h.manager.chrome(on: .bottom)?.content.hint != nil)
         #expect(h.manager.handleKey(KeyInput(characters: "\\", charactersIgnoringModifiers: "\\", keyCode: 0x2A), on: .bottom))
         #expect(await h.eventually { h.mic.starts == 1 })
@@ -168,14 +175,16 @@ struct SlotManagerTests {
         let h = SlotManagerHarness()
         h.manager.updateTable([F.dj])
         h.manager.summon(.bottom)
+        #expect(await h.eventually { h.surface(.bottom)?.isKeyFocused == true })
         #expect(h.manager.handleKey(KeyInput(characters: "\\", charactersIgnoringModifiers: "\\", keyCode: 0x2A), on: .bottom))
         #expect(await h.eventually { h.mic.starts == 1 })
         #expect(h.manager.handleKey(KeyInput(characters: "\r", charactersIgnoringModifiers: "\r", keyCode: 0x24), on: .bottom))
         #expect(await h.eventually { h.manager.machine(on: .bottom) == nil }, "the bubble leaves once peekd accepted it")
         let messageID = try #require(h.messageIDs.last)
         h.manager.applySTT(STTResultEvent(askID: nil, messageID: messageID, outcome: .failed))
+        // A fresh bubble pre-warms and opens its typing field as it slides in.
+        #expect(await h.eventually { h.manager.machine(on: .bottom)?.input == .typing })
         let machine = h.manager.machine(on: .bottom)
-        #expect(machine?.input == .typing)
         #expect(machine?.notice == BubbleMachine.transcribeFailedNotice)
         #expect(h.surface(.bottom)?.isKeyFocused == true)
         // A later outcome for a message nobody is waiting for changes nothing.
@@ -187,6 +196,7 @@ struct SlotManagerTests {
     private func sendVoiceMessage(_ h: SlotManagerHarness, on slot: SlotIndex) async -> Bool {
         let starts = h.mic.starts
         h.manager.summon(slot)
+        guard await h.eventually(.seconds(3), { h.surface(slot)?.isKeyFocused == true }) else { return false }
         guard h.manager.handleKey(KeyInput(characters: "\\", charactersIgnoringModifiers: "\\", keyCode: 0x2A), on: slot)
         else { return false }
         guard await h.eventually(.seconds(3), { h.mic.starts == starts + 1 }) else { return false }
@@ -205,7 +215,7 @@ struct SlotManagerTests {
         let (djMessage, cleanupMessage) = (h.messageIDs[0], h.messageIDs[1])
         // The second message's outcome arrives first: it belongs to Cleanup's slot, not to DJ's.
         h.manager.applySTT(STTResultEvent(askID: nil, messageID: cleanupMessage, outcome: .failed))
-        #expect(h.manager.machine(on: .right)?.input == .typing)
+        #expect(await h.eventually { h.manager.machine(on: .right)?.input == .typing })
         #expect(h.manager.machine(on: .bottom) == nil)
         // DJ's message was transcribed and delivered: nothing to offer.
         h.manager.applySTT(STTResultEvent(askID: nil, messageID: djMessage, outcome: .matched, value: "hello"))
@@ -221,6 +231,7 @@ struct SlotManagerTests {
             h.manager.applySTT(STTResultEvent(askID: nil, messageID: messageID, outcome: .failed))
         }
         h.manager.summon(.bottom)
+        #expect(await h.eventually { h.surface(.bottom)?.isKeyFocused == true })
         #expect(h.manager.handleKey(KeyInput(characters: "\\", charactersIgnoringModifiers: "\\", keyCode: 0x2A), on: .bottom))
         #expect(await h.eventually { h.mic.starts == 1 })
         #expect(h.manager.handleKey(KeyInput(characters: "\r", charactersIgnoringModifiers: "\r", keyCode: 0x24), on: .bottom))
@@ -240,7 +251,7 @@ struct SlotManagerTests {
         #expect(await sendVoiceMessage(h, on: .bottom))
         #expect(h.messageIDs.isEmpty)
         h.manager.applySTT(STTResultEvent(askID: nil, messageID: "cmsg_from_old_peekd", outcome: .empty))
-        #expect(h.manager.machine(on: .bottom)?.input == .typing)
+        #expect(await h.eventually { h.manager.machine(on: .bottom)?.input == .typing })
     }
 
     @Test("a printable key after the hotkey starts typing seeded with it; Esc slides back")
@@ -249,6 +260,7 @@ struct SlotManagerTests {
         h.manager.updateTable([F.dj])
         h.manager.present(F.show("s", durationMs: 5000))
         h.manager.summon(.bottom)
+        #expect(await h.eventually { h.surface(.bottom)?.isKeyFocused == true })
         #expect(h.manager.handleKey(KeyInput(characters: "y", charactersIgnoringModifiers: "y", keyCode: 16), on: .bottom))
         #expect(h.manager.machine(on: .bottom)?.typingText == "y")
         #expect(h.manager.chrome(on: .bottom)?.typingText == "y")
@@ -265,6 +277,7 @@ struct SlotManagerTests {
         h.manager.updateTable([F.dj])
         h.manager.present(F.ask("s", kind: F.keepDelete))
         h.manager.summon(.bottom)
+        #expect(await h.eventually { h.surface(.bottom)?.isKeyFocused == true })
         let right = KeyInput(characters: "\u{F703}", charactersIgnoringModifiers: "\u{F703}", keyCode: KeyClassifier.rightArrow)
         h.manager.handleKey(right, on: .bottom)
         h.manager.handleKey(right, on: .bottom)
@@ -314,7 +327,7 @@ struct SlotManagerTests {
         h.manager.present(F.show("b"))
         h.manager.dismissAll()
         #expect(await h.eventually { h.manager.isIdle })
-        #expect(h.sentOutbounds.isEmpty)
+        #expect(h.sentWithoutShown.isEmpty, "no dismissal or shown.done")
         #expect(h.manager.sends.isEmpty)
     }
 

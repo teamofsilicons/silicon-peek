@@ -203,7 +203,8 @@ logs in** (D26).
 
 ## P6: Ting types and Space Station tables [MUTATING] (depends on P5)
 
-The six type names and descriptions are final. Types cannot be deleted (BLUEPRINT §3.1).
+The nine type names and descriptions are final (the last three since 0.1.2; register them before
+any 0.1.2 peekd sends them). Types cannot be deleted (BLUEPRINT §3.1).
 
 ```sh
 iam4 -o json login --app-id ting --grant-org tos | jq -r .slt | tingop login --token-stdin --json
@@ -214,7 +215,10 @@ tingop --org tos types register --type 'peek.ask.expired'      --description 'A 
 tingop --org tos types register --type 'peek.message.received' --description 'A Carbon spoke or typed to the Silicon from its peek with no pending ask.' --json
 tingop --org tos types register --type 'peek.speech.finished'  --description 'A peek --speak finished playing or was stopped by the Carbon.' --json
 tingop --org tos types register --type 'peek.show.dismissed'   --description 'A Carbon closed a peek --show before it retracted.' --json
-tingop --org tos types list --app peek --json                    # [RO] all six
+tingop --org tos types register --type 'peek.send.expired'  --description 'A peek --speak or --show reached its --expires-in or --expires-at deadline before it finished; the data says whether it was shown.' --json
+tingop --org tos types register --type 'peek.schedule.due'  --description 'A scheduled peek send (--in or --at) came due; the data says whether it was shown, queued, expired or replaced the active peek.' --json
+tingop --org tos types register --type 'peek.send.shown'    --description 'A peek send appeared on screen for the Carbon (always for scheduled sends; opt-in with --notify shown).' --json
+tingop --org tos types list --app peek --json                    # [RO] all nine
 
 iam4 -o json login --app-id spacestation --grant-org tos | jq -r .slt | ss2 login - --org tos
 for t in peekbackend peekclidaemon peekfrontendanalytics peekfrontendevents; do

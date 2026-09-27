@@ -163,6 +163,7 @@ final class SettingsSuiteDrawingHost: DrawingHosting {
     func wake() {}
     func isOverContent(unitPoint: CGPoint) -> Bool { false }
     func validate(_ script: DrawingScript, options: ValidationOptions) async -> ValidationReport { ValidationReport(ok: true) }
+    func awaitFrame(timeout: Duration) async -> Bool { true }
 }
 
 @MainActor
@@ -221,6 +222,8 @@ final class SettingsSuiteBackdrop: BackdropSampling {
     var onChange: (@MainActor (SiliconKey, Backdrop) -> Void)?
     func track(_ key: SiliconKey, rectOnScreen: CGRect?) {}
     func backdrop(for key: SiliconKey) -> Backdrop { .fromAppearance(.light) }
+    func warm(_ key: SiliconKey, rectOnScreen: CGRect?) {}
+    func sampleAge(for key: SiliconKey) -> Double? { 0 }
 }
 
 @MainActor

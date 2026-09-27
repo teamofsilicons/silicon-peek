@@ -64,6 +64,16 @@ public struct SimulationScenario: Equatable, Sendable {
         case live
     }
 
+    /// Escs Simulation presses on an ask once it is up (peek 0.1.2, for screenshots of the compact ask).
+    public enum AskEsc: String, CaseIterable, Sendable {
+        case none
+        /// One Esc: the compact ask (question and `^` only).
+        case collapsed
+        /// Then another Esc once the double-Esc window closed: "Esc again to dismiss" (shown again whenever it fades,
+        /// until the scenario ends).
+        case hint
+    }
+
     public var position: SlotIndex = .top
     public var speak = false
     public var speakText = SimulationSamples.speakOnly
@@ -80,6 +90,13 @@ public struct SimulationScenario: Equatable, Sendable {
     public var context: InputContext = .simulation
     /// `duration_ms` for shows; nil = the §7.4 default (3 s + 0.06 s per visible character, 4…15 s).
     public var holdMs: Int?
+    /// `queued_behind`: the "+N" badge next to the down-arrow (peek 0.1.2).
+    public var queuedBehind = 0
+    /// A `queue.state` Simulation sends ``queueUpdateDelay`` after the bubble appears (the badge's live update).
+    public var queueUpdate: Int?
+    public static let queueUpdateDelay: Duration = .seconds(2)
+    /// Escs pressed on an ask once it is up.
+    public var askEsc: AskEsc = .none
 
     public init() {}
 
@@ -116,7 +133,7 @@ public struct SimulationScenario: Equatable, Sendable {
         guard speakInfo != nil || show != nil || ask != nil else { throw .nothingToShow }
         return PeekShowEvent(
             sendID: sendID, askID: ask == nil ? nil : askID, slot: position, context: .simulation, speak: speakInfo,
-            show: show, ask: ask, durationMs: ask == nil ? holdMs : nil)
+            show: show, ask: ask, durationMs: ask == nil ? holdMs : nil, queuedBehind: max(0, queuedBehind))
     }
 
     /// Checks the scenario without files on disk.
@@ -170,6 +187,10 @@ public enum SimulationPreset: String, CaseIterable, Sendable, Identifiable {
     case askLongLabels = "ask-long-labels"
     case askStepped = "ask-stepped"
     case compactLong = "compact-long"
+    // peek 0.1.2 scenarios.
+    case queueBadge = "queue-badge"
+    case askCompact = "ask-compact"
+    case askEscHint = "ask-esc-hint"
 
     public var id: String { rawValue }
 
@@ -189,6 +210,9 @@ public enum SimulationPreset: String, CaseIterable, Sendable, Identifiable {
         case .askLongLabels: "Ask: long question and labels"
         case .askStepped: "Ask: stepped slider"
         case .compactLong: "Compact mode long text"
+        case .queueBadge: "Queue: +3 waiting (live update to +4)"
+        case .askCompact: "Ask collapsed by Esc (compact ask)"
+        case .askEscHint: "Compact ask: \"Esc again to dismiss\""
         }
     }
 
@@ -248,6 +272,22 @@ public enum SimulationPreset: String, CaseIterable, Sendable, Identifiable {
             scenario.content = .show
             scenario.showVariant = .longText
             scenario.mode = .compact
+        case .queueBadge:
+            scenario.content = .show
+            scenario.showVariant = .text
+            scenario.queuedBehind = 3
+            scenario.queueUpdate = 4
+        case .askCompact:
+            scenario.content = .ask
+            scenario.askType = .singleChoice
+            scenario.optionImages = false
+            scenario.queuedBehind = 2
+            scenario.askEsc = .collapsed
+        case .askEscHint:
+            scenario.content = .ask
+            scenario.askType = .singleChoice
+            scenario.optionImages = false
+            scenario.askEsc = .hint
         }
         scenario.useSampleSpeech()
         return scenario

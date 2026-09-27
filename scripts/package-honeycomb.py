@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage the peek Honeycomb package (Manifest B, BLUEPRINT §4.1) and verify every payload.
+"""Stage the peek Honeycomb package (Manifest A, BLUEPRINT §4.1 as amended for 0.1.2) and verify every payload.
 
 The stage written to --out holds exactly what `honeycomb pack` archives:
 
@@ -7,7 +7,7 @@ The stage written to --out holds exactly what `honeycomb pack` archives:
   targets/macos-aarch64/bin/peek        arm64 Mach-O (thin, or universal containing arm64)
   targets/macos-aarch64/Peek.app.zip    universal Peek.app, zipped with ditto --norsrc (§4.3)
   targets/macos-aarch64/Peek.app.info   key=value sidecar read by ensure_app() and install-app.sh
-  targets/macos-aarch64/install-app.sh  0755; unused by Manifest B, ready for Manifest A
+  targets/macos-aarch64/install-app.sh  0755; Manifest A's install_script (Honeycomb >= 0.5.0 runs it)
   targets/macos-aarch64/LICENSE
   targets/macos-x86_64/...              the same zip, info, script and license bytes
   targets/linux-{x86_64,aarch64}/       bin/peek (static musl ELF) + LICENSE
@@ -118,6 +118,9 @@ TARGETS: dict[str, Target] = {
     "windows-aarch64": Target("aarch64-pc-windows-msvc", "bin/peek.exe"),
 }
 MAC_PAYLOADS = ("Peek.app.zip", "Peek.app.info", "install-app.sh")
+# Manifest A: honeycomb.yaml sets install_script: "install-app.sh" on exactly these targets.
+MANIFEST_A_SCRIPT = "install-app.sh"
+MANIFEST_A_TARGETS = ("macos-aarch64", "macos-x86_64")
 
 
 def log(message: str) -> None:
@@ -197,7 +200,7 @@ def _crate_version(root: Path, directory: str, expected_name: str, workspace: st
 def _manifest_version(root: Path) -> str:
     path = root / "honeycomb.yaml"
     if not path.is_file() or path.is_symlink():
-        raise PackagingError(f"{rel(path, root)} is missing or a symlink; it is Manifest B (BLUEPRINT §4.1)")
+        raise PackagingError(f"{rel(path, root)} is missing or a symlink; it is Manifest A (BLUEPRINT §4.1)")
     text = path.read_text(encoding="utf-8")
     values: dict[str, str] = {}
     for key in ("format_version", "app_id", "version"):
@@ -209,12 +212,54 @@ def _manifest_version(root: Path) -> str:
         raise PackagingError("honeycomb.yaml format_version must be 1 (package format 1)")
     if values["app_id"] != APP_ID:
         raise PackagingError(f"honeycomb.yaml app_id is {values['app_id']!r}; peek's Honeycomb app is 'peek'")
-    # YAML comments start at a '#' that begins the line or follows whitespace.
-    code = "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in text.splitlines())
-    for script in re.findall(r"install_script:\s*[\"']?([^\s\"'#,}]+)", code):
-        if script != "install-app.sh":
-            raise PackagingError(f"honeycomb.yaml install_script {script!r}: the only packaged hook is install-app.sh")
+    check_manifest_a(text)
     return values["version"]
+
+
+def manifest_install_scripts(text: str) -> dict[str, str | None]:
+    """The install_script of every target in honeycomb.yaml (None when absent).
+
+    Reads each target's mapping, flow style on one line or block style on the
+    following, more indented lines. An install_script outside any target counts
+    under the key "" so it is refused too.
+    """
+    # YAML comments start at a '#' that begins the line or follows whitespace.
+    lines = [re.sub(r"(^|\s)#.*$", "", line).rstrip() for line in text.splitlines()]
+    found: dict[str, str | None] = {platform: None for platform in TARGETS}
+    current: str | None = None
+    current_indent = -1
+    for line in lines:
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        key = re.match(r"^\s*([A-Za-z0-9_-]+):", line)
+        if key and key.group(1) in TARGETS:
+            current, current_indent = key.group(1), indent
+        elif current is not None and indent <= current_indent:
+            current = None
+        for script in re.findall(r"install_script:\s*[\"']?([^\s\"'#,}]+)", line):
+            target = current if current is not None else ""
+            if target in found and found[target] is not None:
+                raise PackagingError(f"honeycomb.yaml targets.{target} declares install_script twice")
+            found[target] = script
+    return found
+
+
+def check_manifest_a(text: str) -> None:
+    """Manifest A: install_script "install-app.sh" on exactly the two macOS targets."""
+    scripts = manifest_install_scripts(text)
+    if scripts.get(""):
+        raise PackagingError(
+            f"honeycomb.yaml has an install_script {scripts['']!r} outside any target; "
+            f"Manifest A sets it only on {' and '.join(MANIFEST_A_TARGETS)}"
+        )
+    for platform in TARGETS:
+        want = MANIFEST_A_SCRIPT if platform in MANIFEST_A_TARGETS else None
+        if scripts.get(platform) != want:
+            raise PackagingError(
+                f"honeycomb.yaml targets.{platform} install_script is {scripts.get(platform)!r}; Manifest A runs "
+                f"{MANIFEST_A_SCRIPT} on exactly {' and '.join(MANIFEST_A_TARGETS)} and nowhere else"
+            )
 
 
 def _xcode_versions(root: Path) -> tuple[str, str]:
@@ -680,7 +725,7 @@ def assert_clean_tree(stage: Path) -> None:
     if found != set(expected):
         extra, missing = sorted(found - set(expected)), sorted(set(expected) - found)
         raise PackagingError(
-            f"stage layout differs from Manifest B: unexpected {extra or 'none'}, missing {missing or 'none'}"
+            f"stage layout differs from Manifest A: unexpected {extra or 'none'}, missing {missing or 'none'}"
         )
     for relative, mode in expected.items():
         actual = (stage / relative).stat().st_mode & 0o777
@@ -754,8 +799,14 @@ def honeycomb_validate(honeycomb: str, path: Path) -> dict[str, Any]:
         entry = (manifest.get("targets") or {}).get(platform) or {}
         if entry.get("root") != f"targets/{platform}" or entry.get("executables") != {"cli": target.executable}:
             raise PackagingError(
-                f"honeycomb.yaml targets.{platform} is {entry}; Manifest B maps root targets/{platform} "
+                f"honeycomb.yaml targets.{platform} is {entry}; Manifest A maps root targets/{platform} "
                 f"and cli {target.executable}"
+            )
+        want = MANIFEST_A_SCRIPT if platform in MANIFEST_A_TARGETS else None
+        if entry.get("install_script") != want:
+            raise PackagingError(
+                f"Honeycomb read targets.{platform} install_script {entry.get('install_script')!r}; Manifest A "
+                f"runs {MANIFEST_A_SCRIPT} on exactly {' and '.join(MANIFEST_A_TARGETS)}"
             )
     return report
 

@@ -6,8 +6,9 @@ import PeekCore
 //
 //   * production pre-empts a visible test bubble, which slides back with its ask still pending and
 //     is shown again later; a test peek waits while its slot shows a production bubble;
-//   * a new send from the same Silicon replaces a visible show; while an ask is pending (or the
-//     Carbon is typing, recording or waiting on a transcript) new sends queue behind it;
+//   * a new send from the same Silicon always queues behind its bubble (peek 0.1.2: strict FIFO, peekd holds the
+//     rest of the queue); only an idle summon of that Silicon makes way for it. A Silicon's own `--replace` arrives
+//     as `peek.cancel{replaced}` (the bubble leaves) followed by the new `peek.show`;
 //   * "Show test peeks" off queues test peeks silently; "Pause all peeks" queues every Silicon peek;
 //   * a send with speech waits while an earlier send's audio still plays after its bubble was
 //     dismissed with a single down-arrow click (the Carbon chose to keep listening);
@@ -87,7 +88,7 @@ public struct SlotScheduler: Sendable, Equatable {
         case present
         /// Wait in the queue.
         case enqueue
-        /// The active bubble (a show or an idle summon of the same Silicon) slides out; this one follows.
+        /// The active bubble (an idle summon of the same Silicon) slides out; this one follows.
         case replaceActive
         /// The active bubble (lower priority) slides out and is queued again; this one follows.
         case preemptActive
@@ -110,8 +111,9 @@ public struct SlotScheduler: Sendable, Equatable {
         }
         if entry.priority < active.priority { return .enqueue }
         guard entry.key == active.key else { return .enqueue }
-        if active.hasUserInput || active.isAskOpen { return .enqueue }
-        return .replaceActive
+        // Same Silicon: its sends queue in order. An idle summon (the Carbon opened an empty bubble) makes way.
+        if active.isSummon, !active.hasUserInput { return .replaceActive }
+        return .enqueue
     }
 
     /// Adds `entry` in priority order (FIFO within a priority; negative sequences first).

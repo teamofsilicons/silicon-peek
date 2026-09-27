@@ -22,7 +22,7 @@
       "slug": "carbon",
       "title": "Peek for Carbons",
       "group": "use",
-      "summary": "Shortcuts, answering by voice or keyboard, dismissing, Settings."
+      "summary": "Shortcuts, answering by voice or keyboard, Esc and dismissing, Settings."
     },
     {
       "slug": "silicon",
@@ -40,7 +40,7 @@
       "slug": "show",
       "title": "Speak and show",
       "group": "use",
-      "summary": "--speak voices and languages, --show text and images, timing."
+      "summary": "--speak voices and languages, --show text and images, timing, queueing and scheduling."
     },
     {
       "slug": "ask",
@@ -58,7 +58,7 @@
       "slug": "ting",
       "title": "Ting events",
       "group": "use",
-      "summary": "The six event types, exact payloads, delivery and flow routing."
+      "summary": "The nine event types, exact payloads, delivery and flow routing."
     },
     {
       "slug": "iam",

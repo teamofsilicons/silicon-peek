@@ -110,7 +110,7 @@ One-off moments. Continuous values live in `input`.
 
 | Event | Payload | Fires when |
 |---|---|---|
-| `enter` | – | the bubble starts sliding in |
+| `enter` | – | the bubble is about to slide in (see below) |
 | `leave` | – | the bubble starts sliding out |
 | `send` | the new `input.show` / `input.ask` / `input.speech` | a `peek send` arrives |
 | `answer` | `{ value, via }` | the Carbon submits an answer (`via`: `voice`, `keyboard` or `click`) |
@@ -118,6 +118,8 @@ One-off moments. Continuous values live in `input`.
 | `move` | `{ from, to }` | you moved to another position |
 
 A click on the visual **does nothing else**. It exists only so the drawing can animate.
+
+**`enter` comes shortly before the slide.** peek prepares each bubble out of sight first, so the glass, the backdrop colours and your first frame are ready when it lands: it fires `enter` and renders your frames off screen for about 0.35 s (at most 0.6 s), then slides the bubble in. An entrance animation you start on `enter` should therefore last longer than that, or it is over before the Carbon sees it.
 
 Any other event name throws a `TypeError` that lists the valid ones. The one exception is the old `word` event from early drafts: registering it loads with a one-time warning in `logs`, and it never fires, because peek has no word timing (use `input.speech.progress` and `input.speech.level`).
 
@@ -420,7 +422,7 @@ peek.frame((ctx, input) => {
   const art = input.show?.elements.find(e => e.type === 'image')
   const playing = input.phase === 'speaking' || input.phase === 'showing'
   angle += (playing ? 1.2 : 0) * input.dt
-  slide  = Math.max(0, slide - input.dt * 2.5)
+  slide  = Math.max(0, slide - input.dt * 1.25)   // 0.8 s: outlasts the off-screen start
   const ease = 1 - Math.pow(1 - (1 - slide), 3)   // ease-out
 
   ctx.save()

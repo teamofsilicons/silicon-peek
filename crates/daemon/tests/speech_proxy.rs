@@ -44,6 +44,10 @@ fn send_op() -> SendOp {
         duration_ms: None,
         expires_in_s: None,
         wait: false,
+        expires_at: None,
+        due_at: None,
+        tz: None,
+        replace: false,
     }
 }
 

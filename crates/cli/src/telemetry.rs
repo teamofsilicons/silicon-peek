@@ -316,11 +316,10 @@ async fn forward_env_opt_out(auth: &AuthBlock) {
             return None;
         }
         let mut service = crate::service::connect_existing(IPC_TIMEOUT).await.ok()??;
+        let payload = crate::commands::config::sync_payload_for(&config, &service.hello);
         service
             .call(
-                &ConfigSync {
-                    config: crate::commands::config::sync_payload(&config),
-                },
+                &ConfigSync { config: payload },
                 Some(auth),
                 Vec::new(),
                 IPC_TIMEOUT,

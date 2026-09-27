@@ -81,12 +81,20 @@ extension Array where Element == BubbleEffect {
 }
 
 extension SlotFixtures {
-    /// Drives a machine through the slide-in so tests start from a visible bubble.
+    /// Drives a machine through the pre-warm and the slide-in so tests start from a visible bubble.
     static func visibleMachine(_ event: PeekShowEvent, speechAvailable: Bool = true) -> BubbleMachine {
         var machine = BubbleMachine(id: .send(event.sendID), source: .send(event), speechAvailable: speechAvailable)
         _ = machine.handle(.begin, now: 0)
+        _ = machine.handle(.prewarmed, now: 0)
         _ = machine.handle(.timerFired(.enter), now: 0.5)
         return machine
+    }
+}
+
+extension BubbleMachine {
+    /// `.begin` then `.prewarmed` at the same instant: the effects of both (tests that do not care about the pre-warm).
+    mutating func beginAndSlide(now: Double) -> [BubbleEffect] {
+        handle(.begin, now: now) + handle(.prewarmed, now: now)
     }
 }
 
@@ -166,8 +174,41 @@ final class SlotFakeBackdrop: BackdropSampling {
     var source: BackdropSourceSetting = .wallpaper
     var onChange: (@MainActor (SiliconKey, Backdrop) -> Void)?
     var tracked: [SiliconKey: CGRect] = [:]
-    func track(_ key: SiliconKey, rectOnScreen: CGRect?) { tracked[key] = rectOnScreen }
-    func backdrop(for key: SiliconKey) -> Backdrop { .fromAppearance(.light) }
+    /// Every `track` call in order (nil = untracked).
+    var trackCalls: [(SiliconKey, CGRect?)] = []
+    var warmed: [SiliconKey: CGRect] = [:]
+    /// nil: every key counts as freshly sampled; otherwise the ages per key (missing = never sampled).
+    var ages: [SiliconKey: Double]?
+    var value: Backdrop = .fromAppearance(.light)
+    func track(_ key: SiliconKey, rectOnScreen: CGRect?) {
+        tracked[key] = rectOnScreen
+        trackCalls.append((key, rectOnScreen))
+    }
+    func backdrop(for key: SiliconKey) -> Backdrop { value }
+    func warm(_ key: SiliconKey, rectOnScreen: CGRect?) { warmed[key] = rectOnScreen }
+    func sampleAge(for key: SiliconKey) -> Double? { ages.map { $0[key] } ?? 0 }
+}
+
+/// Records what the Esc router holds; `press()` simulates a global Esc.
+@MainActor
+final class SlotFakeEscapeKey: EscapeKeyProviding {
+    var onPress: (@MainActor () -> Bool)?
+    var priority: (@MainActor () -> Double)?
+    private(set) var isHeld = false
+    /// Every change of `isHeld`, in order.
+    private(set) var changes: [Bool] = []
+    /// Makes the next registration fail with this problem.
+    var failWith: String?
+
+    @discardableResult
+    func setHeld(_ held: Bool) -> String? {
+        isHeld = held
+        changes.append(held)
+        return held ? failWith : nil
+    }
+
+    @discardableResult
+    func press() -> Bool { isHeld ? (onPress?() ?? false) : false }
 }
 
 @MainActor
@@ -189,6 +230,15 @@ final class SlotFakeHost: DrawingHosting {
     func wake() {}
     func isOverContent(unitPoint: CGPoint) -> Bool { false }
     func validate(_ script: DrawingScript, options: ValidationOptions) async -> ValidationReport { ValidationReport(ok: true) }
+    /// false: `awaitFrame` never resolves by itself (tests of the pre-warm cap).
+    var framesArrive = true
+    var frameRequests = 0
+    func awaitFrame(timeout: Duration) async -> Bool {
+        frameRequests += 1
+        if framesArrive { return true }
+        try? await Task.sleep(for: timeout)
+        return false
+    }
 }
 
 /// A SlotManager on headless surfaces with fakes and fast timings.
@@ -210,6 +260,8 @@ final class SlotManagerHarness {
     var beforeReply: ((BubbleOutbound, String?) -> Void)?
     var stoppedBeforeStart: [(String, Bool)] = []
     var clock: Double = 0
+    let escapeKey = SlotFakeEscapeKey()
+    var keyWindowOpen = false
     private(set) var manager: SlotManager!
 
     init(timing: BubbleTiming = SlotManagerHarness.fastTiming) {
@@ -239,7 +291,8 @@ final class SlotManagerHarness {
                 self.beforeReply?(outbound, messageID)
                 return BubbleDelivery(messageID: messageID)
             },
-            speechStoppedBeforeStart: { [unowned self] sendID, byUser in self.stoppedBeforeStart.append((sendID, byUser)) })
+            speechStoppedBeforeStart: { [unowned self] sendID, byUser in self.stoppedBeforeStart.append((sendID, byUser)) },
+            escapeKeys: escapeKey, keyWindowIsOpen: { [unowned self] in self.keyWindowOpen })
         manager = SlotManager(environment: env)
     }
 
@@ -254,8 +307,17 @@ final class SlotManagerHarness {
         timing.speechStartTimeout = 5
         timing.summonIdle = 5
         timing.sentLinger = 0.02
+        timing.escDouble = 0.08
+        timing.escHint = 0.3
+        timing.prewarmGlass = 0
+        timing.prewarmTicks = 0
+        timing.backdropWait = 0
+        timing.prewarmMax = 0.3
         return timing
     }
+
+    /// Everything the bubbles sent except `shown` (reported by every send bubble as its pre-warm starts).
+    var sentWithoutShown: [BubbleOutbound] { sentOutbounds.filter { $0 != .shown } }
 
     var sentOutbounds: [BubbleOutbound] { sent.map(\.1) }
 

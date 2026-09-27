@@ -5,7 +5,9 @@
 # Source, in order:
 #   0. PEEK_SKIP_EMBED_PEEKD=1 skips the phase (UI work while crates/daemon does not build);
 #   1. $PEEKD_BINARY, if set (must exist);
-#   2. <repo>/dist/peekd (the release pipeline lipo's it there, BLUEPRINT §4.4);
+#   2. <repo>/dist/peekd (the release pipeline lipo's it there, BLUEPRINT §4.4), unless a
+#      helper source (Cargo.toml, Cargo.lock, crates/client or crates/daemon) is newer than it:
+#      a stale dist/peekd from an earlier release is then skipped with a warning (step 3);
 #   3. a cargo build of crates/daemon (package silicon-peek-daemon) for every
 #      architecture in $ARCHS, when crates/daemon/Cargo.toml exists;
 #   4. otherwise nothing is embedded and Xcode shows a warning. The app still
@@ -37,6 +39,14 @@ triple_for() {
     x86_64) echo "x86_64-apple-darwin" ;;
     *) fail "unsupported architecture '$1' in ARCHS='$ARCHS' (expected arm64 and/or x86_64)" ;;
   esac
+}
+
+# The first helper source newer than dist/peekd (empty when dist/peekd is current). Only the crates peekd is
+# built from count: docs, the CLI, the server and the app do not change the helper.
+stale_dist_peekd() {
+  (cd "$repo" && find Cargo.toml Cargo.lock crates/client crates/daemon \
+    \( -name target -prune \) -o \( -type f \( -name '*.rs' -o -name '*.toml' -o -name '*.sql' -o -name Cargo.lock \) \
+    -newer dist/peekd -print \) 2>/dev/null | head -n 1)
 }
 
 check_archs() {
@@ -91,10 +101,13 @@ elif [ -n "${PEEKD_BINARY:-}" ]; then
   [ -f "$PEEKD_BINARY" ] || fail "PEEKD_BINARY=$PEEKD_BINARY does not exist"
   source_binary="$PEEKD_BINARY"
   echo "embed-peekd: using PEEKD_BINARY=$source_binary"
-elif [ -f "$repo/dist/peekd" ]; then
+elif [ -f "$repo/dist/peekd" ] && [ -z "$(stale_dist_peekd)" ]; then
   source_binary="$repo/dist/peekd"
   echo "embed-peekd: using $source_binary"
 elif [ -f "$repo/crates/daemon/Cargo.toml" ]; then
+  if [ -f "$repo/dist/peekd" ]; then
+    echo "warning: embed-peekd: $repo/dist/peekd is older than $(stale_dist_peekd); building peekd from this tree instead."
+  fi
   build_with_cargo
 else
   rm -f "$dest"

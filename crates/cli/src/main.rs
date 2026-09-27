@@ -15,6 +15,7 @@
 //! - `service`: Peek.app and peekd on macOS (`ensure_service`,
 //!   `ensure_app`) and the exact `platform_unsupported` error elsewhere.
 //! - `sys`: the only `unsafe` (`renamex_np`, `setsid`).
+//! - `when`: `--at` / `--expires-at` / `--tz` date-times and their rendering.
 //! - `output`, `input`, `docs`, `telemetry`.
 
 mod cli;
@@ -27,6 +28,7 @@ mod output;
 mod service;
 mod sys;
 mod telemetry;
+mod when;
 
 use std::{process::ExitCode, time::Instant};
 

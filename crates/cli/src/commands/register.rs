@@ -117,19 +117,22 @@ fn human_drawing(v: &Value, silicon: &str) -> String {
         format!("✓ ops/frame  max {}", stats["ops_max"]),
     ];
     let rebuilds = stats["glass_rebuilds"].as_u64().unwrap_or_default();
-    // Excessive when the glass is rebuilt in more than 10% of the frames, or
-    // the validator flagged the glass.
+    // Excessive (⚠, never ✓) when the glass is rebuilt in more than 10% of
+    // the frames (a single rebuild never is), or the validator flagged the
+    // glass. No frames, no glass line.
     let glass_flagged = v["warnings"]
         .as_array()
         .into_iter()
         .flatten()
         .any(|w| w["code"].as_str().is_some_and(|c| c.starts_with("glass")));
-    let excessive = rebuilds.saturating_mul(10) > frames || glass_flagged;
-    out.push(format!(
-        "{} glass rebuilt {rebuilds} time{} in {frames} frames",
-        if excessive { "⚠" } else { "✓" },
-        if rebuilds == 1 { "" } else { "s" }
-    ));
+    if frames > 0 {
+        let excessive = (rebuilds > 1 && rebuilds.saturating_mul(10) > frames) || glass_flagged;
+        out.push(format!(
+            "{} glass rebuilt {rebuilds} time{} in {frames} frames",
+            if excessive { "⚠" } else { "✓" },
+            if rebuilds == 1 { "" } else { "s" }
+        ));
+    }
     for w in v["warnings"].as_array().into_iter().flatten() {
         out.push(format!("⚠ {}", w["message"].as_str().unwrap_or_default()));
     }
@@ -245,21 +248,92 @@ pub async fn unregister(g: &Globals, out: Out) -> Result<()> {
     let (result, _) = svc
         .call(&Unregister {}, Some(&auth), Vec::new(), REQUEST_TIMEOUT)
         .await?;
-    out.result(&result, |v| {
-        let released = v["released_slot"].as_u64().map_or_else(
-            || "held no position".to_owned(),
-            |s| format!("released position {s} ({})", side_name(s)),
-        );
-        let asks = v["cancelled_asks"].as_array().map_or(0, Vec::len);
-        format!("{released}; drawing deleted; {asks} pending ask(s) cancelled")
-    });
+    out.result(&result, human_unregister);
     next(out, &["peek register side <1-8>"]);
     Ok(())
+}
+
+/// The `peek unregister` line (contract §5.6).
+fn human_unregister(v: &Value) -> String {
+    let released = v["released_slot"].as_u64().map_or_else(
+        || "held no position".to_owned(),
+        |s| format!("released position {s} ({})", side_name(s)),
+    );
+    let count = |k: &str| v[k].as_array().map_or(0, Vec::len);
+    format!(
+        "{released}; drawing deleted; {} pending ask(s), {} queued send(s) and {} scheduled send(s) cancelled",
+        count("cancelled_asks"),
+        count("cancelled_sends"),
+        count("cancelled_scheduled")
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unregister_line_counts_everything_cancelled() {
+        let v = json!({"released_slot": 3, "cancelled_asks": ["ask_1"], "cancelled_sends": ["snd_1", "snd_2"],
+            "cancelled_scheduled": ["sch_1", "sch_2", "sch_3"]});
+        assert_eq!(
+            human_unregister(&v),
+            "released position 3 (right); drawing deleted; 1 pending ask(s), 2 queued send(s) and 3 scheduled send(s) cancelled"
+        );
+        // An older peekd leaves the new lists out.
+        let old = json!({"released_slot": null, "cancelled_asks": []});
+        assert_eq!(
+            human_unregister(&old),
+            "held no position; drawing deleted; 0 pending ask(s), 0 queued send(s) and 0 scheduled send(s) cancelled"
+        );
+    }
+
+    fn a9(rebuilds: u64, frames: u64, warnings: &Value) -> String {
+        let v = json!({"sha256":"x","bytes":3174,"stats":{"frames":frames,"p50_ms":0.31,"p95_ms":0.58,"max_ms":0.92,"ops_max":212,"glass_rebuilds":rebuilds},
+            "warnings":warnings,"logs":[],"active":true,"slot":5,"server_sync":"pending"});
+        human_drawing(&v, "dj")
+    }
+
+    #[test]
+    fn excessive_glass_rebuilds_are_a_warning_never_a_check() {
+        let glass = |text: &str| {
+            text.lines()
+                .find(|l| l.contains("glass rebuilt"))
+                .map(str::to_owned)
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            glass(&a9(1, 90, &json!([]))),
+            "✓ glass rebuilt 1 time in 90 frames"
+        );
+        assert_eq!(
+            glass(&a9(9, 90, &json!([]))),
+            "✓ glass rebuilt 9 times in 90 frames"
+        );
+        assert_eq!(
+            glass(&a9(10, 90, &json!([]))),
+            "⚠ glass rebuilt 10 times in 90 frames"
+        );
+        assert_eq!(
+            glass(&a9(0, 90, &json!([]))),
+            "✓ glass rebuilt 0 times in 90 frames"
+        );
+        assert_eq!(
+            glass(&a9(1, 5, &json!([]))),
+            "✓ glass rebuilt 1 time in 5 frames",
+            "one rebuild is fine"
+        );
+        let flagged =
+            json!([{"code": "glass_outline_churn", "message": "the glass outline changes often"}]);
+        assert_eq!(
+            glass(&a9(1, 90, &flagged)),
+            "⚠ glass rebuilt 1 time in 90 frames"
+        );
+        assert!(
+            !a9(0, 0, &json!([])).contains("glass rebuilt"),
+            "no frames, no glass line"
+        );
+    }
 
     #[test]
     fn a9_success_block() {

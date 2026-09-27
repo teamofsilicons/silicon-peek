@@ -76,6 +76,7 @@ pub fn fast_timings() -> Timings {
         bubble_grace: Duration::from_secs(60),
         waiter_ack: Duration::from_secs(2),
         prewarm_cooldown: Duration::from_secs(60),
+        timer_catchup_cap: Duration::from_secs(15),
     }
 }
 
@@ -203,6 +204,22 @@ impl Harness {
         c
     }
 
+    /// A CLI connection whose hello claims `version` (a legacy CLI for
+    /// `0.1.1`).
+    pub async fn cli_as(&self, version: &str) -> DaemonConnection {
+        let mut c = DaemonConnection::connect(self.handle().socket_path(), Duration::from_secs(2))
+            .await
+            .unwrap();
+        let hello = Hello::Cli(silicon_peek_client::ipc::cli::CliHello {
+            cli_version: version.to_owned(),
+            protocols: vec![1],
+            platform: "macos-aarch64".into(),
+            bundled_app: None,
+        });
+        c.hello(&hello, Duration::from_secs(5)).await.unwrap();
+        c
+    }
+
     /// One CLI op for `home`.
     pub async fn call<O: Op>(
         &self,
@@ -217,6 +234,13 @@ impl Harness {
 
     pub async fn ui(&self) -> FakeUi {
         FakeUi::connect(self.handle().socket_path()).await
+    }
+
+    /// A fake Peek.app of `build` (1002 and up report `shown`).
+    pub async fn ui_build(&self, build: u64) -> FakeUi {
+        FakeUi::try_connect_build(self.handle().socket_path(), build)
+            .await
+            .unwrap()
     }
 
     /// Registers a side and a drawing (through the fake UI) for `home`.
@@ -461,8 +485,39 @@ fn fake_reply(
     }
 }
 
+/// A CLI connection of a given version, for legacy-downgrade tests.
+pub struct DaemonCli {
+    conn: DaemonConnection,
+}
+
+impl DaemonCli {
+    /// Connects as a CLI of `version`.
+    pub async fn legacy(h: &Harness, version: &str) -> Self {
+        Self {
+            conn: h.cli_as(version).await,
+        }
+    }
+
+    /// One op for `home` on this connection.
+    pub async fn call<O: Op>(&mut self, home: &Home, op: &O) -> Result<O::Output> {
+        self.conn
+            .call(op, Some(&home.auth), vec![], Duration::from_secs(20))
+            .await
+            .map(|(o, _)| o)
+    }
+
+    /// The connection itself (for `--wait` events).
+    pub fn conn(&mut self) -> &mut DaemonConnection {
+        &mut self.conn
+    }
+}
+
 impl FakeUi {
     pub async fn try_connect(socket: &Path) -> Result<Self> {
+        Self::try_connect_build(socket, 1000).await
+    }
+
+    pub async fn try_connect_build(socket: &Path, build: u64) -> Result<Self> {
         let stream = tokio::net::UnixStream::connect(socket)
             .await
             .map_err(|e| Error::internal(e.to_string()))?;
@@ -471,8 +526,8 @@ impl FakeUi {
         let mut reader = AsyncFrameReader::new(r);
         let hello = Request::new(
             &Hello::Ui(UiHello {
-                app_build: 1000,
-                app_version: "0.1.0".into(),
+                app_build: build,
+                app_version: if build >= 1002 { "0.1.2" } else { "0.1.0" }.into(),
                 protocols: vec![1],
             }),
             None,

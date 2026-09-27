@@ -58,6 +58,11 @@ public struct SlotManagerEnvironment {
     public var speechStoppedBeforeStart: (String, Bool) -> Void
     /// Telemetry (`mac, events` / `mac, analytics`, BLUEPRINT §6.5).
     public var telemetry: (String, [String: JSONValue], PeekContext) -> Void
+    /// Bare Esc for the Esc router (``CarbonEscapeKey`` in the app; inert in tests and headless runs).
+    public var escapeKeys: any EscapeKeyProviding
+    /// Whether one of Peek's windows is key (a typing slot panel, Settings, Simulation): Esc then arrives through
+    /// AppKit, so the router lets go of the global one.
+    public var keyWindowIsOpen: () -> Bool
 
     public init(speech: any SpeechPlaying, mic: any MicRecording, images: any ImageProviding, input: any InputHubbing,
                 backdrop: any BackdropSampling, glassMode: GlassMode, timing: BubbleTiming = BubbleTiming(),
@@ -67,7 +72,9 @@ public struct SlotManagerEnvironment {
                 host: @escaping (SiliconKey) -> (any DrawingHosting)?,
                 send: @escaping (BubbleContext, BubbleOutbound) async -> BubbleDelivery,
                 speechStoppedBeforeStart: @escaping (String, Bool) -> Void = { _, _ in },
-                telemetry: @escaping (String, [String: JSONValue], PeekContext) -> Void = { _, _, _ in }) {
+                telemetry: @escaping (String, [String: JSONValue], PeekContext) -> Void = { _, _, _ in },
+                escapeKeys: any EscapeKeyProviding = InertEscapeKey(),
+                keyWindowIsOpen: @escaping () -> Bool = { false }) {
         self.speech = speech
         self.mic = mic
         self.images = images
@@ -83,6 +90,8 @@ public struct SlotManagerEnvironment {
         self.send = send
         self.speechStoppedBeforeStart = speechStoppedBeforeStart
         self.telemetry = telemetry
+        self.escapeKeys = escapeKeys
+        self.keyWindowIsOpen = keyWindowIsOpen
     }
 
     public nonisolated static func uptime() -> Double {
@@ -91,8 +100,13 @@ public struct SlotManagerEnvironment {
 }
 
 /// The 8 physical slots (visual.md B1 "SlotManager"): which bubble each shows, the queue behind it,
-/// the slide in/out, key focus, and everything the Carbon does in a bubble. One ``BubbleMachine``
-/// per bubble decides; this class runs its effects against the panel, the audio, the drawing and peekd.
+/// the pre-warm and slide in/out, key focus, the Esc router, and everything the Carbon does in a bubble. One
+/// ``BubbleMachine`` per bubble decides; this class runs its effects against the panel, the audio, the drawing and peekd.
+///
+/// The Esc router (peek 0.1.2, ``EscapeRouting``): bare Esc is held through ``SlotManagerEnvironment/escapeKeys`` only
+/// while a new bubble is in its 3 s grace, the pointer is over a bubble, an Esc window the Carbon opened is running or a
+/// popup is open, and never while one of Peek's windows is key. It is re-evaluated on every frame tick, on begin and
+/// finish, when a popup opens or closes, and by a one-shot timer at the next grace or window end.
 @MainActor
 public final class SlotManager {
     // MARK: State
@@ -108,6 +122,14 @@ public final class SlotManager {
         var summonOnBegin = false
         /// A typing field to offer as soon as the bubble begins (a voice message that could not be transcribed).
         var typingNoticeOnBegin: String?
+        /// Sends of this Silicon waiting behind this bubble (the "+N" badge; `peek.show` then `queue.state`).
+        var waiting = 0
+        /// The pre-warm (``BubbleEffect/prewarm``): when it began, frames ticked since, whether the drawing
+        /// committed its first frame.
+        var prewarmStartedAt: Double?
+        var prewarmTicks = 0
+        var prewarmFrameReady = false
+        var prewarmTasks: [Task<Void, Never>] = []
 
         init(machine: BubbleMachine, key: SiliconKey, slot: SlotIndex) {
             self.machine = machine
@@ -116,6 +138,7 @@ public final class SlotManager {
         }
 
         var sendID: String? { machine.event?.sendID }
+        var isPrewarming: Bool { machine.stage == .prewarming }
     }
 
     struct Pending {
@@ -184,13 +207,32 @@ public final class SlotManager {
     private var relocations: [BubbleID: SlotIndex] = [:]
     /// Sends cancelled while their bubble was still sliding out: never queued again.
     private var cancelledSends: Set<String> = []
+    /// Sends whose `shown` went to peekd (once per send per process: a pre-empted bubble shown again does not resend).
+    private var shownSends: Set<String> = []
+    /// The newest waiting count peekd reported per send (`queue.state`), for a send not on screen yet.
+    private var latestWaiting: [String: Int] = [:]
+    /// Keys kept warm in the backdrop sampler (occupied slots).
+    private var warmedKeys: Set<SiliconKey> = []
+    private var escapeDeadline: Task<Void, Never>?
+    private var escapeDeadlineAt: Double?
+    /// Why Esc for peeks does not work (another app holds bare Esc), for Settings and `ui.status`.
+    public private(set) var escapeProblem: String?
+    public var onEscapeProblemChanged: ((String?) -> Void)?
     private let logger = PeekLogger(category: "slots")
 
     public init(environment: SlotManagerEnvironment) {
         env = environment
         for index in SlotIndex.allCases {
             let layout = SlotGeometry.layout(slot: index, mode: .normal, visibleFrame: environment.visibleFrame(.main))
-            slots[index] = PhysicalSlot(index: index, chrome: SlotChromeModel(slotLayout: layout, measurer: environment.measurer))
+            let slot = PhysicalSlot(index: index, chrome: SlotChromeModel(slotLayout: layout, measurer: environment.measurer))
+            slot.chrome.onExpandedChanged = { [weak self] _ in self?.refreshEscape() }
+            slots[index] = slot
+        }
+        env.escapeKeys.onPress = { [weak self] in self?.escapePressed(fromKeySlot: nil) ?? false }
+        env.escapeKeys.priority = { [weak self] in
+            guard let self else { return -.infinity }
+            let now = self.env.now()
+            return EscapeRouting.priority(self.escapeCandidates(), now: now)
         }
     }
 
@@ -202,6 +244,9 @@ public final class SlotManager {
     }
 
     public func phase(of slot: SlotIndex) -> Phase { slots[slot]?.active?.machine.phase ?? .hidden }
+
+    /// The bubble timings in use.
+    public var timing: BubbleTiming { env.timing }
 
     /// The bubble machine on a slot (tests, diagnostics).
     public func machine(on slot: SlotIndex) -> BubbleMachine? { slots[slot]?.active?.machine }
@@ -226,6 +271,7 @@ public final class SlotManager {
         guard newMode != mode else { return }
         mode = newMode
         relayoutIdleSlots()
+        warmBackdrops()
     }
 
     public func setDisplay(_ target: DisplayTarget) {
@@ -233,7 +279,10 @@ public final class SlotManager {
     }
 
     /// The screens changed (resolution, arrangement): re-place every idle panel.
-    public func screensChanged() { relayoutIdleSlots() }
+    public func screensChanged() {
+        relayoutIdleSlots()
+        warmBackdrops()
+    }
 
     public func updateTable(_ newTable: [SlotState]) {
         let moves = SlotMove.between(table, newTable)
@@ -241,11 +290,25 @@ public final class SlotManager {
         for move in moves { relocate(move) }
         // Test pills: the environment name may have changed.
         for slot in slots.values { if let bubble = slot.active { sync(bubble, in: slot) } }
+        warmBackdrops()
+    }
+
+    /// Keeps an idle backdrop sample for every occupied slot, so a bubble's pill shade is known before it arrives.
+    private func warmBackdrops() {
+        var keys: Set<SiliconKey> = []
+        for state in table {
+            let key = state.siliconKey
+            keys.insert(key)
+            let layout = SlotGeometry.layout(slot: state.index, mode: mode, visibleFrame: env.visibleFrame(display))
+            env.backdrop.warm(key, rectOnScreen: layout.visualFrameOnScreen)
+        }
+        for gone in warmedKeys.subtracting(keys) { env.backdrop.warm(gone, rectOnScreen: nil) }
+        warmedKeys = keys
     }
 
     // MARK: Presenting
 
-    /// A `peek.show`: slide in now, replace, pre-empt or queue (see ``SlotScheduler``).
+    /// A `peek.show`: slide in now, pre-empt or queue (see ``SlotScheduler``).
     public func present(_ event: PeekShowEvent) {
         guard let slot = slots[event.slot] else { return }
         if sends[event.sendID] != nil || slot.active?.sendID == event.sendID {
@@ -255,6 +318,9 @@ public final class SlotManager {
         let key = siliconKey(for: event.slot, context: event.context)
         sends[event.sendID] = event
         onSendsChanged?()
+        // Sample what the bubble will sit on now, before it is activated, so its pill shade is settled when it lands.
+        let layout = SlotGeometry.layout(slot: event.slot, mode: mode, visibleFrame: env.visibleFrame(display))
+        env.backdrop.track(key, rectOnScreen: layout.visualFrameOnScreen)
         let pending = Pending(source: .send(event), key: key, speechAvailable: true, summoned: false)
         let id = BubbleID.send(event.sendID)
         let entry = makeEntry(id: id, pending: pending)
@@ -282,9 +348,10 @@ public final class SlotManager {
     public func cancel(sendID: String) {
         let id = BubbleID.send(sendID)
         for slot in slots.values {
-            if slot.scheduler.remove(id) != nil {
+            if let entry = slot.scheduler.remove(id) {
                 slot.pending.removeValue(forKey: id)
                 env.images.release(sendID: sendID)
+                untrackIfIdle(entry.key)
             }
             if slot.draining.remove(sendID) != nil { stopAudio(sendID, byUser: false) }
             if let active = slot.active, active.sendID == sendID {
@@ -295,8 +362,34 @@ public final class SlotManager {
         ttsBuffers.removeValue(forKey: sendID)
         if slots.values.allSatisfy({ $0.active?.sendID != sendID }) {
             sends.removeValue(forKey: sendID)
+            latestWaiting.removeValue(forKey: sendID)
             onSendsChanged?()
         }
+    }
+
+    /// `queue.state`: the waiting count behind a Silicon's current bubble changed (the "+N" badge). Applied to the
+    /// bubble on screen for that send; remembered for a send that is still waiting for its slot; ignored otherwise.
+    public func applyQueueState(_ state: QueueStateEvent) {
+        let waiting = max(0, state.waiting)
+        if let slot = slots[state.slot], let bubble = slot.active, bubble.sendID == state.sendID,
+            bubble.key.context == state.context
+        {
+            guard bubble.waiting != waiting else { return }
+            bubble.waiting = waiting
+            sync(bubble, in: slot)
+            return
+        }
+        guard let event = sends[state.sendID], event.slot == state.slot, event.context == state.context else { return }
+        latestWaiting[state.sendID] = waiting
+    }
+
+    /// Stops the arrival sampling of a key with nothing left to show (a queued send was withdrawn); a bubble on screen
+    /// stops it itself when it leaves.
+    private func untrackIfIdle(_ key: SiliconKey) {
+        let busy = slots.values.contains { slot in
+            slot.active?.key == key || slot.scheduler.queue.contains { $0.key == key }
+        }
+        if !busy { env.backdrop.track(key, rectOnScreen: nil) }
     }
 
     /// A transcription outcome for a voice answer, or for a voice message (no ask).
@@ -372,7 +465,7 @@ public final class SlotManager {
         env.telemetry("shortcut_used", ["shortcut": .string("slot_\(index.rawValue)")], occupant(of: index)?.context ?? .production)
         if let active = slot.active {
             switch active.machine.stage {
-            case .entering, .visible:
+            case .prewarming, .entering, .visible:
                 handle(.summoned, for: active, in: slot)
                 return
             case .pending:
@@ -414,6 +507,7 @@ public final class SlotManager {
                 if let sendID = slot.pending.removeValue(forKey: entry.id)?.source.event?.sendID {
                     env.images.release(sendID: sendID)
                 }
+                untrackIfIdle(entry.key)
             }
             for sendID in slot.draining { stopAudio(sendID, byUser: false) }
             slot.draining.removeAll()
@@ -424,6 +518,7 @@ public final class SlotManager {
         }
         ttsBuffers.removeAll()
         sends = sends.filter { sendID, _ in slots.values.contains { $0.active?.sendID == sendID } }
+        latestWaiting = latestWaiting.filter { sends[$0.key] != nil }
         onSendsChanged?()
     }
 
@@ -510,7 +605,8 @@ public final class SlotManager {
         case .pass:
             return false
         case .cancel:
-            handle(.escape, for: bubble, in: slot)
+            // Same targets as the global Esc: an open Esc window elsewhere wins, else this panel's bubble.
+            escapePressed(fromKeySlot: index)
         case .voice:
             handle(.micButton, for: bubble, in: slot)
         case .type(let seed):
@@ -616,12 +712,15 @@ public final class SlotManager {
         let bubble = Bubble(machine: machine, key: pending.key, slot: slot.index)
         bubble.summonOnBegin = pending.summoned && !machine.isSummon
         bubble.typingNoticeOnBegin = pending.typingNotice
+        if let event = machine.event { bubble.waiting = latestWaiting.removeValue(forKey: event.sendID) ?? event.queuedBehind }
         slot.active = bubble
 
         // The panel is idle now: place it for the current screen and mode.
         let layout = SlotGeometry.layout(slot: slot.index, mode: mode, visibleFrame: env.visibleFrame(display))
         let surface = surface(for: slot)
         surface.configure(layout: layout)
+        // Sampled since the send arrived; tracked again in case an earlier bubble of this Silicon untracked it.
+        env.backdrop.track(bubble.key, rectOnScreen: layout.visualFrameOnScreen)
         attachHost(for: bubble.key, in: slot, surface: surface)
         slot.chrome.setShade(PillShade.forBackdrop(backdropTones[bubble.key] ?? env.backdrop.backdrop(for: bubble.key)))
         slot.chrome.setContext(bubble.key.context.inputContext, tooltip: environmentTooltip(for: bubble.key),
@@ -673,9 +772,13 @@ public final class SlotManager {
         }
     }
 
-    private func finish(_ bubble: Bubble, in slot: PhysicalSlot, requeue: Bool) {
+    private func finish(_ bubble: Bubble, in slot: PhysicalSlot, requeue: Bool, abortedPrewarm: Bool = false) {
         for timer in bubble.timers.values { timer.cancel() }
         bubble.timers.removeAll()
+        for task in bubble.prewarmTasks { task.cancel() }
+        bubble.prewarmTasks.removeAll()
+        // A bubble that never slid in (cancelled or pre-empted while warming up): its panel is ordered out at once.
+        if abortedPrewarm { slot.surface?.slideOut() }
         slot.active = nil
         let machine = bubble.machine
         if machine.visibleSince != nil {
@@ -696,6 +799,7 @@ public final class SlotManager {
             } else {
                 env.images.release(sendID: sendID)
                 sends.removeValue(forKey: sendID)
+                latestWaiting.removeValue(forKey: sendID)
                 onSendsChanged?()
             }
             if let since = machine.visibleSince {
@@ -724,6 +828,7 @@ public final class SlotManager {
         slot.surface?.setInteraction(.none)
         if slot.chrome.slotLayout.mode != mode { relayout(slot) }
         activateNext(slot)
+        refreshEscape()
     }
 
     // MARK: Running the machine
@@ -731,7 +836,9 @@ public final class SlotManager {
     private func handle(_ event: BubbleEvent, for bubble: Bubble, in slot: PhysicalSlot) {
         guard slot.active === bubble else { return }
         let before = bubble.machine.phase
+        let stageBefore = bubble.machine.stage
         let speechBefore = bubble.machine.speech
+        if event == .timerFired(.prewarm), stageBefore == .prewarming { logPrewarmTimeout(bubble) }
         let effects = bubble.machine.handle(event, now: env.now())
         if bubble.machine.speech != speechBefore { logSpeech(bubble.machine.speech, bubble: bubble) }
         var finished: Bool?
@@ -743,17 +850,22 @@ public final class SlotManager {
             run(effect, bubble: bubble, slot: slot)
         }
         if let requeue = finished {
-            finish(bubble, in: slot, requeue: requeue)
+            finish(bubble, in: slot, requeue: requeue, abortedPrewarm: stageBefore == .prewarming)
             return
         }
         sync(bubble, in: slot)
         if bubble.machine.phase != before { onPhaseChanged?(bubble.key, bubble.machine.phase) }
+        if bubble.machine.escArmedUntil != nil || stageBefore != bubble.machine.stage { refreshEscape() }
     }
 
     private func run(_ effect: BubbleEffect, bubble: Bubble, slot: PhysicalSlot) {
         switch effect {
+        case .prewarm:
+            startPrewarm(bubble, in: slot)
         case .slideIn:
             logger.info("show \(bubble.machine.id) at slot \(slot.index.rawValue): \(Self.describe(bubble.machine.event))")
+            for task in bubble.prewarmTasks { task.cancel() }
+            bubble.prewarmTasks.removeAll()
             let surface = surface(for: slot)
             surface.slideIn()
             env.backdrop.track(bubble.key, rectOnScreen: slot.chrome.slotLayout.visualFrameOnScreen)
@@ -768,7 +880,8 @@ public final class SlotManager {
             send(outbound, bubble: bubble, slot: slot)
         case .stopSpeech:
             if let sendID = bubble.sendID {
-                stopAudio(sendID, byUser: bubble.machine.leaveReason == .dismissed)
+                let reason = bubble.machine.leaveReason
+                stopAudio(sendID, byUser: reason == .dismissed || reason == .escaped)
             }
         case .makeKey:
             surface(for: slot).setKeyFocus(true)
@@ -812,6 +925,11 @@ public final class SlotManager {
 
     private func send(_ outbound: BubbleOutbound, bubble: Bubble, slot: PhysicalSlot) {
         let context = Self.context(for: bubble, in: slot.index)
+        if outbound == .shown {
+            // Once per send per process: a bubble pre-empted and shown again was already reported.
+            guard let sendID = context.sendID, shownSends.insert(sendID).inserted else { return }
+            if shownSends.count > 2048 { shownSends = [sendID] }
+        }
         switch outbound {
         case .dismissed(let gesture):
             env.telemetry("dismissed", ["gesture": .string(gesture.rawValue)], bubble.key.context)
@@ -828,7 +946,7 @@ public final class SlotManager {
         let expectsReply: Bool =
             switch outbound {
             case .answer, .message, .voice: true
-            case .dismissed, .shownDone, .focus: false
+            case .dismissed, .shownDone, .focus, .shown: false
             }
         let isVoiceMessage: Bool =
             switch outbound {
@@ -964,6 +1082,152 @@ public final class SlotManager {
         }
     }
 
+    // MARK: Pre-warm
+
+    /// Starts a bubble's pre-warm: the pill shade from the latest sample, the panel ordered in unseen with the content
+    /// at rest, and the three things the slide waits for (at most ``BubbleTiming/prewarmMax``, the machine's cap):
+    /// ≥ ``BubbleTiming/prewarmGlass`` and ≥ ``BubbleTiming/prewarmTicks`` frames since ordering in (the glass is
+    /// live); the drawing committed a frame; a backdrop sample (≤ 2 s old with the `screen` source) or
+    /// ``BubbleTiming/backdropWait`` passed.
+    private func startPrewarm(_ bubble: Bubble, in slot: PhysicalSlot) {
+        bubble.prewarmStartedAt = env.now()
+        bubble.prewarmTicks = 0
+        bubble.prewarmFrameReady = false
+        slot.chrome.setShade(PillShade.forBackdrop(backdropTones[bubble.key] ?? env.backdrop.backdrop(for: bubble.key)))
+        let surface = surface(for: slot)
+        if surface.skipsPrewarm {
+            // 0.1.1 behaviour (A/B captures only): slide in on the next turn, after the begin effects ran.
+            bubble.prewarmTasks = [Task { [weak self] in
+                guard !Task.isCancelled, let self, slot.active === bubble, bubble.isPrewarming else { return }
+                self.handle(.prewarmed, for: bubble, in: slot)
+            }]
+            return
+        }
+        surface.prewarm()
+        let timing = env.timing
+        let frameTask = Task { [weak self] in
+            guard let self else { return }
+            let host = self.env.host(bubble.key)
+            let committed = await host?.awaitFrame(timeout: .milliseconds(Int(timing.prewarmMax * 1000) + 100)) ?? true
+            guard !Task.isCancelled, slot.active === bubble else { return }
+            bubble.prewarmFrameReady = committed
+            self.checkPrewarm(bubble, in: slot)
+        }
+        // The glass and backdrop waits are time based: look again when they are due, even without frame ticks.
+        let recheck = Task { [weak self] in
+            for delay in [timing.prewarmGlass, timing.backdropWait].sorted() where delay > 0 {
+                try? await Task.sleep(for: .milliseconds(Int((delay * 1000).rounded(.up)) + 5))
+                guard !Task.isCancelled, let self, slot.active === bubble else { return }
+                self.checkPrewarm(bubble, in: slot)
+            }
+        }
+        bubble.prewarmTasks = [frameTask, recheck]
+        checkPrewarm(bubble, in: slot)
+    }
+
+    /// What the pre-warm still waits for (empty: slide in).
+    private func prewarmMissing(_ bubble: Bubble) -> [String] {
+        let timing = env.timing
+        let elapsed = env.now() - (bubble.prewarmStartedAt ?? env.now())
+        var missing: [String] = []
+        if elapsed + 1e-6 < timing.prewarmGlass || bubble.prewarmTicks < timing.prewarmTicks { missing.append("glass") }
+        if !bubble.prewarmFrameReady { missing.append("first_frame") }
+        let age = env.backdrop.sampleAge(for: bubble.key)
+        let sampled = age.map { env.backdrop.source == .screen ? $0 <= 2 : true } ?? false
+        if !sampled, elapsed + 1e-6 < timing.backdropWait { missing.append("backdrop") }
+        return missing
+    }
+
+    private func checkPrewarm(_ bubble: Bubble, in slot: PhysicalSlot) {
+        guard slot.active === bubble, bubble.isPrewarming else { return }
+        guard prewarmMissing(bubble).isEmpty else { return }
+        handle(.prewarmed, for: bubble, in: slot)
+    }
+
+    private func logPrewarmTimeout(_ bubble: Bubble) {
+        let missing = prewarmMissing(bubble)
+        logger.notice("prewarm_timeout \(bubble.machine.id): sliding in after \(env.timing.prewarmMax) s without "
+            + (missing.isEmpty ? "nothing" : missing.joined(separator: ", ")))
+    }
+
+    // MARK: Esc router
+
+    func escapeCandidates() -> [EscapeRouting.Candidate] {
+        slots.values.sorted { $0.index < $1.index }.compactMap { slot in
+            let popupOpen = slot.chrome.expanded != nil
+            guard let bubble = slot.active else {
+                return popupOpen ? EscapeRouting.Candidate(slot: slot.index, popupOpen: true) : nil
+            }
+            let machine = bubble.machine
+            return EscapeRouting.Candidate(
+                slot: slot.index, popupOpen: popupOpen, onScreen: machine.stage == .entering || machine.stage == .visible,
+                graceUntil: machine.graceUntil, armedUntil: machine.escArmedUntil,
+                hovered: slot.surface?.pointerOverContent ?? false, slidInAt: machine.visibleSince)
+        }
+    }
+
+    /// Holds or releases bare Esc for the router's current needs, and schedules the next re-evaluation.
+    func refreshEscape() {
+        let now = env.now()
+        let candidates = escapeCandidates()
+        let hold = EscapeRouting.needsEsc(candidates, now: now) && !env.keyWindowIsOpen()
+        if hold != env.escapeKeys.isHeld {
+            #if DEBUG
+            SlideDebugLog.write(hold ? "esc-held" : "esc-released")
+            #endif
+            let problem = env.escapeKeys.setHeld(hold)
+            if hold, problem != escapeProblem {
+                escapeProblem = problem
+                onEscapeProblemChanged?(problem)
+            }
+        }
+        // One timer at the next grace or window end (kept while that deadline stays the next one: ticks call this often).
+        let deadline = EscapeRouting.nextDeadline(candidates, now: now)
+        guard deadline != escapeDeadlineAt else { return }
+        escapeDeadline?.cancel()
+        escapeDeadline = nil
+        escapeDeadlineAt = deadline
+        if let deadline {
+            let delay = max(0, deadline - now)
+            escapeDeadline = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(Int((delay * 1000).rounded(.up)) + 2))
+                guard !Task.isCancelled, let self else { return }
+                self.escapeDeadlineAt = nil
+                self.refreshEscape()
+            }
+        }
+    }
+
+    /// Gives bare Esc back at once (the coordinator stops: quitting, or Simulation closing).
+    public func releaseEscape() {
+        escapeDeadline?.cancel()
+        escapeDeadline = nil
+        escapeDeadlineAt = nil
+        if env.escapeKeys.isHeld { env.escapeKeys.setHeld(false) }
+    }
+
+    /// An Esc for Peek: through the global hot key (`fromKeySlot` nil) or typed into a key slot panel. Returns whether
+    /// it was used.
+    @discardableResult
+    func escapePressed(fromKeySlot keySlot: SlotIndex?) -> Bool {
+        let now = env.now()
+        let candidates = escapeCandidates()
+        let target = keySlot.map { EscapeRouting.keyPanelTarget(candidates, keySlot: $0, now: now) }
+            ?? EscapeRouting.target(candidates, now: now)
+        defer { refreshEscape() }
+        switch target {
+        case .popup(let index)?:
+            slots[index]?.chrome.collapse()
+            return true
+        case .bubble(let index)?:
+            guard let slot = slots[index], let bubble = slot.active else { return false }
+            handle(.escape, for: bubble, in: slot)
+            return true
+        case nil:
+            return false
+        }
+    }
+
     // MARK: Surfaces and hosts
 
     private func surface(for slot: PhysicalSlot) -> any SlotSurface {
@@ -1026,6 +1290,7 @@ public final class SlotManager {
             guard let self, let slot = self.slots[index], let bubble = slot.active else { return }
             self.handle(.pointer(inside: inside), for: bubble, in: slot)
         }
+        actions.expand = withBubble { manager, bubble, slot in manager.handle(.expandAsk, for: bubble, in: slot) }
         slot.chrome.actions = actions
     }
 
@@ -1042,7 +1307,13 @@ public final class SlotManager {
     }
 
     private func tick(_ index: SlotIndex) {
+        refreshEscapeOnTick()
         guard let slot = slots[index], let bubble = slot.active else { return }
+        if bubble.isPrewarming {
+            bubble.prewarmTicks += 1
+            checkPrewarm(bubble, in: slot)
+            return
+        }
         let machine = bubble.machine
         if machine.speech == .waiting, let sendID = bubble.sendID, env.speech.playback(for: sendID)?.started == true {
             handle(.speechStarted, for: bubble, in: slot)
@@ -1050,6 +1321,15 @@ public final class SlotManager {
         if machine.input == .listening || machine.input == .stopping {
             slot.chrome.pushMicLevel(env.mic.level)
         }
+    }
+
+    /// Every visible panel ticks; the router needs one look per frame, not one per panel.
+    private var lastEscapeTick: Double = -1
+    private func refreshEscapeOnTick() {
+        let now = env.now()
+        guard now - lastEscapeTick >= 0.012 || now < lastEscapeTick else { return }
+        lastEscapeTick = now
+        refreshEscape()
     }
 
     private func relayoutIdleSlots() {
@@ -1147,6 +1427,9 @@ public final class SlotManager {
         case .none: content.input = .none
         }
         content.notice = machine.notice
+        if machine.event != nil, machine.stage != .leaving { content.waiting = bubble.waiting }
+        content.askCollapsed = machine.isAskCollapsed
+        content.escHint = machine.escHintVisible
         return content
     }
 
@@ -1188,7 +1471,7 @@ public final class SlotManager {
             case .visible: .full
             case .entering: machine.summoned ? .full : .none
             case .leaving: .downArrowOnly
-            case .pending, .finished: .none
+            case .pending, .prewarming, .finished: .none
             }
         slot.surface?.setInteraction(interaction)
 

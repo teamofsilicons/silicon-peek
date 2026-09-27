@@ -104,11 +104,12 @@ The full event, with `ask_id`, `question`, `via`, `transcript` and timestamps, i
 
 | State | How it gets there | You receive |
 |---|---|---|
-| `pending` | the ask is on screen or queued (behind your earlier ask, or while the Carbon is away) | – |
+| `pending` | the ask is on screen (full or compact) or waiting in your queue (behind your earlier sends, or while the Carbon is away) | – |
 | `answered` | the Carbon answered | `peek.ask.answered` (or the `--wait` output) |
-| `dismissed` | the Carbon closed it without answering (Esc, the down-arrow once or twice) | `peek.ask.dismissed` with the `gesture` |
-| `expired` | it had `--expires-in` and the time ran out | `peek.ask.expired` |
-| `cancelled` | you ran `peek ask cancel <ASK_ID>` or `peek unregister` | nothing: it was your own action |
+| `dismissed` | the Carbon closed it without answering (Esc twice, or the down-arrow once or twice) | `peek.ask.dismissed` with the `gesture` |
+| `expired` | it had `--expires-in` or `--expires-at` and the time ran out, on screen or while it waited | `peek.ask.expired`, with `shown` saying whether the Carbon ever saw it |
+| `cancelled` | you ran `peek cancel`, `peek ask cancel <ASK_ID>`, `peek queue clear`, `peek unregister` or `peek logout` | nothing: it was your own action |
+| `replaced` | a later `peek send --replace` of yours took over the bubble | nothing: it was your own action |
 
 ```sh
 peek ask get ask_0192… --json
@@ -116,9 +117,34 @@ peek ask list --state pending --json
 peek ask cancel ask_0192…
 ```
 
-An ask without `--expires-in` waits until it is answered, dismissed or cancelled. While it is pending, your later sends queue behind it (at most 5, then `slot_busy`, exit 4), so the Carbon never faces a stack of your questions.
+An ask without a deadline waits until it is answered, dismissed or cancelled. Give it one with `--expires-in 15m` (10 s to 7 days, counted from the send) or `--expires-at 18:00` (a date-time, in the Mac's time zone unless it has an offset or you pass `--tz`).
 
-While the Carbon's screen is locked or the display is asleep, nothing is shown: the send returns `status:"queued"` with a `carbon_away` warning and appears when the Carbon is back. Its `--expires-in` clock keeps running from the send, so an ask that expires while the Carbon is away is never shown and you receive `peek.ask.expired`.
+Your sends take turns: an ask waits behind whatever of yours is on screen, and while it is pending, your later sends wait behind it. At most 5 wait at a time (then `queue_full`, exit 4), so the Carbon never faces a stack of your questions. `peek queue` shows the line; see [Speak and show](show.md#one-at-a-time).
+
+While the Carbon's screen is locked or the display is asleep, nothing is shown: the send returns `status:"queued"` with a `carbon_away` warning and appears when the Carbon is back. Its deadline keeps running from the send, so an ask that expires while it waits is never shown, and you receive `peek.ask.expired` with `"shown":false`.
+
+### How the Carbon puts an ask aside
+
+The Carbon can fold your question away without answering it. One Esc (for 3 seconds after it appears, or while the pointer is over it) turns it into a **compact ask**: the question stays on screen, the answer controls hide, and it can still be answered. The Carbon opens it again with the `^` button next to the down-arrow, by clicking the question, or with ctrl+cmd+N. You receive nothing for this: the ask is still `pending`.
+
+It becomes `dismissed`, and you receive `peek.ask.dismissed`, when the Carbon:
+
+| Does | `gesture` |
+|---|---|
+| presses Esc twice within 0.4 s, or Esc on a compact ask and again while "Esc again to dismiss" shows (2 s) | `esc` |
+| clicks the down-arrow once (on the full or the compact ask; it never just folds it) | `down_arrow` |
+| double-clicks the down-arrow (the speech stops too) | `down_arrow_double` |
+
+A dismissal by Esc also stops the ask's speech.
+
+### Scheduled asks
+
+`--in` and `--at` work for asks too. The ask is stored until it comes due, then waits in your queue like any other send; `peek.schedule.due` tells you when it fired and `peek.send.shown` when it appeared. A scheduled ask cannot use `--wait` (the answer arrives as `peek.ask.answered`) and takes `--expires-at`, not `--expires-in`. The `ask_id` is in the `peek send` result already, but `peek ask get` finds it only once it has fired; until then it is in `peek schedule list`.
+
+```sh
+peek send --at 09:55 --expires-at 10:30 --speak "Stand-up starts in five minutes." \
+  --ask '{"question":"Join stand-up today?","type":"single_choice","options":["Join","Skip"]}'
+```
 
 ## Wait for the answer inline
 
@@ -127,7 +153,7 @@ peek send --json --ask '{"question":"Ship it?","type":"single_choice","options":
 ```
 
 - Answered in time: one JSON value with `ask_id`, `send_id`, `state:"answered"`, `answer`, `via`, `transcript` and `answered_at`. **No Ting event is sent for it**: each outcome reaches you through exactly one channel.
-- Dismissed, expired or cancelled while waiting: `{"ask_id","send_id","state":"dismissed"|"expired"|"cancelled"}`. This too replaces the Ting event: no `peek.ask.dismissed` or `peek.ask.expired` follows.
+- Dismissed, expired, cancelled or replaced while waiting: `{"ask_id","send_id","state":"dismissed"|"expired"|"cancelled"|"replaced"}`. This too replaces the Ting event: no `peek.ask.dismissed` or `peek.ask.expired` follows. `replaced` means a later `peek send --replace` of yours took over the bubble.
 - Timeout (default 120 s, at most 600): `{"ask_id","send_id","state":"pending","delivery":"ting"}`, exit 0, and the answer goes through Ting later.
 - Write the number with `=` (`--wait=60`); a bare `--wait` waits 120 s.
 
@@ -140,8 +166,8 @@ Agent tool calls often time out after about two minutes. Prefer Ting delivery in
 | `question_too_long` | 2 | more than 80 characters |
 | `too_many_options` | 2 | more than 6 options |
 | `invalid_input` | 2 | a missing field, fewer than 2 options, a duplicate id or label, `max ≤ min`, an unknown field; `details.field` names it |
-| `conflicting_flags` | 2 | `--ask` together with `--show`, or `--duration` with `--ask` |
+| `conflicting_flags` | 2 | `--ask` together with `--show`, `--duration` with `--ask`, `--wait` with `--in` or `--at`, or `--expires-in` with `--expires-at` |
 | `image_unreadable`, `image_unsupported`, `image_too_large` | 2 | an option image |
-| `slot_busy` | 4 | five sends already wait behind a pending ask |
+| `queue_full` | 4 | five of your sends already wait behind the one on screen; `peek queue`, then `peek cancel <SEND_ID>` or `peek queue clear` (older peek versions call it `slot_busy`) |
 | `ask_not_found` | 4 | `peek ask get` or `cancel` with an unknown id |
 | `side_not_registered`, `drawing_not_registered` | 4 | run `peek register side` and `peek register drawing` first |

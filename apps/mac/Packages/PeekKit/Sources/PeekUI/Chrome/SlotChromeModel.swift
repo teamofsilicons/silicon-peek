@@ -60,6 +60,8 @@ public struct ChromeActions {
     public var dragging: (Bool) -> Void = { _ in }
     /// The pointer entered or left the chrome, or a popup opened or closed (the show's auto-dismiss pauses).
     public var hovering: (Bool) -> Void = { _ in }
+    /// The `^` (or a click on the question) of a compact ask: expand it.
+    public var expand: () -> Void = {}
 
     public init() {}
 }
@@ -244,8 +246,9 @@ public final class SlotChromeModel {
     /// Whether `target` does something when clicked: those look (and react) differently from static chrome (#2, #3).
     public func isInteractive(_ target: ChromeTarget) -> Bool {
         switch target {
-        case .mic, .keyboard, .down, .field, .submit, .track, .popup: return true
-        case .question: return layout.isExpandable(.question)
+        case .mic, .keyboard, .down, .field, .submit, .track, .popup, .expand: return true
+        // On a compact ask a click on the question expands the ask.
+        case .question: return content.askCollapsed || layout.isExpandable(.question)
         case .item(let identity):
             if identity.hasPrefix("option-") || identity == "field" { return true }
             if identity == "confirm" { return confirmEnabled }
@@ -282,6 +285,16 @@ public final class SlotChromeModel {
 
     public func setPressed(_ target: ChromeTarget?) {
         if pressed != target { pressed = target }
+    }
+
+    /// A click on the question: expands a compact ask, else toggles the question's popup when it is cut short.
+    public func questionClicked() {
+        if content.askCollapsed {
+            collapse()
+            actions.expand()
+        } else {
+            toggleExpanded(.question)
+        }
     }
 
     /// A click on expandable text: opens its popup, or closes it when it is already open (#5).
@@ -352,6 +365,7 @@ public final class SlotChromeModel {
         case "mic": return .mic
         case "keyboard": return .keyboard
         case "down": return .down
+        case "expand": return layout.buttons.expand != nil ? .expand : nil
         case "popup": return .popup
         default: return layout.item(identity: spec) != nil ? .item(spec) : nil
         }

@@ -34,7 +34,7 @@ const TOPICS: &[Topic] = &[
     Topic {
         name: "carbon",
         title: "Peek for Carbons",
-        summary: "Peek.app shows each Silicon's bubble at its position. Press ctrl+cmd+<position> to focus a bubble, answer an ask by voice (`\\`), keyboard or click, dismiss with Esc or the down arrow, and speak or type to a Silicon with no pending ask. Settings: compact mode, hotkey modifier, display, telemetry.",
+        summary: "Peek.app shows each Silicon's bubble at its position. Press ctrl+cmd+<position> to focus a bubble, answer an ask by voice (`\\`), keyboard or click, and speak or type to a Silicon with no pending ask. Esc reaches a new peek for 3 s (or while hovered): once hides a show (twice also stops the audio) or folds an ask to compact; the down arrow always dismisses. \"+N\" shows how many of that Silicon's peeks wait. Settings: compact mode, hotkey modifier, display, telemetry.",
     },
     Topic {
         name: "silicon",
@@ -49,12 +49,12 @@ const TOPICS: &[Topic] = &[
     Topic {
         name: "show",
         title: "Speak and show",
-        summary: "`peek send --speak \"…\"` speaks 1–2000 characters with Deepgram Aura-2. `--show '{\"elements\":[…]}'` shows 1–3 elements: text (≤160 characters) or image (png, jpeg, heic, webp, gif; ≤10 MiB; caption ≤50). Image paths are relative to the current directory; the CLI reads the bytes.",
+        summary: "`peek send --speak \"…\"` speaks 1–2000 characters with Deepgram Aura-2. `--show '{\"elements\":[…]}'` shows 1–3 elements: text (≤160 characters) or image (png, jpeg, heic, webp, gif; ≤10 MiB; caption ≤50). Image paths are relative to the current directory; the CLI reads the bytes. Sends queue (1 on screen + 5 waiting; `peek queue`); --replace takes over; --expires-in/--expires-at drop a late send; --in/--at schedule it.",
     },
     Topic {
         name: "ask",
         title: "Ask a question",
-        summary: "`peek send --ask '{\"question\":\"…\",\"type\":\"single_choice\",\"options\":[\"Yes\",\"No\"]}'` asks one question (≤80 characters). Types: text, single_choice, multiple_choice (2–6 options, labels ≤40), slider, range. Add --expires-in or --wait[=SECS]. The answer arrives as peek.ask.answered.",
+        summary: "`peek send --ask '{\"question\":\"…\",\"type\":\"single_choice\",\"options\":[\"Yes\",\"No\"]}'` asks one question (≤80 characters). Types: text, single_choice, multiple_choice (2–6 options, labels ≤40), slider, range. Add --expires-in/--expires-at or --wait[=SECS]; it queues behind the Silicon's other sends, --replace takes over, --in/--at schedule it (no --wait then). The answer arrives as peek.ask.answered.",
     },
     Topic {
         name: "drawing",
@@ -64,7 +64,7 @@ const TOPICS: &[Topic] = &[
     Topic {
         name: "ting",
         title: "Ting events",
-        summary: "peek sends six Ting types to the asking Silicon: peek.ask.answered, peek.ask.dismissed, peek.ask.expired, peek.message.received, and (opt-in) peek.speech.finished and peek.show.dismissed. metadata.isi carries the ISI of the send. Route them in your Stemcell flow; delivery is at least once, so dedupe by ting id.",
+        summary: "peek sends nine Ting types to the asking Silicon: peek.ask.answered, peek.ask.dismissed, peek.ask.expired, peek.message.received, peek.send.expired, peek.schedule.due, and (opt-in, always for scheduled sends) peek.send.shown, plus (opt-in) peek.speech.finished and peek.show.dismissed. metadata.isi carries the ISI of the send. Route them in your Stemcell flow; delivery is at least once, so dedupe by ting id.",
     },
     Topic {
         name: "iam",

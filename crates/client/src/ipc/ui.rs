@@ -13,7 +13,7 @@ use crate::{
     api::TestingEnvironment,
     error::ErrorObject,
     identity::{ActorId, Context, OrgId, SlotIndex},
-    ids::{AskId, MessageId, SendId},
+    ids::{AskId, MessageId, ScheduleId, SendId},
     ipc::cli::{DrawingStats, SpeechStatus, Warning},
     schema::{ask::Ask, show::Show},
     timestamp::Timestamp,
@@ -103,16 +103,42 @@ pub struct PeekShow {
     /// How long a show stays up without speech, or after it.
     #[serde(default)]
     pub duration_ms: Option<u64>,
-    /// Sends queued behind this one in the slot.
+    /// Sends of this Silicon waiting behind this one (waiting plus due
+    /// scheduled sends waiting for room): the "+X" badge's first value.
     #[serde(default)]
     pub queued_behind: u32,
-    /// When the ask expires, if it does.
+    /// When the send expires, for every kind (0.1.1: asks only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<Timestamp>,
+    /// `--replace`: the send this one takes over (Peek.app already got
+    /// `peek.cancel{reason:"replaced"}` for it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<SendId>,
+    /// The scheduled send this came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_id: Option<ScheduleId>,
 }
 
 impl EventBody for PeekShow {
     const NAME: &'static str = "peek.show";
+}
+
+/// `queue.state`: the Silicon's waiting count changed while its current
+/// bubble is pushed (updates the "+X" badge next to the down arrow).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueState {
+    /// The slot.
+    pub slot: SlotIndex,
+    /// The data context.
+    pub context: Context,
+    /// The current send the badge belongs to.
+    pub send_id: SendId,
+    /// Waiting plus due-waiting sends (0 hides the badge).
+    pub waiting: u32,
+}
+
+impl EventBody for QueueState {
+    const NAME: &'static str = "queue.state";
 }
 
 /// `tts.begin`: a new PCM stream for a send.
@@ -195,8 +221,10 @@ pub enum CancelReason {
     CancelledBySilicon,
     /// `peek unregister` or `peek logout`.
     Unregistered,
-    /// `--expires-in` elapsed.
+    /// `--expires-in` / `--expires-at` elapsed.
     Expired,
+    /// The Silicon's own `--replace`.
+    Replaced,
 }
 
 /// `peek.cancel`: slide a bubble out.
@@ -538,8 +566,13 @@ pub enum PresenceReason {
 /// the queued sends are shown in order. An app that never sends `presence`
 /// is treated as available.
 ///
+/// Peek.app also sends it when the Carbon pauses or resumes all peeks
+/// (`paused`). peekd still pushes `peek.show` while paused (the ⌃⌘N summon
+/// must find a pending ask in the app); a paused Carbon is reported to
+/// senders as `queued` with the `carbon_paused` warning.
+///
 /// ```json
-/// {"available":false,"reason":"locked"}
+/// {"available":false,"reason":"locked","paused":false}
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Presence {
@@ -548,6 +581,9 @@ pub struct Presence {
     /// Why.
     #[serde(default)]
     pub reason: PresenceReason,
+    /// The Carbon paused all peeks in Peek.app (additive; default false).
+    #[serde(default)]
+    pub paused: bool,
 }
 
 impl Default for Presence {
@@ -555,12 +591,28 @@ impl Default for Presence {
         Self {
             available: true,
             reason: PresenceReason::Ok,
+            paused: false,
         }
     }
 }
 
 impl Op for Presence {
     const NAME: &'static str = "presence";
+    type Output = Empty;
+}
+
+/// `shown` (UI → peekd): Peek.app started presenting this send's bubble (the
+/// pre-warm began; it is on screen within 0.6 s). Sent at most once per send
+/// per Peek.app process, never for summons. peekd records `shown_at`, starts
+/// the speech, arms its watchdog and sends `peek.send.shown` when asked to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shown {
+    /// The send.
+    pub send_id: SendId,
+}
+
+impl Op for Shown {
+    const NAME: &'static str = "shown";
     type Output = Empty;
 }
 
@@ -763,6 +815,7 @@ mod tests {
             PeekCancel::NAME,
             SttResult::NAME,
             Restarting::NAME,
+            QueueState::NAME,
         ] {
             assert!(
                 !name.contains("word") && !name.contains("transcript"),
@@ -822,13 +875,18 @@ mod tests {
             p,
             Presence {
                 available: false,
-                reason: PresenceReason::DisplayOff
+                reason: PresenceReason::DisplayOff,
+                paused: false,
             }
         );
         assert_eq!(
             serde_json::to_value(Presence::default()).map_err(e)?,
-            json!({"available": true, "reason": "ok"})
+            json!({"available": true, "reason": "ok", "paused": false})
         );
+        let paused: Presence =
+            serde_json::from_value(json!({"available": true, "reason": "ok", "paused": true}))
+                .map_err(e)?;
+        assert!(paused.paused);
         let newer: Presence =
             serde_json::from_value(json!({"available": false, "reason": "screensaver"}))
                 .map_err(e)?;
@@ -889,6 +947,55 @@ mod tests {
         let out = serde_json::to_value(&slot).map_err(e)?;
         assert_eq!(out["environment"]["name"], "t");
         assert!(out.get("testing").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn queue_badges_shown_and_replaces() -> Result<()> {
+        let e = |x: serde_json::Error| Error::internal(x.to_string());
+        let sid = SendId::generate();
+        let q = QueueState {
+            slot: SlotIndex::new(3)?,
+            context: Context::Production,
+            send_id: sid.clone(),
+            waiting: 2,
+        };
+        let ev = Event::new(&q, vec![])?;
+        assert_eq!(ev.event, "queue.state");
+        assert_eq!(
+            serde_json::to_value(&q).map_err(e)?,
+            json!({"slot": 3, "context": "production", "send_id": sid.as_str(), "waiting": 2})
+        );
+        assert_eq!(ev.parse::<QueueState>()?, q);
+        let req = Request::new(
+            &Shown {
+                send_id: sid.clone(),
+            },
+            None,
+            vec![],
+        )?;
+        assert_eq!(req.op, "shown");
+        assert_eq!(req.fields["send_id"], sid.as_str());
+        let cancel: PeekCancel =
+            serde_json::from_value(json!({"send_id": sid.as_str(), "reason": "replaced"}))
+                .map_err(e)?;
+        assert_eq!(cancel.reason, CancelReason::Replaced);
+        let old = SendId::generate();
+        let sch = ScheduleId::generate();
+        let show: PeekShow = serde_json::from_value(json!({"send_id": sid.as_str(), "slot": 3,
+            "context": "production", "queued_behind": 1, "expires_at": "2026-09-27T12:30:00Z",
+            "replaces": old.as_str(), "schedule_id": sch.as_str(), "duration_ms": 4000}))
+        .map_err(e)?;
+        assert_eq!(show.replaces.as_ref(), Some(&old));
+        assert_eq!(show.schedule_id.as_ref(), Some(&sch));
+        let plain: PeekShow = serde_json::from_value(
+            json!({"send_id": sid.as_str(), "slot": 3, "context": "production"}),
+        )
+        .map_err(e)?;
+        let v = serde_json::to_value(&plain).map_err(e)?;
+        for key in ["replaces", "schedule_id", "expires_at"] {
+            assert!(v.get(key).is_none(), "{key} is left out unless set");
+        }
         Ok(())
     }
 }

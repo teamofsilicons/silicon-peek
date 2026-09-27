@@ -16,9 +16,17 @@ struct SlotStateMachineTests {
         var machine = BubbleMachine(id: .send("snd_1"), source: .send(event))
         #expect(machine.phase == .hidden)
         let begin = machine.handle(.begin, now: 10)
-        #expect(begin.contains(.slideIn))
-        #expect(begin.contains(.drawing(.enter)))
-        #expect(begin.schedules(.enter) == 0.5)
+        #expect(begin.contains(.prewarm), "it pre-warms off screen first")
+        #expect(!begin.contains(.slideIn))
+        #expect(begin.contains(.drawing(.enter)), "the drawing's first frame is committed before the slide")
+        #expect(begin.sent == [.shown])
+        #expect(begin.schedules(.prewarm) == 0.6)
+        #expect(machine.stage == .prewarming)
+        #expect(machine.phase == .entering)
+        let slide = machine.handle(.prewarmed, now: 10)
+        #expect(slide.first == .cancel(.prewarm))
+        #expect(slide.contains(.slideIn))
+        #expect(slide.schedules(.enter) == 0.5)
         #expect(machine.phase == .entering)
 
         let entered = machine.handle(.timerFired(.enter), now: 10.5)
@@ -38,7 +46,7 @@ struct SlotStateMachineTests {
     @Test("the pointer over the chrome (or an open popup) pauses a show's auto-dismiss; leaving gives it at least 2.5 s")
     func hoverPausesAutoDismiss() {
         var machine = BubbleMachine(id: .send("snd_1"), source: .send(F.show("snd_1", texts: ["Now playing"], durationMs: 4000)))
-        _ = machine.handle(.begin, now: 0)
+        _ = machine.beginAndSlide(now: 0)
         #expect(machine.handle(.timerFired(.enter), now: 0.5).schedules(.autoDismiss) == 4)
         let entered = machine.handle(.pointer(inside: true), now: 1)
         #expect(entered.contains(.cancel(.autoDismiss)))
@@ -51,7 +59,7 @@ struct SlotStateMachineTests {
 
         // Hovered before the enter timer fired: the auto-dismiss is deferred, then armed with what is left.
         var early = BubbleMachine(id: .send("snd_2"), source: .send(F.show("snd_2", texts: ["Hi"], durationMs: 6000)))
-        _ = early.handle(.begin, now: 0)
+        _ = early.beginAndSlide(now: 0)
         _ = early.handle(.pointer(inside: true), now: 0.2)
         #expect(early.handle(.timerFired(.enter), now: 0.5).schedules(.autoDismiss) == nil)
         let left = early.handle(.pointer(inside: false), now: 1.5)
@@ -59,7 +67,7 @@ struct SlotStateMachineTests {
 
         // Asks never auto-dismiss, hovered or not.
         var ask = BubbleMachine(id: .send("snd_3"), source: .send(F.ask("snd_3", askID: "ask_3", kind: .text(placeholder: nil, maxLength: 60))))
-        _ = ask.handle(.begin, now: 0)
+        _ = ask.beginAndSlide(now: 0)
         _ = ask.handle(.timerFired(.enter), now: 0.5)
         _ = ask.handle(.pointer(inside: true), now: 1)
         #expect(ask.handle(.pointer(inside: false), now: 2).schedules(.autoDismiss) == nil)
@@ -68,7 +76,7 @@ struct SlotStateMachineTests {
     @Test("without --duration a show uses clamp(3 + 0.06 × chars, 4, 15) s")
     func defaultShowDuration() {
         var machine = BubbleMachine(id: .send("snd_1"), source: .send(F.show("snd_1", texts: [String(repeating: "a", count: 100)])))
-        _ = machine.handle(.begin, now: 0)
+        _ = machine.beginAndSlide(now: 0)
         let effects = machine.handle(.timerFired(.enter), now: 0.5)
         #expect(effects.schedules(.autoDismiss) == 9)
     }
@@ -77,7 +85,7 @@ struct SlotStateMachineTests {
     func speechThenLinger() {
         var machine = BubbleMachine(id: .send("s"), source: .send(F.show("s", speak: "hello there")))
         #expect(machine.speech == .waiting)
-        let begin = machine.handle(.begin, now: 0)
+        let begin = machine.beginAndSlide(now: 0)
         #expect(begin.schedules(.speechStart) == 8)
         let entered = machine.handle(.timerFired(.enter), now: 0.5)
         #expect(entered.schedules(.autoDismiss) == nil, "no auto-dismiss while speech is expected")
@@ -201,7 +209,7 @@ struct SlotStateMachineTests {
     @Test("a summoned bubble with no send just slides out on the down-arrow")
     func downArrowOnSummon() {
         var machine = BubbleMachine(id: .summon(.top, serial: 1), source: .summon(.top))
-        _ = machine.handle(.begin, now: 0)
+        _ = machine.beginAndSlide(now: 0)
         let effects = machine.handle(.downArrowClick, now: 1)
         #expect(effects.contains(.slideOut))
         #expect(effects.sent.isEmpty)
@@ -210,16 +218,20 @@ struct SlotStateMachineTests {
 
     // MARK: Esc, typing, messages
 
-    @Test("Esc while typing cancels, slides back and reports dismissed(esc)")
+    @Test("Esc while typing on a show discards the text, slides back and reports dismissed(esc) after the window")
     func escapeWhileTyping() {
         var machine = F.visibleMachine(F.show("s"))
         _ = machine.handle(.startTyping(seed: "h"), now: 1)
         #expect(machine.phase == .typing)
         #expect(machine.typingText == "h")
         let effects = machine.handle(.escape, now: 2)
-        #expect(effects.sent == [.dismissed(.esc)])
+        #expect(effects.sent.isEmpty, "the gesture is reported once the double-Esc window closes")
+        #expect(!effects.contains { if case .send(.message) = $0 { true } else { false } }, "nothing typed is sent")
         #expect(effects.contains(.resignKey))
+        #expect(effects.schedules(.escDouble) == 0.4)
+        #expect(machine.typingText.isEmpty)
         #expect(machine.phase == .leaving)
+        #expect(machine.handle(.timerFired(.escDouble), now: 2.4).sent == [.dismissed(.esc)])
     }
 
     @Test("typing on a show sends a message and leaves once peekd accepted it")
@@ -490,9 +502,14 @@ struct SlotStateMachineTests {
     func summonIdle() {
         var machine = BubbleMachine(id: .summon(.left, serial: 1), source: .summon(.left))
         let begin = machine.handle(.begin, now: 0)
-        #expect(begin.contains(.makeKey))
-        #expect(begin.sent == [.focus])
-        #expect(begin.schedules(.summonIdle) == 12)
+        #expect(begin.contains(.prewarm))
+        #expect(begin.sent.isEmpty, "summons never report shown")
+        #expect(!begin.contains(.makeKey), "a panel off screen is never made key")
+        #expect(!machine.wantsKey)
+        let slide = machine.handle(.prewarmed, now: 0)
+        #expect(slide.contains(.makeKey))
+        #expect(slide.sent == [.focus])
+        #expect(slide.schedules(.summonIdle) == 12)
         #expect(machine.wantsKey)
         _ = machine.handle(.timerFired(.enter), now: 0.5)
         #expect(machine.phase == .showing)
@@ -533,7 +550,8 @@ struct SlotStateMachineTests {
         seen.insert(machine.phase)
         _ = machine.handle(.begin, now: 0)
         seen.insert(machine.phase)
-        _ = machine.handle(.timerFired(.enter), now: 0.5)
+        _ = machine.handle(.prewarmed, now: 0.3)
+        _ = machine.handle(.timerFired(.enter), now: 0.8)
         seen.insert(machine.phase)
         _ = machine.handle(.speechStarted, now: 1)
         seen.insert(machine.phase)
@@ -547,6 +565,9 @@ struct SlotStateMachineTests {
         _ = machine.handle(.recordingFinished(F.recording()), now: 5.1)
         seen.insert(machine.phase)
         _ = machine.handle(.escape, now: 6)
+        #expect(machine.isAskCollapsed, "an ask with an answer in flight only collapses")
+        seen.insert(machine.phase)
+        _ = machine.handle(.downArrowClick, now: 7)
         seen.insert(machine.phase)
         var show = F.visibleMachine(F.show("t"))
         seen.insert(show.phase)

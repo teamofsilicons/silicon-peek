@@ -270,5 +270,14 @@ mod tests {
         let block = drawing_failure(&e).unwrap_or_default();
         assert!(block.starts_with("✗ frame 4 was interrupted"), "{block}");
         assert!(block.ends_with("drawing NOT registered"));
+        assert!(!block.contains("previous drawing still active"));
+        // --check never claims a previous drawing is still active, even when
+        // one exists.
+        let e = Error::new(ErrorCode::DrawingInvalid, "x").with_details(
+            json!({"error":{"message":"boom","frame":1},"previous_active":true,"check_only":true}),
+        );
+        let block = drawing_failure(&e).unwrap_or_default();
+        assert!(block.ends_with("drawing NOT valid (--check: nothing was registered)"));
+        assert!(!block.contains("previous drawing still active"));
     }
 }

@@ -20,11 +20,13 @@ pub enum Notify {
     SpeechFinished,
     /// Send `peek.show.dismissed` when the Carbon closes a `--show` early.
     ShowDismissed,
+    /// Send `peek.send.shown` when it appears (scheduled sends always do).
+    Shown,
 }
 
 impl Notify {
     /// Every value.
-    pub const ALL: [Notify; 2] = [Notify::SpeechFinished, Notify::ShowDismissed];
+    pub const ALL: [Notify; 3] = [Notify::SpeechFinished, Notify::ShowDismissed, Notify::Shown];
 
     /// The wire spelling.
     #[must_use]
@@ -32,6 +34,7 @@ impl Notify {
         match self {
             Self::SpeechFinished => "speech_finished",
             Self::ShowDismissed => "show_dismissed",
+            Self::Shown => "shown",
         }
     }
 
@@ -43,11 +46,12 @@ impl Notify {
         match s {
             "speech_finished" => Ok(Self::SpeechFinished),
             "show_dismissed" => Ok(Self::ShowDismissed),
+            "shown" => Ok(Self::Shown),
             other => Err(Error::invalid_input(format!(
-                "`{other}` is not a notification; allowed: speech_finished, show_dismissed"
+                "`{other}` is not a notification; allowed: speech_finished, show_dismissed, shown"
             ))
-            .with_hint("use speech_finished and/or show_dismissed")
-            .with_details(json!({"allowed": ["speech_finished", "show_dismissed"]}))),
+            .with_hint("use speech_finished, show_dismissed and/or shown")
+            .with_details(json!({"allowed": ["speech_finished", "show_dismissed", "shown"]}))),
         }
     }
 
@@ -210,6 +214,105 @@ pub fn check_wait(secs: Option<u64>) -> Result<Duration> {
     )
 }
 
+/// What `parse_duration` accepts, for messages.
+const DURATION_EXPECTED: &str = "<int> or e.g. 90s, 15m, 2h, 1d, 1h30m";
+
+/// Duration units, largest first, with their seconds.
+const DURATION_UNITS: [(u8, u64); 4] = [(b'd', 86_400), (b'h', 3_600), (b'm', 60), (b's', 1)];
+
+/// Parses a duration: a bare integer (seconds, 0.1.1-compatible:
+/// `--expires-in 60`) or `[<n>d][<n>h][<n>m][<n>s]` (at least one part, each
+/// unit at most once, in this order, lowercase, no spaces, each `<n>` 1–7
+/// digits). Leading and trailing ASCII whitespace is trimmed. The value is
+/// not range-checked here.
+///
+/// # Errors
+/// `invalid_input` with details `{"field": flag, "value": raw, "expected": …}`.
+pub fn parse_duration(flag: &str, raw: &str) -> Result<Duration> {
+    let bad = || {
+        Error::invalid_input(format!(
+            "{flag} `{raw}` is not a duration; use whole seconds or units like 90s, 15m, 2h, 1d, 1h30m"
+        ))
+        .with_hint(format!("{flag} 15m   (units d, h, m, s, largest first; or plain seconds)"))
+        .with_details(json!({"field": flag, "value": raw, "expected": DURATION_EXPECTED}))
+    };
+    let text = raw.trim_matches(|c: char| c.is_ascii_whitespace());
+    if text.is_empty() {
+        return Err(bad());
+    }
+    if text.bytes().all(|b| b.is_ascii_digit()) {
+        // Plain seconds, as 0.1.1 took them (any size; the caller checks the range).
+        return text
+            .parse::<u64>()
+            .map(Duration::from_secs)
+            .map_err(|_| bad());
+    }
+    let bytes = text.as_bytes();
+    let mut secs: u64 = 0;
+    let mut next_unit = 0; // index into UNITS: units must come in this order, once each
+    let mut i = 0;
+    while i < bytes.len() {
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        let digits = &text[start..i];
+        if digits.is_empty() || digits.len() > 7 || i >= bytes.len() {
+            return Err(bad());
+        }
+        let unit = bytes[i];
+        i += 1;
+        let Some(pos) = DURATION_UNITS[next_unit..]
+            .iter()
+            .position(|(u, _)| *u == unit)
+        else {
+            return Err(bad());
+        };
+        let (_, factor) = DURATION_UNITS[next_unit + pos];
+        next_unit += pos + 1;
+        let n: u64 = digits.parse().map_err(|_| bad())?;
+        secs = secs
+            .checked_add(n.checked_mul(factor).ok_or_else(bad)?)
+            .ok_or_else(bad)?;
+    }
+    Ok(Duration::from_secs(secs))
+}
+
+/// `--expires-in`: [`parse_duration`], then 10 s – 7 days.
+///
+/// # Errors
+/// `invalid_input`.
+pub fn parse_expires_in(raw: &str) -> Result<Duration> {
+    let d = parse_duration("--expires-in", raw)?;
+    check_expires_in(d.as_secs())
+        .map_err(|e| e.with_hint("--expires-in takes 10s to 7d, e.g. 90s, 15m, 2h, 1d"))
+}
+
+/// `--in`: [`parse_duration`], then 1 s – 365 days.
+///
+/// # Errors
+/// `invalid_input`.
+pub fn parse_schedule_in(raw: &str) -> Result<Duration> {
+    let d = parse_duration("--in", raw)?;
+    let secs = d.as_secs();
+    if (limits::SCHEDULE_IN_MIN_S..=limits::SCHEDULE_IN_MAX_S).contains(&secs) {
+        Ok(d)
+    } else {
+        Err(Error::invalid_input(format!(
+            "--in {} is out of range; it must be 1 s – 365 d",
+            raw.trim()
+        ))
+        .with_hint("--in takes 1s to 365d, e.g. 45s, 10m, 2h, 3d")
+        .with_details(json!({
+            "field": "--in",
+            "value": raw,
+            "min": limits::SCHEDULE_IN_MIN_S,
+            "max": limits::SCHEDULE_IN_MAX_S,
+            "actual": secs
+        })))
+    }
+}
+
 /// Which content flags a send carries, for the cross-flag rules.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)] // one flag per CLI option, by design
@@ -230,11 +333,31 @@ pub struct SendFlags {
     pub expires_in: bool,
     /// `--wait` given.
     pub wait: bool,
+    /// `--expires-at` given.
+    pub expires_at: bool,
+    /// `--in` given (the CLI knows; an op only has `due_at`).
+    pub schedule_in: bool,
+    /// `--at` given (for an op: `due_at` is set).
+    pub schedule_at: bool,
+    /// `--tz` given.
+    pub tz: bool,
+    /// `--replace` given (combines with everything).
+    pub replace: bool,
 }
 
-/// Enforces the flag combination rules: at least one of speak/show/ask;
-/// show and ask are exclusive; voice/lang need speak; duration needs show;
-/// expires-in and wait need ask.
+impl SendFlags {
+    /// Whether the send is scheduled (`--in` or `--at`).
+    #[must_use]
+    pub const fn due(&self) -> bool {
+        self.schedule_in || self.schedule_at
+    }
+}
+
+/// Enforces the flag combination rules (contract §5.2): at least one of
+/// speak/show/ask; show and ask are exclusive; voice/lang need speak;
+/// duration needs show or speak and never goes with ask; wait needs ask and
+/// no schedule; one deadline; one schedule; a scheduled send takes only
+/// `--expires-at`; `--tz` needs `--at` or `--expires-at`.
 ///
 /// # Errors
 /// `nothing_to_send` or `conflicting_flags`.
@@ -270,19 +393,67 @@ pub fn check_flags(f: SendFlags) -> Result<()> {
     if f.duration && f.ask {
         return conflict(
             "--duration does not apply to --ask: an ask stays until it is answered, dismissed or expires",
-            "use --expires-in <SECS> to bound an ask",
-        );
-    }
-    if f.expires_in && !f.ask {
-        return conflict(
-            "--expires-in applies only to --ask",
-            "drop --expires-in, or add --ask",
+            "use --expires-in <DURATION> or --expires-at <DATETIME> to bound an ask",
         );
     }
     if f.wait && !f.ask {
         return conflict("--wait applies only to --ask", "drop --wait, or add --ask");
     }
+    if f.expires_in && f.expires_at {
+        return conflict(
+            "--expires-in and --expires-at cannot be combined; give one deadline",
+            "--expires-in 15m, or --expires-at 2026-09-27T18:00",
+        );
+    }
+    if f.schedule_in && f.schedule_at {
+        return conflict(
+            "--in and --at cannot be combined; a send is scheduled once",
+            "--in 2h, or --at 2026-09-27T18:00",
+        );
+    }
+    if f.due() && f.expires_in {
+        return conflict(
+            "a scheduled send (--in/--at) takes --expires-at, not --expires-in: its clock would start now, not at the due time",
+            "--expires-at <DATETIME> (after the due time)",
+        );
+    }
+    if f.due() && f.wait {
+        return conflict(
+            "--wait cannot be used with --in or --at: nobody waits for a scheduled ask",
+            "drop --wait; the answer arrives as peek.ask.answered",
+        );
+    }
+    if f.tz && !f.schedule_at && !f.expires_at {
+        return conflict(
+            "--tz applies only to --at and --expires-at",
+            "drop --tz, or add --at <DATETIME>",
+        );
+    }
     Ok(())
+}
+
+/// Checks a `--tz` name as it travels to peekd: 1–64 characters of
+/// `[A-Za-z0-9_+-/]` (the CLI resolved it against the tz database already).
+///
+/// # Errors
+/// `invalid_input` with field `--tz`.
+pub fn check_tz_name(tz: &str) -> Result<()> {
+    let n = tz.chars().count();
+    let ok = (1..=limits::TZ_NAME_MAX_CHARS).contains(&n)
+        && tz
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'+' | b'-' | b'/'));
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::invalid_input(format!(
+            "`--tz {}` is not an IANA time zone name (1–{} characters of letters, digits, _ + - /)",
+            crate::identity::truncate_for_message(tz),
+            limits::TZ_NAME_MAX_CHARS
+        ))
+        .with_hint("e.g. Asia/Kolkata, Europe/Berlin, America/New_York, UTC")
+        .with_details(json!({"field": "--tz", "value": tz})))
+    }
 }
 
 #[cfg(test)]
@@ -352,9 +523,140 @@ mod tests {
             Notify::parse_list("show_dismissed,speech_finished,show_dismissed")?,
             vec![Notify::SpeechFinished, Notify::ShowDismissed]
         );
+        assert_eq!(
+            Notify::parse_list("shown,speech_finished")?,
+            vec![Notify::SpeechFinished, Notify::Shown]
+        );
         assert!(Notify::parse_list("")?.is_empty());
-        assert!(Notify::parse_list("everything").is_err());
+        let e = Notify::parse_list("everything").err();
+        assert!(e.is_some_and(|e| {
+            e.message()
+                .contains("speech_finished, show_dismissed, shown")
+        }));
+        assert_eq!(
+            Notify::ALL.map(Notify::as_str),
+            ["speech_finished", "show_dismissed", "shown"]
+        );
+        assert_eq!(
+            serde_json::to_value(Notify::Shown).ok(),
+            Some(serde_json::json!("shown"))
+        );
         Ok(())
+    }
+
+    fn secs(flag: &str, raw: &str) -> Option<u64> {
+        parse_duration(flag, raw).ok().map(|d| d.as_secs())
+    }
+
+    #[test]
+    fn duration_vectors() {
+        for (raw, want) in [
+            ("60", 60),
+            (" 90s ", 90),
+            ("15m", 900),
+            ("2h", 7200),
+            ("1d", 86_400),
+            ("1h30m", 5400),
+            ("2d12h", 216_000),
+            ("0", 0),
+            ("1d2h3m4s", 93_784),
+            ("9999999s", 9_999_999),
+            ("31536000", 31_536_000),
+        ] {
+            assert_eq!(secs("--in", raw), Some(want), "{raw:?}");
+        }
+        for raw in [
+            "",
+            "   ",
+            "1.5h",
+            "90S",
+            "1m1h",
+            "1h1h",
+            "1 h",
+            "-5m",
+            "5min",
+            "12345678s",
+            "1w",
+            "h",
+            "d1",
+            "1hh",
+            "1h 30m",
+            "+5m",
+            "٣s",
+            "99999999999999999999",
+        ] {
+            let e = parse_duration("--expires-in", raw).err();
+            assert!(
+                e.as_ref()
+                    .is_some_and(|e| *e.code() == ErrorCode::InvalidInput
+                        && e.hint().is_some()
+                        && e.details().is_some_and(|d| d["field"] == "--expires-in"
+                            && d["value"] == raw
+                            && d["expected"] == DURATION_EXPECTED)),
+                "{raw:?} must be refused: {e:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn duration_ranges() {
+        let ok = |r: Result<Duration>| r.is_ok();
+        assert!(!ok(parse_expires_in("9s")));
+        assert!(ok(parse_expires_in("10s")));
+        assert!(ok(parse_expires_in("7d")));
+        assert!(!ok(parse_expires_in("7d1s")));
+        assert!(!ok(parse_expires_in("0")));
+        assert!(
+            ok(parse_expires_in("60")),
+            "0.1.1's plain seconds still work"
+        );
+        assert!(!ok(parse_schedule_in("0s")));
+        assert!(!ok(parse_schedule_in("0")));
+        assert!(ok(parse_schedule_in("1s")));
+        assert!(ok(parse_schedule_in("365d")));
+        assert!(!ok(parse_schedule_in("365d1s")));
+        for (e, field) in [
+            (parse_expires_in("9s").err(), "--expires-in"),
+            (parse_schedule_in("366d").err(), "--in"),
+            (parse_schedule_in("soon").err(), "--in"),
+        ] {
+            assert!(
+                e.as_ref()
+                    .is_some_and(|e| *e.code() == ErrorCode::InvalidInput
+                        && e.exit_code().code() == 2
+                        && e.hint().is_some()
+                        && e.details().is_some_and(|d| d["field"] == field)),
+                "{e:?}"
+            );
+        }
+        let e = parse_schedule_in("366d").err();
+        assert!(
+            e.is_some_and(|e| e.message() == "--in 366d is out of range; it must be 1 s – 365 d")
+        );
+    }
+
+    #[test]
+    fn tz_names() {
+        assert!(check_tz_name("Asia/Kolkata").is_ok());
+        assert!(check_tz_name("America/Argentina/Buenos_Aires").is_ok());
+        assert!(check_tz_name("Etc/GMT+5").is_ok());
+        assert!(check_tz_name("UTC").is_ok());
+        assert!(check_tz_name(&"a".repeat(64)).is_ok());
+        assert!(check_tz_name(&"a".repeat(65)).is_err());
+        assert!(check_tz_name("").is_err());
+        assert!(check_tz_name("Asia Kolkata").is_err());
+        let e = check_tz_name("Asia/Kolkata\n").err();
+        assert!(e.is_some_and(|e| e.details().is_some_and(|d| d["field"] == "--tz")));
+    }
+
+    fn flags_err(f: SendFlags) -> Option<(ErrorCode, String, Option<String>)> {
+        check_flags(f).err().map(|e| {
+            (
+                e.code().clone(),
+                e.message().to_owned(),
+                e.hint().map(str::to_owned),
+            )
+        })
     }
 
     #[test]
@@ -383,7 +685,17 @@ mod tests {
                 expires_in: true,
                 ..SendFlags::default()
             }),
-            Some(ErrorCode::ConflictingFlags)
+            None,
+            "--expires-in now applies to every kind"
+        );
+        assert_eq!(
+            code(SendFlags {
+                show: true,
+                expires_at: true,
+                tz: true,
+                ..SendFlags::default()
+            }),
+            None
         );
         assert_eq!(
             code(SendFlags {
@@ -393,13 +705,15 @@ mod tests {
             }),
             Some(ErrorCode::ConflictingFlags)
         );
+        let e = flags_err(SendFlags {
+            speak: true,
+            ask: true,
+            duration: true,
+            ..SendFlags::default()
+        });
         assert_eq!(
-            code(SendFlags {
-                ask: true,
-                duration: true,
-                ..SendFlags::default()
-            }),
-            Some(ErrorCode::ConflictingFlags)
+            e.and_then(|e| e.2).as_deref(),
+            Some("use --expires-in <DURATION> or --expires-at <DATETIME> to bound an ask")
         );
         assert_eq!(
             code(SendFlags {
@@ -421,6 +735,154 @@ mod tests {
                 ..SendFlags::default()
             }),
             None
+        );
+        assert_eq!(
+            code(SendFlags {
+                speak: true,
+                schedule_at: true,
+                expires_at: true,
+                tz: true,
+                replace: true,
+                ..SendFlags::default()
+            }),
+            None
+        );
+        assert_eq!(
+            code(SendFlags {
+                ask: true,
+                schedule_in: true,
+                ..SendFlags::default()
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn replace_combines_with_everything() {
+        for base in [
+            SendFlags {
+                speak: true,
+                ..SendFlags::default()
+            },
+            SendFlags {
+                show: true,
+                duration: true,
+                ..SendFlags::default()
+            },
+            SendFlags {
+                ask: true,
+                wait: true,
+                expires_in: true,
+                ..SendFlags::default()
+            },
+            SendFlags {
+                ask: true,
+                schedule_at: true,
+                tz: true,
+                expires_at: true,
+                ..SendFlags::default()
+            },
+            SendFlags {
+                speak: true,
+                schedule_in: true,
+                ..SendFlags::default()
+            },
+        ] {
+            assert!(check_flags(base).is_ok(), "{base:?}");
+            assert!(
+                check_flags(SendFlags {
+                    replace: true,
+                    ..base
+                })
+                .is_ok(),
+                "{base:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn new_conflicts_have_exact_messages() {
+        let table: [(SendFlags, &str, &str); 5] = [
+            (
+                SendFlags {
+                    speak: true,
+                    expires_in: true,
+                    expires_at: true,
+                    ..SendFlags::default()
+                },
+                "--expires-in and --expires-at cannot be combined; give one deadline",
+                "--expires-in 15m, or --expires-at 2026-09-27T18:00",
+            ),
+            (
+                SendFlags {
+                    speak: true,
+                    schedule_in: true,
+                    schedule_at: true,
+                    ..SendFlags::default()
+                },
+                "--in and --at cannot be combined; a send is scheduled once",
+                "--in 2h, or --at 2026-09-27T18:00",
+            ),
+            (
+                SendFlags {
+                    speak: true,
+                    schedule_in: true,
+                    expires_in: true,
+                    ..SendFlags::default()
+                },
+                "a scheduled send (--in/--at) takes --expires-at, not --expires-in: its clock would start now, not at the due time",
+                "--expires-at <DATETIME> (after the due time)",
+            ),
+            (
+                SendFlags {
+                    ask: true,
+                    schedule_at: true,
+                    wait: true,
+                    ..SendFlags::default()
+                },
+                "--wait cannot be used with --in or --at: nobody waits for a scheduled ask",
+                "drop --wait; the answer arrives as peek.ask.answered",
+            ),
+            (
+                SendFlags {
+                    speak: true,
+                    tz: true,
+                    schedule_in: true,
+                    ..SendFlags::default()
+                },
+                "--tz applies only to --at and --expires-at",
+                "drop --tz, or add --at <DATETIME>",
+            ),
+        ];
+        for (f, msg, hint) in table {
+            assert_eq!(
+                flags_err(f),
+                Some((
+                    ErrorCode::ConflictingFlags,
+                    msg.to_owned(),
+                    Some(hint.to_owned())
+                )),
+                "{f:?}"
+            );
+        }
+        // --at + --expires-in is the scheduled/expires-in rule too.
+        assert!(
+            flags_err(SendFlags {
+                speak: true,
+                schedule_at: true,
+                expires_in: true,
+                ..SendFlags::default()
+            })
+            .is_some_and(|e| e.1.starts_with("a scheduled send"))
+        );
+        // --tz alone.
+        assert!(
+            flags_err(SendFlags {
+                speak: true,
+                tz: true,
+                ..SendFlags::default()
+            })
+            .is_some_and(|e| e.1 == "--tz applies only to --at and --expires-at")
         );
     }
 }

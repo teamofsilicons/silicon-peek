@@ -25,6 +25,7 @@ fn state(s: AskStateArg) -> AskState {
         AskStateArg::Dismissed => AskState::Dismissed,
         AskStateArg::Expired => AskState::Expired,
         AskStateArg::Cancelled => AskState::Cancelled,
+        AskStateArg::Replaced => AskState::Replaced,
     }
 }
 
@@ -105,6 +106,7 @@ fn human_cancel(v: &Value) -> String {
         state @ ("dismissed" | "expired") => {
             format!("{id} was already {state}; nothing to cancel")
         }
+        "replaced" => format!("{id} was already replaced by a newer send; nothing to cancel"),
         other => format!("{id} is {other}; it was not cancelled"),
     }
 }
@@ -212,6 +214,10 @@ mod tests {
         assert_eq!(
             line("dismissed"),
             "ask_X was already dismissed; nothing to cancel"
+        );
+        assert_eq!(
+            line("replaced"),
+            "ask_X was already replaced by a newer send; nothing to cancel"
         );
     }
 

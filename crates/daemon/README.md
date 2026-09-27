@@ -12,7 +12,10 @@ peekd run [--launchd | --parent-ui | --headless]
 peekd owns:
 
 - the slot registry;
-- the send queue, asks and history;
+- the send queue (always queue, strict FIFO: one bubble on screen and at most
+  five waiting per Silicon; `--replace` takes over), expiry of every send,
+  one-time scheduled sends (`--in`/`--at`, fired on wall-clock time, caught up
+  after sleep or downtime), asks and history;
 - the delivery outbox;
 - every Deepgram call: Aura-2 TTS, streamed to the UI, and Nova-3 STT, once
   per recording;
@@ -56,7 +59,7 @@ and to peek-server for login.
 
 | Path | What |
 |---|---|
-| `peekd.sqlite` | homes, slots, drawings, sends, asks, outbox, telemetry outbox. All times are unix ms. No tokens. |
+| `peekd.sqlite` | homes, slots, drawings, sends, asks, scheduled sends, outbox, telemetry outbox (schema 2). All times are unix ms. No tokens. |
 | `settings.json` | UI and daemon settings, mirrored from `settings.changed` |
 | `drawings/<context>/<org>/<actor>/<sha256>.js` | the active drawing, plus the previous one for rollback |
 | `cache/images/`, `cache/tts/` | image copies and the TTS cache (LRU, 200 MB / 30 days) |

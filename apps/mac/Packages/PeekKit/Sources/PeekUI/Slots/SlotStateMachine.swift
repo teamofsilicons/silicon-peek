@@ -9,10 +9,18 @@ import PeekCore
 //     and slides out ("leaving");
 //   * speak (with or without a show): slides back 1.5 s after speech is done or stopped;
 //     show only (or speech that failed): slides back after `PeekShowEvent.effectiveDuration`; asks stay until answered;
+//   * before it slides in, a bubble pre-warms off screen (peek 0.1.2): the panel is ordered in where nobody sees
+//     it so the glass reaches its live look, the drawing commits its first frame and the backdrop is sampled;
+//     only then does it slide, so nothing changes colour after it lands. peekd hears `shown` when this starts;
 //   * down-arrow: one click slides the bubble out and lets the audio play on; a double click also
 //     stops the audio. The protocol message (`dismissed` with `down_arrow` or `down_arrow_double`)
-//     is sent once, after the double-click window, so the gesture is reported exactly;
-//   * Esc cancels typing/voice and slides the bubble back (`dismissed` with `esc`);
+//     is sent once, after the double-click window, so the gesture is reported exactly. It always dismisses,
+//     asks included, and never collapses anything;
+//   * Esc (peek 0.1.2): on a show/speak one Esc slides the visual out and lets the speech play on, a second Esc
+//     within 0.4 s also stops the speech (`esc` / `esc_double`, sent once after the window). On an ask one Esc
+//     collapses it to the compact ask (still answerable; `^` expands it), a second Esc within 0.4 s dismisses it;
+//     an Esc on a compact ask shows "Esc again to dismiss" and a second Esc within 2 s dismisses it. Typing or a
+//     recording is discarded by the Esc (nothing is uploaded);
 //   * answers, messages and voice recordings leave only once peekd accepted them, so nothing the
 //     Carbon said is dropped silently; silent recordings are never uploaded (−50 dBFS guard);
 //   * a voice answer to a choice/slider/range ask shows "transcribing" for up to 8 s and waits
@@ -62,6 +70,20 @@ public struct BubbleTiming: Sendable, Equatable {
     /// After the pointer leaves the bubble (or its popup closes), the show stays at least this long (ui-feedback.md:
     /// reading a revealed or expanded text must not be cut off by the auto-dismiss).
     public var afterHover: Double = 2.5
+    /// Esc belongs to a new peek this long after its slide-in starts (agreed 0.1.2 #12: never longer).
+    public var escGrace: Double = 3.0
+    /// Two Escs within this are a double Esc.
+    public var escDouble: Double = 0.4
+    /// "Esc again to dismiss" stays this long.
+    public var escHint: Double = 2.0
+    /// Off-screen glass warm-up before the slide.
+    public var prewarmGlass: Double = 0.35
+    /// The slide starts by then, whatever is still missing.
+    public var prewarmMax: Double = 0.6
+    /// Longest wait for a first backdrop sample.
+    public var backdropWait: Double = 0.25
+    /// Frames the ordered-in panel must have been through before the slide (display-link ticks).
+    public var prewarmTicks: Int = 3
 
     public init() {}
 }
@@ -76,6 +98,12 @@ public enum BubbleTimer: Hashable, Sendable, CaseIterable {
     case summonIdle
     case doubleClick
     case sentLinger
+    /// The double-Esc window (and an ask's first-Esc arm).
+    case escDouble
+    /// "Esc again to dismiss" on a compact ask.
+    case escHint
+    /// The pre-warm's hard cap: slide in whatever is still missing.
+    case prewarm
 }
 
 /// Something the bubble sends to peekd (the manager adds send id, ask id, slot and context).
@@ -87,9 +115,14 @@ public enum BubbleOutbound: Sendable, Equatable {
     case voice(MicRecordingResult)
     /// Pre-warm the session and the Deepgram token (`focus`).
     case focus
+    /// The bubble began presenting (its pre-warm started): peekd sets `shown_at` and starts the speech (peek 0.1.2).
+    case shown
 }
 
 public enum BubbleEffect: Sendable, Equatable {
+    /// Order the panel in off screen, place the content at rest and wait until it is warm (glass, first frame,
+    /// backdrop); the manager answers with ``BubbleEvent/prewarmed``.
+    case prewarm
     case slideIn
     case slideOut
     case schedule(BubbleTimer, seconds: Double)
@@ -107,14 +140,19 @@ public enum BubbleEffect: Sendable, Equatable {
 }
 
 public enum BubbleEvent: Sendable, Equatable {
-    /// Images are ready: slide in.
+    /// Images are ready: pre-warm, then slide in.
     case begin
+    /// The pre-warm is complete (glass warm, first frame committed, backdrop sampled): slide in now.
+    case prewarmed
+    /// The `^` button, a click on the question, the hotkey, or the keyboard/mic button on a compact ask: expand it.
+    case expandAsk
     case speechStarted
     case speechFinished(stoppedByUser: Bool)
     case speechFailed
     case timerFired(BubbleTimer)
     case downArrowClick
     case downArrowDoubleClick
+    /// Esc aimed at this bubble (the Esc router's target, or a key panel's own Esc).
     case escape
     /// The live selection / slider value changed.
     case setValue(AskValue?)
@@ -140,7 +178,8 @@ public enum BubbleEvent: Sendable, Equatable {
     case cancelled
     /// A production peek takes the physical slot; this (test) bubble goes back to the queue.
     case preempted
-    /// A newer show from the same Silicon replaces this one.
+    /// A summon of the same Silicon is replaced by its send (the only local replace since peek 0.1.2: a Silicon's own
+    /// `--replace` arrives as `peek.cancel{replaced}` + `peek.show`).
     case replaced
     /// The hotkey was pressed again while this bubble is up.
     case summoned
@@ -151,9 +190,18 @@ public enum BubbleEvent: Sendable, Equatable {
     case offerTyping(notice: String)
 }
 
+/// How an ask is presented: in full, or collapsed to the compact ask by an Esc (question only, still answerable).
+/// Called `collapsed` in code so it never collides with the display mode `DisplayMode.compact`.
+public enum AskPresentation: Sendable, Equatable {
+    case expanded
+    case collapsed
+}
+
 public struct BubbleMachine: Sendable, Equatable {
     public enum Stage: Sendable, Equatable {
         case pending
+        /// Ordered in off screen, warming up (glass, first drawing frame, backdrop sample); slides in next.
+        case prewarming
         case entering
         case visible
         case leaving
@@ -209,6 +257,7 @@ public struct BubbleMachine: Sendable, Equatable {
     public static let nothingHeardNotice = "Didn't hear anything — try again or type"
     public static let stillTranscribingNotice = "Still transcribing — tap an option or type"
     public static let sentToTestNotice = "Sent to test silicon"
+    public static let escAgainHint = "Esc again to dismiss"
 
     public let id: BubbleID
     public let source: BubbleSource
@@ -229,7 +278,18 @@ public struct BubbleMachine: Sendable, Equatable {
     public private(set) var leaveReason: LeaveReason?
     public private(set) var awaiting: Awaiting?
     public private(set) var requeue = false
+    /// An ask collapsed to the compact ask by an Esc.
+    public private(set) var askPresentation: AskPresentation = .expanded
+    /// "Esc again to dismiss" is showing on the compact ask.
+    public private(set) var escHintVisible = false
+    /// A double-Esc or hint window the Carbon opened with an Esc to this bubble is open until then (the Esc router
+    /// keeps Esc for it meanwhile). Cleared when its timer fires.
+    public private(set) var escArmedUntil: Double?
+    /// Esc belongs to this bubble until then: its slide-in start + ``BubbleTiming/escGrace``.
+    public private(set) var graceUntil: Double?
     private var pendingDismiss: DismissGesture?
+    /// A typing field offered before the bubble slid in: opened with the slide-in.
+    private var deferredTypingNotice: String?
     private var leaveAnimationDone = false
     private var focusSent = false
     /// The pointer is over the chrome or a popup is open: the auto-dismiss waits.
@@ -270,7 +330,8 @@ public struct BubbleMachine: Sendable, Equatable {
     public var phase: Phase {
         switch stage {
         case .pending, .finished: return .hidden
-        case .entering: return .entering
+        // The first frame drawn while warming up is the one that lands, so the drawing already sees `entering`.
+        case .prewarming, .entering: return .entering
         case .leaving: return .leaving
         case .visible:
             switch input {
@@ -289,6 +350,9 @@ public struct BubbleMachine: Sendable, Equatable {
     public var hasUserInput: Bool { input != .none || awaiting != nil }
     public var isAskOpen: Bool { ask == .open || ask == .submitting }
     public var isOnScreen: Bool { stage == .entering || stage == .visible || stage == .leaving }
+    /// An ask with an answer on its way (submitted, or a recording being transcribed): Esc only collapses it.
+    public var hasAnswerInFlight: Bool { ask == .submitting || input == .transcribing || awaiting != nil }
+    public var isAskCollapsed: Bool { askPresentation == .collapsed && ask != .none }
     /// The send's audio may still play after the bubble left (single down-arrow click).
     public var audioOutlivesBubble: Bool { speech == .waiting || speech == .playing }
     /// Whether the bubble may take key focus (canBecomeKey).
@@ -314,16 +378,19 @@ public struct BubbleMachine: Sendable, Equatable {
         switch event {
         case .begin:
             guard stage == .pending else { return [] }
-            stage = .entering
-            visibleSince = now
-            var effects: [BubbleEffect] = [.slideIn, .drawing(.enter), .schedule(.enter, seconds: timing.enter)]
-            if speech == .waiting { effects.append(.schedule(.speechStart, seconds: timing.speechStartTimeout)) }
-            if isSummon {
-                effects.append(.makeKey)
-                effects.append(contentsOf: sendFocusOnce())
-                effects.append(.schedule(.summonIdle, seconds: timing.summonIdle))
-            }
+            stage = .prewarming
+            // `enter` goes to the drawing now, so its first frame is committed before the slide.
+            var effects: [BubbleEffect] = [.prewarm, .drawing(.enter)]
+            if !isSummon { effects.append(.send(.shown)) }
+            effects.append(.schedule(.prewarm, seconds: timing.prewarmMax))
             return effects
+
+        case .prewarmed:
+            return slideIn(now: now)
+
+        case .expandAsk:
+            guard stage == .prewarming || stage == .entering || stage == .visible else { return [] }
+            return expandIfCollapsed()
 
         case .timerFired(let timer):
             return timerFired(timer, now: now)
@@ -362,14 +429,14 @@ public struct BubbleMachine: Sendable, Equatable {
             return beginLeaving(.dismissed, now: now) + [.stopSpeech, .send(.dismissed(.downArrowDouble))]
 
         case .escape:
-            guard stage == .entering || stage == .visible else { return [] }
-            var effects: [BubbleEffect] = []
-            if input == .listening || input == .stopping { effects.append(.cancelRecording) }
-            let answered = input == .transcribing || awaiting != nil
-            input = .none
-            effects.append(contentsOf: beginLeaving(.escaped, now: now))
-            if !isSummon, !answered { effects.append(.send(.dismissed(.esc))) }
-            return effects
+            if isSummon {
+                guard stage == .entering || stage == .visible else { return [] }
+                var effects: [BubbleEffect] = []
+                if input == .listening || input == .stopping { effects.append(.cancelRecording) }
+                input = .none
+                return effects + beginLeaving(.escaped, now: now)
+            }
+            return ask == .none ? escapeShow(now: now) : escapeAsk(now: now)
 
         case .setValue(let value):
             guard isAskOpen else { return [] }
@@ -431,7 +498,7 @@ public struct BubbleMachine: Sendable, Equatable {
         case .keyboardButton:
             guard stage == .entering || stage == .visible, awaiting == nil else { return [] }
             if input == .typing { return stopTyping() }
-            return startTyping(seed: nil)
+            return expandIfCollapsed() + startTyping(seed: nil)
 
         case .startTyping(let seed):
             guard stage == .entering || stage == .visible, awaiting == nil, input != .transcribing else { return [] }
@@ -439,7 +506,7 @@ public struct BubbleMachine: Sendable, Equatable {
                 if let seed { typingText += seed }
                 return []
             }
-            return startTyping(seed: seed)
+            return expandIfCollapsed() + startTyping(seed: seed)
 
         case .typingChanged(let text):
             guard input == .typing else { return [] }
@@ -470,10 +537,11 @@ public struct BubbleMachine: Sendable, Equatable {
                 return []
             case .typing, .none:
                 guard awaiting == nil else { return [] }
+                let expand = expandIfCollapsed()
                 input = .listening
                 summoned = true
                 notice = nil
-                return [.makeKey, .startRecording, .cancel(.autoDismiss), .cancel(.summonIdle), .cancel(.notice)]
+                return expand + [.makeKey, .startRecording, .cancel(.autoDismiss), .cancel(.summonIdle), .cancel(.notice)]
                     + sendFocusOnce()
             }
 
@@ -552,6 +620,10 @@ public struct BubbleMachine: Sendable, Equatable {
             case .pending:
                 stage = .finished
                 return [.finished(requeue: false)]
+            case .prewarming:
+                // Never seen: the surface orders the off-screen panel out.
+                stage = .finished
+                return [.cancel(.prewarm)] + stopSpeechIfExpected() + [.finished(requeue: false)]
             case .entering, .visible:
                 var effects: [BubbleEffect] = []
                 if input == .listening || input == .stopping { effects.append(.cancelRecording) }
@@ -579,6 +651,11 @@ public struct BubbleMachine: Sendable, Equatable {
                     requeue = true
                     return [.finished(requeue: true)]
                 }
+                if stage == .prewarming {
+                    stage = .finished
+                    requeue = true
+                    return [.cancel(.prewarm)] + stopSpeechIfExpected() + [.finished(requeue: true)]
+                }
                 return []
             }
             requeue = true
@@ -597,6 +674,10 @@ public struct BubbleMachine: Sendable, Equatable {
                     stage = .finished
                     return [.finished(requeue: false)]
                 }
+                if stage == .prewarming {
+                    stage = .finished
+                    return [.cancel(.prewarm)] + stopSpeechIfExpected() + [.finished(requeue: false)]
+                }
                 return []
             }
             var effects: [BubbleEffect] = []
@@ -610,9 +691,14 @@ public struct BubbleMachine: Sendable, Equatable {
             return effects + beginLeaving(.replaced, now: now)
 
         case .summoned:
+            if stage == .prewarming {
+                // Takes key focus as it slides in (a panel off screen is never made key).
+                summoned = true
+                return expandIfCollapsed()
+            }
             guard stage == .entering || stage == .visible else { return [] }
             summoned = true
-            var effects: [BubbleEffect] = [.makeKey] + sendFocusOnce()
+            var effects: [BubbleEffect] = expandIfCollapsed() + [.makeKey] + sendFocusOnce()
             if input == .none {
                 effects.append(.cancel(.autoDismiss))
                 effects.append(.schedule(.summonIdle, seconds: timing.summonIdle))
@@ -620,8 +706,12 @@ public struct BubbleMachine: Sendable, Equatable {
             return effects
 
         case .offerTyping(let text):
+            if stage == .prewarming || stage == .pending {
+                deferredTypingNotice = text
+                return []
+            }
             guard stage == .entering || stage == .visible, input == .none, awaiting == nil else { return [] }
-            return startTyping(seed: nil) + showNotice(text)
+            return expandIfCollapsed() + startTyping(seed: nil) + showNotice(text)
 
         case .pointer(let inside):
             guard pointerInside != inside else { return [] }
@@ -692,7 +782,137 @@ public struct BubbleMachine: Sendable, Equatable {
         case .sentLinger:
             guard stage == .entering || stage == .visible else { return [] }
             return beginLeaving(.answered, now: now)
+        case .prewarm:
+            // The cap: slide in whatever is still missing (the manager logs what).
+            return slideIn(now: now)
+        case .escDouble:
+            if ask != .none, !isSummon {
+                // An ask's first-Esc arm closes; it stays collapsed.
+                if !escHintVisible { escArmedUntil = nil }
+                return []
+            }
+            escArmedUntil = nil
+            guard pendingDismiss == .esc else { return finishIfDone() }
+            pendingDismiss = nil
+            return [.send(.dismissed(.esc))] + finishIfDone()
+        case .escHint:
+            escHintVisible = false
+            escArmedUntil = nil
+            return []
         }
+    }
+
+    // MARK: Pre-warm and slide-in
+
+    /// Leaves the pre-warm: the slide starts, and with it Esc's grace window and everything that waited for it.
+    private mutating func slideIn(now: Double) -> [BubbleEffect] {
+        guard stage == .prewarming else { return [] }
+        stage = .entering
+        visibleSince = now
+        graceUntil = now + timing.escGrace
+        var effects: [BubbleEffect] = [.cancel(.prewarm), .slideIn, .schedule(.enter, seconds: timing.enter)]
+        if speech == .waiting { effects.append(.schedule(.speechStart, seconds: timing.speechStartTimeout)) }
+        if isSummon {
+            effects.append(.makeKey)
+            effects.append(contentsOf: sendFocusOnce())
+            effects.append(.schedule(.summonIdle, seconds: timing.summonIdle))
+        } else if summoned {
+            // The hotkey was pressed while it warmed up.
+            effects.append(.makeKey)
+            effects.append(contentsOf: sendFocusOnce())
+            effects.append(.schedule(.summonIdle, seconds: timing.summonIdle))
+        }
+        if let text = deferredTypingNotice {
+            deferredTypingNotice = nil
+            if input == .none, awaiting == nil { effects += startTyping(seed: nil) + showNotice(text) }
+        }
+        return effects
+    }
+
+    private mutating func stopSpeechIfExpected() -> [BubbleEffect] {
+        guard speech == .waiting || speech == .playing else { return [] }
+        speech = .stopped
+        return [.stopSpeech]
+    }
+
+    // MARK: Esc
+
+    /// Show / speak: one Esc slides the visual out and lets the speech play on; a second one within
+    /// ``BubbleTiming/escDouble`` also stops it. The gesture is reported once, after the window.
+    private mutating func escapeShow(now: Double) -> [BubbleEffect] {
+        switch stage {
+        case .entering, .visible:
+            var effects: [BubbleEffect] = []
+            if input == .listening || input == .stopping { effects.append(.cancelRecording) }
+            // A message already on its way is not a dismissal; the window still lets a second Esc stop the audio.
+            let answered = input == .transcribing || awaiting != nil
+            input = .none
+            typingText = ""
+            effects.append(contentsOf: beginLeaving(.escaped, now: now))
+            pendingDismiss = answered ? nil : .esc
+            escArmedUntil = now + timing.escDouble
+            effects.append(.schedule(.escDouble, seconds: timing.escDouble))
+            return effects
+        case .leaving:
+            guard leaveReason == .escaped, escArmedUntil != nil else { return [] }
+            escArmedUntil = nil
+            var effects: [BubbleEffect] = [.cancel(.escDouble), .stopSpeech]
+            if speech == .waiting || speech == .playing { speech = .stopped }
+            if pendingDismiss == .esc {
+                pendingDismiss = nil
+                effects.append(.send(.dismissed(.escDouble)))
+            }
+            return effects + finishIfDone()
+        case .pending, .prewarming, .finished:
+            return []
+        }
+    }
+
+    /// Ask: one Esc collapses it to the compact ask (typing or a recording is discarded, nothing is uploaded); a second
+    /// within ``BubbleTiming/escDouble`` dismisses it. On a compact ask an Esc shows "Esc again to dismiss" and a second
+    /// within ``BubbleTiming/escHint`` dismisses it. An ask with an answer on its way only collapses.
+    private mutating func escapeAsk(now: Double) -> [BubbleEffect] {
+        guard stage == .entering || stage == .visible else { return [] }
+        let inFlight = hasAnswerInFlight
+        switch askPresentation {
+        case .expanded:
+            askPresentation = .collapsed
+            guard !inFlight else { return [] }
+            var effects: [BubbleEffect] = []
+            if input == .listening || input == .stopping { effects.append(.cancelRecording) }
+            let wasKey = summoned || input != .none
+            input = .none
+            typingText = ""
+            if wasKey {
+                summoned = false
+                effects.append(contentsOf: [.resignKey, .cancel(.summonIdle)])
+            }
+            escArmedUntil = now + timing.escDouble
+            effects.append(.schedule(.escDouble, seconds: timing.escDouble))
+            return effects
+        case .collapsed:
+            guard !inFlight else { return [] }
+            if escArmedUntil != nil {
+                escArmedUntil = nil
+                escHintVisible = false
+                var effects: [BubbleEffect] = [.cancel(.escDouble), .cancel(.escHint)]
+                if speech == .waiting || speech == .playing { speech = .stopped }
+                effects.append(contentsOf: [.stopSpeech, .send(.dismissed(.esc))])
+                return effects + beginLeaving(.escaped, now: now)
+            }
+            escHintVisible = true
+            escArmedUntil = now + timing.escHint
+            return [.schedule(.escHint, seconds: timing.escHint)]
+        }
+    }
+
+    /// Expands a compact ask (and closes its Esc windows).
+    private mutating func expandIfCollapsed() -> [BubbleEffect] {
+        guard askPresentation == .collapsed else { return [] }
+        askPresentation = .expanded
+        escHintVisible = false
+        escArmedUntil = nil
+        return [.cancel(.escHint), .cancel(.escDouble)]
     }
 
     private mutating func speechFailed() -> [BubbleEffect] {
@@ -801,9 +1021,12 @@ public struct BubbleMachine: Sendable, Equatable {
             effects.append(.cancelRecording)
             input = .none
         }
-        for timer in [BubbleTimer.enter, .autoDismiss, .speechStart, .transcribe, .summonIdle, .sentLinger] {
+        for timer in [BubbleTimer.enter, .autoDismiss, .speechStart, .transcribe, .summonIdle, .sentLinger, .escDouble,
+                      .escHint, .prewarm] {
             effects.append(.cancel(timer))
         }
+        escHintVisible = false
+        escArmedUntil = nil
         if wasKey { effects.append(.resignKey) }
         return effects
     }

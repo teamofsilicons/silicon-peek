@@ -288,6 +288,66 @@ struct BackdropSamplerTests {
         #expect(sampler.source == .wallpaper)
     }
 
+    @Test("warm: an idle key gets its first sample at once and is refreshed with the wallpaper; tracking still wins")
+    func warmIdleKeys() async {
+        let (sampler, wallpaper, capture, _) = make()
+        var now = 100.0
+        sampler.clock = { now }
+        wallpaper.show(SRGBColor(red: 0.1, green: 0.1, blue: 0.15), on: screen, name: "night")
+        #expect(sampler.sampleAge(for: key) == nil, "never sampled")
+        sampler.warm(key, rectOnScreen: bubble)
+        #expect(sampler.warmedKeys == [key])
+        #expect(sampler.trackedKeys.isEmpty, "warming is not the 2 Hz tracking")
+        #expect(await waitUntil { sampler.backdrop(for: key).source == .wallpaper })
+        #expect(sampler.sampleAge(for: key) == 0)
+        now = 103.5
+        #expect(sampler.sampleAge(for: key) == 3.5)
+        // The wallpaper refresh (60 s, space changes) resamples warmed keys; an unchanged sample still counts.
+        sampler.refreshWallpapers()
+        #expect(sampler.sampleAge(for: key) == 0)
+        wallpaper.show(SRGBColor(red: 0.95, green: 0.95, blue: 0.9), on: screen, name: "day")
+        wallpaper.onEnvironmentChange?()
+        #expect(await waitUntil { sampler.backdrop(for: key).tone == .light })
+        #expect(capture.captures.isEmpty)
+        sampler.warm(key, rectOnScreen: nil)
+        #expect(sampler.warmedKeys.isEmpty)
+        #expect(sampler.backdrop(for: key).tone == .light, "the last estimate is kept for the next bubble")
+    }
+
+    @Test("warm with the screen source: sampled once now; tracking a key samples it at arrival")
+    func warmScreenSource() async {
+        let (sampler, _, capture, _) = make(source: .screen)
+        capture.color = SRGBColor(red: 0.9, green: 0.9, blue: 0.9)
+        sampler.warm(key, rectOnScreen: bubble)
+        #expect(await waitUntil { sampler.backdrop(for: key).source == .screen && sampler.pendingCaptureCount == 0 })
+        #expect(capture.captures == [bubble])
+        // Arrival: tracking samples immediately (before the bubble slides in).
+        sampler.track(other, rectOnScreen: CGRect(x: 10, y: 10, width: 50, height: 50))
+        #expect(await waitUntil { capture.captures.count == 2 && sampler.pendingCaptureCount == 0 })
+        #expect(sampler.sampleAge(for: other) != nil)
+        // Warming a tracked key does not start a second capture.
+        sampler.warm(other, rectOnScreen: CGRect(x: 10, y: 10, width: 50, height: 50))
+        #expect(sampler.pendingCaptureCount == 0)
+        #expect(capture.captures.count == 2)
+    }
+
+    @Test("warmed keys are resampled at the idle cadence with the screen source; tracked keys at the fast one only")
+    func idleCadence() async {
+        let wallpaper = FakeWallpaper(screens: [screen])
+        let capture = FakeCapture()
+        let sampler = BackdropSampler(paths: PeekPaths(home: FileManager.default.temporaryDirectory), source: .screen,
+                                      wallpaper: wallpaper, capture: capture, appearance: FakeAppearance(),
+                                      refreshInterval: .seconds(86_400), sampleInterval: .seconds(86_400),
+                                      idleSampleInterval: .milliseconds(40))
+        sampler.warm(key, rectOnScreen: bubble)
+        #expect(await waitUntil { capture.captures.count >= 3 }, "the first sample, then the idle timer")
+        sampler.warm(key, rectOnScreen: nil)
+        #expect(await waitUntil { sampler.pendingCaptureCount == 0 })
+        let settled = capture.captures.count
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(capture.captures.count == settled, "no idle sampling once nothing is warmed")
+    }
+
     @Test("the tone keeps its hysteresis per bubble across samples")
     func hysteresisAcrossSamples() async {
         let (sampler, wallpaper, _, _) = make()

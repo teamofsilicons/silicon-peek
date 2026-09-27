@@ -83,9 +83,16 @@ public struct ChromeContent: Sendable, Equatable {
     public var notice: String?
     /// A short hint for a summoned bubble with nothing to show ("\ to talk · type to write").
     public var hint: String?
+    /// Sends of this Silicon waiting behind the bubble: the "+N" badge next to the down-arrow (0 = none).
+    public var waiting: Int
+    /// The ask is collapsed to the compact ask: the controls row is hidden, the question and `^` stay.
+    public var askCollapsed: Bool
+    /// "Esc again to dismiss" shows where the controls row was.
+    public var escHint: Bool
 
     public init(badge: Badge? = nil, elements: [Element] = [], question: String? = nil, controls: Controls? = nil,
-                input: Input = .none, notice: String? = nil, hint: String? = nil) {
+                input: Input = .none, notice: String? = nil, hint: String? = nil, waiting: Int = 0,
+                askCollapsed: Bool = false, escHint: Bool = false) {
         self.badge = badge
         self.elements = elements
         self.question = question
@@ -93,13 +100,24 @@ public struct ChromeContent: Sendable, Equatable {
         self.input = input
         self.notice = notice
         self.hint = hint
+        self.waiting = waiting
+        self.askCollapsed = askCollapsed
+        self.escHint = escHint
     }
 
     /// Nothing at all on the arc (the buttons still show).
     public var isEmpty: Bool {
         badge == nil && elements.isEmpty && question == nil && controls == nil && input == .none && notice == nil
-            && hint == nil
+            && hint == nil && !escHint
     }
+
+    /// The controls row as laid out: hidden on a compact ask.
+    var visibleControls: Controls? { askCollapsed ? nil : controls }
+
+    /// The text of the row's hint pill: "Esc again to dismiss" on a compact ask, else the summon hint.
+    public var hintText: String? { escHint ? Self.escAgainHint : hint }
+
+    public static let escAgainHint = "Esc again to dismiss"
 }
 
 /// Fixed sizes of the chrome (points).
@@ -163,6 +181,14 @@ public enum ChromeMetrics {
     public static let tooltipMaxWidth: CGFloat = 250
     public static let popupMaxWidth: CGFloat = 280
     public static let overlayPadding: CGFloat = 10
+
+    // The "+N" badge and the `^` expand button next to the down-arrow (peek 0.1.2).
+    /// Pushed outward in these steps (at most ``accessoryMaxPush``) until it clears the other buttons.
+    public static let accessoryPushStep: CGFloat = 2
+    public static let accessoryMaxPush: CGFloat = 12
+    /// Space kept between an accessory and a neighbouring button.
+    public static let accessoryClearance: CGFloat = 1
+    public static let waitingBadgeFont = ChromeFont(size: 11, weight: .semibold)
 }
 
 /// The computed chrome layout (panel-local, y-down).
@@ -323,6 +349,34 @@ public struct ChromeLayout: Sendable, Equatable {
         public var downRadius: CGFloat
         /// Rotation of a `chevron.down` glyph so it points toward the edge the bubble slides behind.
         public var downRotation: Double
+        /// The `^` that expands a compact ask (radius ``downRadius``); nil unless the ask is collapsed.
+        public var expand: CGPoint?
+        /// The "+N" badge's centre and size (an upright capsule); nil when nothing waits.
+        public var badge: CGPoint?
+        public var badgeSize: CGSize?
+
+        public init(mic: CGPoint, keyboard: CGPoint, down: CGPoint, radius: CGFloat, downRadius: CGFloat, downRotation: Double,
+                    expand: CGPoint? = nil, badge: CGPoint? = nil, badgeSize: CGSize? = nil) {
+            self.mic = mic
+            self.keyboard = keyboard
+            self.down = down
+            self.radius = radius
+            self.downRadius = downRadius
+            self.downRotation = downRotation
+            self.expand = expand
+            self.badge = badge
+            self.badgeSize = badgeSize
+        }
+
+        /// The badge's upright box.
+        public var badgeRect: CGRect? {
+            guard let badge, let badgeSize else { return nil }
+            return CGRect(x: badge.x - badgeSize.width / 2, y: badge.y - badgeSize.height / 2, width: badgeSize.width,
+                          height: badgeSize.height)
+        }
+
+        /// The `^` glyph points away from the edge the bubble hides behind (the down-arrow's opposite).
+        public var expandRotation: Double { downRotation }
     }
 
     public var mode: DisplayMode
@@ -388,6 +442,78 @@ public struct ChromeLayout: Sendable, Equatable {
         return Buttons(
             mic: aFirst ? a : b, keyboard: aFirst ? b : a, down: at(outward, distance), radius: radius,
             downRadius: (radius * 0.9).rounded(), downRotation: wrappedAngle(outward - .pi / 2))
+    }
+
+    /// The "+N" badge's size: a capsule `round(1.5 × downRadius)` tall, at least as wide as tall, fitting "+N".
+    static func waitingBadgeSize(_ waiting: Int, downRadius: CGFloat, measurer: any TextMeasuring) -> CGSize {
+        let height = (1.5 * downRadius).rounded()
+        let text = measurer.width(of: "+\(waiting)", font: ChromeMetrics.waitingBadgeFont)
+        return CGSize(width: max(height, (text + 0.75 * height).rounded(.up)), height: height)
+    }
+
+    /// Normal mode: `^` at the mid-angle between the down-arrow and the mic, the badge between the down-arrow and the
+    /// keyboard, both at the buttons' distance from the visual's centre; each is pushed outward in 2 pt steps (at most
+    /// 12 pt) while it would overlap another button. Near a tight panel edge (small visuals) it may also turn a few
+    /// degrees along its circle, and as a last resort it is moved inside the panel.
+    static func placeAccessories(_ buttons: inout Buttons, layout: SlotLayout, waiting: Int, collapsed: Bool,
+                                 measurer: any TextMeasuring) {
+        let c = layout.visualCenter
+        let panel = CGRect(origin: .zero, size: layout.panelSize).insetBy(dx: 1, dy: 1)
+        func polar(_ p: CGPoint) -> (angle: Double, distance: CGFloat) {
+            (atan2(Double(p.y - c.y), Double(p.x - c.x)), hypot(p.x - c.x, p.y - c.y))
+        }
+        func midAngle(_ a: Double, _ b: Double) -> Double { a + wrappedAngle(b - a) / 2 }
+        func at(_ angle: Double, _ d: CGFloat) -> CGPoint {
+            CGPoint(x: c.x + d * CGFloat(cos(angle)), y: c.y + d * CGFloat(sin(angle)))
+        }
+        let down = polar(buttons.down)
+        let distance = down.distance
+        let circles: [(CGPoint, CGFloat)] = [(buttons.mic, buttons.radius), (buttons.keyboard, buttons.radius),
+                                             (buttons.down, buttons.downRadius)]
+        func clear(_ rect: CGRect, round: Bool) -> Bool {
+            circles.allSatisfy { circle in
+                if round {
+                    let center = CGPoint(x: rect.midX, y: rect.midY)
+                    return hypot(circle.0.x - center.x, circle.0.y - center.y)
+                        >= circle.1 + rect.width / 2 + ChromeMetrics.accessoryClearance
+                }
+                let nearest = CGPoint(x: min(max(circle.0.x, rect.minX), rect.maxX), y: min(max(circle.0.y, rect.minY), rect.maxY))
+                return hypot(nearest.x - circle.0.x, nearest.y - circle.0.y) >= circle.1 + ChromeMetrics.accessoryClearance
+            }
+        }
+        /// The first position (outward push first, then small turns) clear of the buttons and inside the panel.
+        func place(size: CGSize, angle: Double, round: Bool) -> CGPoint {
+            func rect(_ center: CGPoint) -> CGRect {
+                CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
+            }
+            let turns = [0.0, 4, -4, 8, -8, 12, -12].map { $0 * .pi / 180 }
+            var firstClear: CGPoint?
+            for turn in turns {
+                var push: CGFloat = 0
+                while push <= ChromeMetrics.accessoryMaxPush {
+                    let point = at(angle + turn, distance + push)
+                    if clear(rect(point), round: round) {
+                        if panel.contains(rect(point)) { return point }
+                        if firstClear == nil { firstClear = point }
+                        break
+                    }
+                    push += ChromeMetrics.accessoryPushStep
+                }
+            }
+            let fallback = firstClear ?? at(angle, distance + ChromeMetrics.accessoryMaxPush)
+            let clamped = ChromeOverlay.clamp(rect(fallback), into: panel)
+            return CGPoint(x: clamped.midX, y: clamped.midY)
+        }
+        if collapsed {
+            let d = 2 * buttons.downRadius
+            buttons.expand = place(size: CGSize(width: d, height: d), angle: midAngle(down.angle, polar(buttons.mic).angle),
+                                   round: true)
+        }
+        if waiting > 0 {
+            let size = waitingBadgeSize(waiting, downRadius: buttons.downRadius, measurer: measurer)
+            buttons.badge = place(size: size, angle: midAngle(down.angle, polar(buttons.keyboard).angle), round: false)
+            buttons.badgeSize = size
+        }
     }
 }
 
@@ -623,7 +749,7 @@ extension ChromeContent {
         }
         fieldWidth = max(min(ChromeMetrics.fieldMinWidth, preferredFieldWidth), fieldWidth.rounded(.down))
         var trackRole: ChromeLayout.TrackRole?
-        switch (input, controls) {
+        switch (input, visibleControls) {
         case (.typing, _):
             if !omitField {
                 requests.append(RowRequest(kind: .field, sizing: .fixed(CGSize(width: fieldWidth, height: ChromeMetrics.fieldHeight)),
@@ -692,7 +818,7 @@ extension ChromeContent {
                         capToThird: true, fullText: hasCaption ? caption : nil))
                 }
             }
-            if elements.isEmpty, let hint {
+            if elements.isEmpty, let hint = hintText {
                 requests.append(RowRequest(kind: .hint, sizing: .singleLine(hint, .caption, height: ChromeMetrics.pillHeight,
                                                                             padding: ChromeMetrics.pillPadding),
                                            capToThird: false, fullText: hint))
@@ -764,7 +890,7 @@ struct ArcChromeBuilder {
     /// Typing (on any ask, or a message) and text asks show a field.
     var wantsField: Bool {
         if content.input == .typing { return true }
-        if content.input == .none, case .text? = content.controls { return true }
+        if content.input == .none, case .text? = content.visibleControls { return true }
         return false
     }
 
@@ -960,7 +1086,9 @@ struct ArcChromeBuilder {
             question = buildQuestion(text: band.text, isNotice: band.isNotice, inner: start)
         }
 
-        let buttons = ChromeLayout.cornerButtons(layout: layout, inwardAngle: arc.normalAngle)
+        var buttons = ChromeLayout.cornerButtons(layout: layout, inwardAngle: arc.normalAngle)
+        ChromeLayout.placeAccessories(&buttons, layout: layout, waiting: content.waiting,
+                                      collapsed: content.askCollapsed && content.question != nil, measurer: measurer)
         var hits: [HitShape] = items.map { .rect($0.frame) }
         if let track {
             let extra = trackRole == .waveform ? 0 : (ChromeMetrics.thumbSize - ChromeMetrics.trackThickness) / 2 + 4
@@ -975,6 +1103,7 @@ struct ArcChromeBuilder {
         hits.append(.circle(center: buttons.mic, radius: buttons.radius))
         hits.append(.circle(center: buttons.keyboard, radius: buttons.radius))
         hits.append(.circle(center: buttons.down, radius: buttons.downRadius))
+        if let expand = buttons.expand { hits.append(.circle(center: expand, radius: buttons.downRadius)) }
         return ChromeLayout(mode: .normal, items: items, track: track, trackRole: trackRole, question: question,
                             buttons: buttons, stripRect: nil, visualRect: layout.visualRect, hitShapes: hits, field: field,
                             panelSize: layout.panelSize)
@@ -1132,10 +1261,11 @@ struct StripChromeBuilder {
         let spacing = 2 * radius + 4
         let inward = layout.slot.side.inward
         let outward = atan2(-inward.dy, -inward.dx)
-        let buttons = ChromeLayout.Buttons(
+        var buttons = ChromeLayout.Buttons(
             mic: CGPoint(x: buttonX, y: cy - spacing), keyboard: CGPoint(x: buttonX, y: cy),
             down: CGPoint(x: buttonX, y: cy + spacing), radius: radius, downRadius: radius,
             downRotation: wrappedAngle(outward - .pi / 2))
+        placeCompactAccessories(&buttons, spacing: spacing)
         let x0 = line.start.x
         let x1 = buttonX - radius - line.gap
         let width = max(60, x1 - x0)
@@ -1197,8 +1327,57 @@ struct StripChromeBuilder {
         }
         if case .rect(let rect)? = question?.background { hits.append(.rect(rect)) }
         for point in [buttons.mic, buttons.keyboard, buttons.down] { hits.append(.circle(center: point, radius: radius)) }
+        if let expand = buttons.expand { hits.append(.circle(center: expand, radius: radius)) }
         return ChromeLayout(mode: .compact, items: items, track: track, trackRole: trackRole, question: question,
                             buttons: buttons, stripRect: strip, visualRect: layout.visualRect, hitShapes: hits,
                             panelSize: layout.panelSize)
+    }
+
+    /// Compact mode: `^` one button-spacing left of the down-arrow. The badge rides the down-arrow's rim, as close to its
+    /// top-trailing corner as the tight button column allows (the buttons are 4 pt apart and the panel ends 14 pt past
+    /// the column on the right-hand slots): the first of top-trailing, trailing, bottom-trailing and bottom where it stays
+    /// inside the panel, clear of the mic, keyboard and `^`, off the chevron (≥ 0.4 r from the down-arrow's centre) and
+    /// still on the rim; the least bad of them otherwise.
+    func placeCompactAccessories(_ buttons: inout ChromeLayout.Buttons, spacing: CGFloat) {
+        let r = buttons.downRadius
+        if content.askCollapsed, content.question != nil {
+            buttons.expand = CGPoint(x: buttons.down.x - spacing, y: buttons.down.y)
+        }
+        guard content.waiting > 0 else { return }
+        let size = ChromeLayout.waitingBadgeSize(content.waiting, downRadius: r, measurer: measurer)
+        let panel = CGRect(origin: .zero, size: layout.panelSize).insetBy(dx: 1, dy: 1)
+        let down = buttons.down
+        func distance(_ rect: CGRect, _ point: CGPoint) -> CGFloat {
+            let nearest = CGPoint(x: min(max(point.x, rect.minX), rect.maxX), y: min(max(point.y, rect.minY), rect.maxY))
+            return hypot(nearest.x - point.x, nearest.y - point.y)
+        }
+        var others: [(CGPoint, CGFloat)] = [(buttons.mic, buttons.radius), (buttons.keyboard, buttons.radius)]
+        if let expand = buttons.expand { others.append((expand, r)) }
+        var best: (score: CGFloat, rect: CGRect)?
+        // y-down: −45° is up and trailing.
+        for degrees in [-45.0, 0, 45, 90] {
+            let angle = degrees * .pi / 180
+            var step: CGFloat = -2
+            while step <= ChromeMetrics.accessoryMaxPush {
+                let d = r + step
+                let center = CGPoint(x: down.x + d * CGFloat(cos(angle)), y: down.y + d * CGFloat(sin(angle)))
+                let rect = ChromeOverlay.clamp(CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2,
+                                                      width: size.width, height: size.height), into: panel)
+                let clearOfButtons = others.allSatisfy { distance(rect, $0.0) >= $0.1 + ChromeMetrics.accessoryClearance }
+                let offChevron = distance(rect, down)
+                if clearOfButtons, offChevron >= 0.4 * r, offChevron < r {
+                    buttons.badge = CGPoint(x: rect.midX, y: rect.midY)
+                    buttons.badgeSize = size
+                    return
+                }
+                let score = (clearOfButtons ? 100 : 0) + min(offChevron, r)
+                if best == nil || score > best!.score { best = (score, rect) }
+                step += ChromeMetrics.accessoryPushStep
+            }
+        }
+        if let best {
+            buttons.badge = CGPoint(x: best.rect.midX, y: best.rect.midY)
+            buttons.badgeSize = size
+        }
     }
 }

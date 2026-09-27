@@ -23,6 +23,9 @@ path = "src/main.rs"
 silicon-peek-client = { workspace = true, features = ["runtime"] }
 clap.workspace = true
 hex.workspace = true
+# `--at` / `--expires-at` / `--tz`: the Mac's zone and the IANA database
+# (/usr/share/zoneinfo), with DST gaps and folds (contract §5.1).
+jiff = { version = "0.2.35", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true

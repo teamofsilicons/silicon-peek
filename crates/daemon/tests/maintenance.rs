@@ -337,6 +337,10 @@ async fn failed_verification_rejects_and_a_busy_ui_defers() {
         duration_ms: None,
         expires_in_s: None,
         wait: false,
+        expires_at: None,
+        due_at: None,
+        tz: None,
+        replace: false,
     };
     h.call(&home, &send, vec![]).await.unwrap();
     let _ = ui.expect("peek.show").await;
@@ -454,6 +458,10 @@ async fn a_homes_opt_out_covers_peekds_own_events_and_backend_calls() {
         duration_ms: None,
         expires_in_s: None,
         wait: false,
+        expires_at: None,
+        due_at: None,
+        tz: None,
+        replace: false,
     };
     h.register(&quiet, 1, &ui).await;
     h.call(&quiet, &show(), vec![]).await.unwrap();

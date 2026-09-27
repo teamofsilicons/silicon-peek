@@ -3,7 +3,7 @@
 #   1. scripts/build-cli-release.sh     six CLI targets
 #   2. scripts/build-mac-release.sh     universal peekd + Peek.app, signed inside-out, optional
 #                                       notarization, zip hygiene, round trip → dist/Peek.app.zip
-#   3. scripts/package-honeycomb.py     stage dist/stage (Manifest B) with every payload checked
+#   3. scripts/package-honeycomb.py     stage dist/stage (Manifest A) with every payload checked
 #   4. honeycomb validate → pack → validate the archive, then an archive/stage byte comparison
 #   5. scripts/loopback-install-test.py install the archive against a loopback fake API (§4.4 step 6)
 # Output: dist/peek-<version>.tar.gz (+ .sha256). Nothing is uploaded: publishing is the separate,

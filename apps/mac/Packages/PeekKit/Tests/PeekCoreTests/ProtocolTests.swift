@@ -84,10 +84,69 @@ struct ProtocolTests {
         #expect(try header(SettingsChangedRequest(key: .showTestPeeks, value: false))
             == ["v": 1, "id": "id-1", "op": "settings.changed", "key": "show_test_peeks", "value": false])
         #expect(try header(PresenceRequest(available: false, reason: .locked))
-            == ["v": 1, "id": "id-1", "op": "presence", "available": false, "reason": "locked"])
+            == ["v": 1, "id": "id-1", "op": "presence", "available": false, "reason": "locked", "paused": false])
         #expect(try header(PresenceRequest(available: false, reason: .displayOff))["reason"] == "display_off")
         #expect(try header(PresenceRequest.available) == ["v": 1, "id": "id-1", "op": "presence", "available": true,
-                                                          "reason": "ok"])
+                                                          "reason": "ok", "paused": false])
+        #expect(try header(PresenceRequest.available.with(paused: true))["paused"] == true)
+    }
+
+    @Test("peek 0.1.2 UI requests: shown, dismissed esc_double, presence paused")
+    func requests012() throws {
+        #expect(try header(ShownRequest(sendID: "snd_1")) == ["v": 1, "id": "id-1", "op": "shown", "send_id": "snd_1"])
+        #expect(ShownRequest.op == "shown")
+        #expect(try header(DismissedRequest(sendID: "s", gesture: .escDouble))["gesture"] == "esc_double")
+        #expect(try header(DismissedRequest(sendID: "s", gesture: .esc))["gesture"] == "esc")
+        #expect(DismissGesture.allCases.map(\.rawValue) == ["down_arrow", "down_arrow_double", "esc", "esc_double"])
+        #expect(try header(PresenceRequest(available: true, reason: .ok, paused: true))
+            == ["v": 1, "id": "id-1", "op": "presence", "available": true, "reason": "ok", "paused": true])
+    }
+
+    @Test("peek 0.1.2 events: queue.state, peek.show with expires_at/replaces/schedule_id (and without), peek.cancel replaced")
+    func events012() throws {
+        let queue = DaemonEvent(name: "queue.state", frame: try frame(
+            #"{"v":1,"event":"queue.state","slot":3,"context":"production","send_id":"snd_1","waiting":2}"#))
+        #expect(queue == .queueState(QueueStateEvent(slot: .right, context: .production, sendID: "snd_1", waiting: 2)))
+        #expect(queue.name == "queue.state")
+        let testing = DaemonEvent(name: "queue.state", frame: try frame(
+            #"{"v":1,"event":"queue.state","slot":8,"context":"3f2c","send_id":"snd_2","waiting":0}"#))
+        #expect(testing == .queueState(QueueStateEvent(slot: .topLeft, context: .testing(environmentID: "3f2c"), sendID: "snd_2",
+                                                       waiting: 0)))
+        if case .queueState(let e) = queue {
+            #expect(DaemonEvent(name: "queue.state", frame: try DaemonEvent.queueState(e).frame()) == queue, "round trip")
+        }
+        if case .malformed = DaemonEvent(name: "queue.state", frame: try frame(#"{"v":1,"event":"queue.state","slot":3}"#)) {
+        } else {
+            Issue.record("a queue.state without send_id must be malformed, never a crash")
+        }
+
+        let show = DaemonEvent(name: "peek.show", frame: try frame(#"""
+            {"v":1,"event":"peek.show","send_id":"snd_9","slot":5,"context":"production","show":{"elements":[{"type":"text","text":"Hi"}]},
+             "queued_behind":4,"expires_at":"2026-09-27T12:40:00.000Z","replaces":"snd_8","schedule_id":"sch_7"}
+            """#))
+        guard case .peekShow(let event) = show else {
+            Issue.record("expected peek.show, got \(show)")
+            return
+        }
+        #expect(event.queuedBehind == 4)
+        #expect(event.expiresAt == "2026-09-27T12:40:00.000Z")
+        #expect(event.replaces == "snd_8")
+        #expect(event.scheduleID == "sch_7")
+        #expect(DaemonEvent(name: "peek.show", frame: try DaemonEvent.peekShow(event).frame()) == show, "round trip")
+
+        let plain = DaemonEvent(name: "peek.show", frame: try frame(
+            #"{"v":1,"event":"peek.show","send_id":"snd_1","slot":1,"show":{"elements":[{"type":"text","text":"Hi"}]}}"#))
+        guard case .peekShow(let old) = plain else {
+            Issue.record("expected peek.show")
+            return
+        }
+        #expect(old.expiresAt == nil && old.replaces == nil && old.scheduleID == nil)
+        let reencoded = try DaemonEvent.peekShow(old).frame()
+        #expect(reencoded.fields["replaces"] == nil, "absent fields stay absent")
+
+        #expect(DaemonEvent(name: "peek.cancel", frame: try frame(#"{"v":1,"event":"peek.cancel","send_id":"s","reason":"replaced"}"#))
+            == .peekCancel(PeekCancelEvent(sendID: "s", reason: .replaced)))
+        #expect(PeekCancelReason.replaced.rawValue == "replaced")
     }
 
     @Test("ops are the §1.6 names")

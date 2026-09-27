@@ -1,4 +1,4 @@
-//! Ting payloads peek sends (BLUEPRINT §3.1–§3.5): the six `peek.*` data
+//! Ting payloads peek sends (BLUEPRINT §3.1–§3.5): the nine `peek.*` data
 //! schemas, the delivery request peekd posts to peek-server, and the exact
 //! Ting request bodies peek-server builds from it.
 //!
@@ -14,7 +14,7 @@ use crate::{
     APP_ID, VERSION,
     error::{Error, ErrorCode, Result},
     identity::{ActorId, DataContext, OrgId, SlotIndex},
-    ids::{AskId, EventId, MessageId, SendId, TingKeyEvent, ting_key},
+    ids::{AskId, EventId, MessageId, ScheduleId, SendId, TingKeyEvent, ting_key},
     schema::ask::{Answer, AskType},
     timestamp::Timestamp,
 };
@@ -43,7 +43,7 @@ impl<'de> Deserialize<'de> for SchemaV1 {
     }
 }
 
-/// The six Ting types peek defines.
+/// The nine Ting types peek defines.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TingType {
     /// A Carbon answered an ask.
@@ -64,17 +64,29 @@ pub enum TingType {
     /// A Carbon closed a `--show` early (opt-in).
     #[serde(rename = "peek.show.dismissed")]
     ShowDismissed,
+    /// A `--speak` or `--show` passed its deadline before it finished.
+    #[serde(rename = "peek.send.expired")]
+    SendExpired,
+    /// A scheduled send (`--in`/`--at`) came due.
+    #[serde(rename = "peek.schedule.due")]
+    ScheduleDue,
+    /// A send appeared on screen (scheduled sends always; opt-in otherwise).
+    #[serde(rename = "peek.send.shown")]
+    SendShown,
 }
 
 impl TingType {
     /// Every type, in registration order.
-    pub const ALL: [TingType; 6] = [
+    pub const ALL: [TingType; 9] = [
         TingType::AskAnswered,
         TingType::AskDismissed,
         TingType::AskExpired,
         TingType::MessageReceived,
         TingType::SpeechFinished,
         TingType::ShowDismissed,
+        TingType::SendExpired,
+        TingType::ScheduleDue,
+        TingType::SendShown,
     ];
 
     /// The Ting type name.
@@ -87,6 +99,9 @@ impl TingType {
             Self::MessageReceived => "peek.message.received",
             Self::SpeechFinished => "peek.speech.finished",
             Self::ShowDismissed => "peek.show.dismissed",
+            Self::SendExpired => "peek.send.expired",
+            Self::ScheduleDue => "peek.schedule.due",
+            Self::SendShown => "peek.send.shown",
         }
     }
 
@@ -118,6 +133,15 @@ impl TingType {
             }
             Self::SpeechFinished => "A peek --speak finished playing or was stopped by the Carbon.",
             Self::ShowDismissed => "A Carbon closed a peek --show before it retracted.",
+            Self::SendExpired => {
+                "A peek --speak or --show reached its --expires-in or --expires-at deadline before it finished; the data says whether it was shown."
+            }
+            Self::ScheduleDue => {
+                "A scheduled peek send (--in or --at) came due; the data says whether it was shown, queued, expired or replaced the active peek."
+            }
+            Self::SendShown => {
+                "A peek send appeared on screen for the Carbon (always for scheduled sends; opt-in with --notify shown)."
+            }
         }
     }
 
@@ -131,6 +155,9 @@ impl TingType {
             Self::MessageReceived => TingKeyEvent::Message,
             Self::SpeechFinished => TingKeyEvent::SpeechFinished,
             Self::ShowDismissed => TingKeyEvent::ShowDismissed,
+            Self::SendExpired => TingKeyEvent::SendExpired,
+            Self::ScheduleDue => TingKeyEvent::Due,
+            Self::SendShown => TingKeyEvent::Shown,
         }
     }
 }
@@ -167,6 +194,8 @@ pub enum Gesture {
     DownArrow,
     /// A double click on the down arrow (audio stops too).
     DownArrowDouble,
+    /// Two Escs within 0.4 s on a show or speak (audio stops too).
+    EscDouble,
 }
 
 /// `peek.ask.answered` data.
@@ -247,6 +276,10 @@ pub struct AskExpired {
     pub slot: SlotIndex,
     /// Production or testing.
     pub context: DataContext,
+    /// Whether it was ever on screen (additive: absent from peekd 0.1.1;
+    /// peekd 0.1.2 always sends it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown: Option<bool>,
 }
 
 /// `peek.message.received` data.
@@ -313,7 +346,133 @@ pub struct ShowDismissed {
     pub context: DataContext,
 }
 
-/// Any of the six payloads.
+/// The five send kinds a payload may name.
+pub const SEND_KINDS: [&str; 5] = ["speak", "show", "ask", "speak+show", "speak+ask"];
+
+/// `peek.send.expired` data: a speak/show send (never an ask) passed its
+/// deadline.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SendExpired {
+    /// Always 1.
+    pub schema: SchemaV1,
+    /// The send.
+    pub send_id: SendId,
+    /// `speak`, `show` or `speak+show`.
+    pub kind: String,
+    /// When `peek send` ran.
+    pub created_at: Timestamp,
+    /// The deadline the Silicon set.
+    pub expires_at: Timestamp,
+    /// When peekd expired it (at or after `expires_at`; later after sleep).
+    pub expired_at: Timestamp,
+    /// Whether it was ever on screen.
+    pub shown: bool,
+    /// When it appeared; null exactly when it was never shown.
+    pub shown_at: Option<Timestamp>,
+    /// Whether it came from `--in`/`--at`.
+    pub scheduled: bool,
+    /// The scheduled send; null exactly when it was not scheduled.
+    pub schedule_id: Option<ScheduleId>,
+    /// The slot.
+    pub slot: SlotIndex,
+    /// Production or testing.
+    pub context: DataContext,
+}
+
+/// What happened when a scheduled send came due.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DueOutcome {
+    /// It became the active bubble and was handed to Peek.app.
+    Shown,
+    /// It waits (behind others, for room, or while the Carbon is away).
+    Queued,
+    /// Its `--expires-at` had passed; it was never shown.
+    Expired,
+    /// Its `--replace` took over the active peek.
+    Replaced,
+}
+
+/// Why a due scheduled send is not on screen yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitingReason {
+    /// Other sends of this Silicon are ahead of it.
+    BehindOthers,
+    /// Five sends already wait; it takes the next free spot.
+    QueueFull,
+    /// The Carbon's screen is locked or asleep.
+    CarbonAway,
+    /// The Carbon paused Peek.
+    Paused,
+    /// Peek.app is not running.
+    AppNotRunning,
+}
+
+/// `peek.schedule.due` data: sent once, when peekd fires the scheduled send
+/// (at its due time, or on catch-up after sleep or downtime).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleDue {
+    /// Always 1.
+    pub schema: SchemaV1,
+    /// The scheduled send.
+    pub schedule_id: ScheduleId,
+    /// The send it became.
+    pub send_id: SendId,
+    /// Its ask.
+    pub ask_id: Option<AskId>,
+    /// `speak`, `show`, `ask`, `speak+show` or `speak+ask`.
+    pub kind: String,
+    /// When it was due.
+    pub due_at: Timestamp,
+    /// When peekd fired it (at or after `due_at`).
+    pub fired_at: Timestamp,
+    /// What happened.
+    pub outcome: DueOutcome,
+    /// The send it replaced; set exactly when `outcome` is `replaced`.
+    pub replaced_send_id: Option<SendId>,
+    /// Why it waits; set when `outcome` is `queued` (or `replaced` but held).
+    pub waiting_reason: Option<WaitingReason>,
+    /// Set exactly when `outcome` is `queued`: 0 = current but held, 1–5
+    /// waiting, 6 and up waiting for room.
+    pub queue_position: Option<u32>,
+    /// Its deadline.
+    pub expires_at: Option<Timestamp>,
+    /// The slot.
+    pub slot: SlotIndex,
+    /// Production or testing.
+    pub context: DataContext,
+}
+
+/// `peek.send.shown` data: the send began to appear on screen.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SendShown {
+    /// Always 1.
+    pub schema: SchemaV1,
+    /// The send.
+    pub send_id: SendId,
+    /// Its ask.
+    pub ask_id: Option<AskId>,
+    /// `speak`, `show`, `ask`, `speak+show` or `speak+ask`.
+    pub kind: String,
+    /// When `peek send` ran.
+    pub created_at: Timestamp,
+    /// When it appeared.
+    pub shown_at: Timestamp,
+    /// Whether it came from `--in`/`--at`.
+    pub scheduled: bool,
+    /// The scheduled send; null exactly when it was not scheduled.
+    pub schedule_id: Option<ScheduleId>,
+    /// The slot.
+    pub slot: SlotIndex,
+    /// Production or testing.
+    pub context: DataContext,
+}
+
+/// Any of the nine payloads.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum TingData {
@@ -329,6 +488,12 @@ pub enum TingData {
     SpeechFinished(SpeechFinished),
     /// `peek.show.dismissed`.
     ShowDismissed(ShowDismissed),
+    /// `peek.send.expired`.
+    SendExpired(SendExpired),
+    /// `peek.schedule.due`.
+    ScheduleDue(ScheduleDue),
+    /// `peek.send.shown`.
+    SendShown(SendShown),
 }
 
 impl TingData {
@@ -342,10 +507,14 @@ impl TingData {
             Self::MessageReceived(_) => TingType::MessageReceived,
             Self::SpeechFinished(_) => TingType::SpeechFinished,
             Self::ShowDismissed(_) => TingType::ShowDismissed,
+            Self::SendExpired(_) => TingType::SendExpired,
+            Self::ScheduleDue(_) => TingType::ScheduleDue,
+            Self::SendShown(_) => TingType::SendShown,
         }
     }
 
-    /// The ID the Ting key is built from: the ask, message or send.
+    /// The ID the Ting key is built from: the ask, message, send or
+    /// scheduled send.
     #[must_use]
     pub fn subject_id(&self) -> &str {
         match self {
@@ -355,6 +524,9 @@ impl TingData {
             Self::MessageReceived(d) => d.message_id.as_str(),
             Self::SpeechFinished(d) => d.send_id.as_str(),
             Self::ShowDismissed(d) => d.send_id.as_str(),
+            Self::SendExpired(d) => d.send_id.as_str(),
+            Self::ScheduleDue(d) => d.schedule_id.as_str(),
+            Self::SendShown(d) => d.send_id.as_str(),
         }
     }
 
@@ -381,11 +553,15 @@ impl TingData {
             TingType::ShowDismissed => {
                 Self::ShowDismissed(serde_json::from_value(data).map_err(bad)?)
             }
+            TingType::SendExpired => Self::SendExpired(serde_json::from_value(data).map_err(bad)?),
+            TingType::ScheduleDue => Self::ScheduleDue(serde_json::from_value(data).map_err(bad)?),
+            TingType::SendShown => Self::SendShown(serde_json::from_value(data).map_err(bad)?),
         })
     }
 
     /// Semantic checks serde cannot express (transcript only for voice,
-    /// non-empty texts, answer kind matching `ask_type`).
+    /// non-empty texts, answer kind matching `ask_type`, the nullable fields
+    /// of the 0.1.2 types agreeing with their flags and outcome).
     ///
     /// # Errors
     /// `invalid_input`.
@@ -415,12 +591,90 @@ impl TingData {
                     ));
                 }
             }
+            Self::SendExpired(d) => {
+                if !matches!(d.kind.as_str(), "speak" | "show" | "speak+show") {
+                    return Err(Error::invalid_input(format!(
+                        "peek.send.expired kind `{}` must be speak, show or speak+show (asks send peek.ask.expired)",
+                        d.kind
+                    )));
+                }
+                if d.shown != d.shown_at.is_some() {
+                    return Err(Error::invalid_input(
+                        "peek.send.expired shown_at must be set exactly when shown is true",
+                    ));
+                }
+                if d.scheduled != d.schedule_id.is_some() {
+                    return Err(Error::invalid_input(
+                        "peek.send.expired schedule_id must be set exactly when scheduled is true",
+                    ));
+                }
+                if d.expired_at < d.created_at {
+                    return Err(Error::invalid_input(
+                        "peek.send.expired expired_at is before created_at",
+                    ));
+                }
+            }
+            Self::ScheduleDue(d) => {
+                check_kind("peek.schedule.due", &d.kind)?;
+                if d.replaced_send_id.is_some() != (d.outcome == DueOutcome::Replaced) {
+                    return Err(Error::invalid_input(
+                        "peek.schedule.due replaced_send_id must be set exactly when outcome is replaced",
+                    ));
+                }
+                if d.queue_position.is_some() != (d.outcome == DueOutcome::Queued) {
+                    return Err(Error::invalid_input(
+                        "peek.schedule.due queue_position must be set exactly when outcome is queued",
+                    ));
+                }
+                match d.outcome {
+                    DueOutcome::Shown | DueOutcome::Expired if d.waiting_reason.is_some() => {
+                        return Err(Error::invalid_input(
+                            "peek.schedule.due waiting_reason must be null when outcome is shown or expired",
+                        ));
+                    }
+                    DueOutcome::Queued if d.waiting_reason.is_none() => {
+                        return Err(Error::invalid_input(
+                            "peek.schedule.due waiting_reason must be set when outcome is queued",
+                        ));
+                    }
+                    _ => {}
+                }
+                if d.fired_at < d.due_at {
+                    return Err(Error::invalid_input(
+                        "peek.schedule.due fired_at is before due_at",
+                    ));
+                }
+            }
+            Self::SendShown(d) => {
+                check_kind("peek.send.shown", &d.kind)?;
+                if d.scheduled != d.schedule_id.is_some() {
+                    return Err(Error::invalid_input(
+                        "peek.send.shown schedule_id must be set exactly when scheduled is true",
+                    ));
+                }
+                if d.shown_at < d.created_at {
+                    return Err(Error::invalid_input(
+                        "peek.send.shown shown_at is before created_at",
+                    ));
+                }
+            }
             Self::AskDismissed(_)
             | Self::AskExpired(_)
             | Self::SpeechFinished(_)
             | Self::ShowDismissed(_) => {}
         }
         Ok(())
+    }
+}
+
+fn check_kind(ting: &str, kind: &str) -> Result<()> {
+    if SEND_KINDS.contains(&kind) {
+        Ok(())
+    } else {
+        Err(Error::invalid_input(format!(
+            "{ting} kind `{kind}` must be one of {}",
+            SEND_KINDS.join(", ")
+        )))
     }
 }
 
@@ -774,8 +1028,341 @@ mod tests {
         for t in TingType::ALL {
             assert_eq!(TingType::parse(t.as_str())?, t);
             assert!(t.description().ends_with('.'));
+            assert!(t.description().is_ascii(), "{}", t.as_str());
+            let v = serde_json::to_value(t).map_err(|e| Error::internal(e.to_string()))?;
+            assert_eq!(v, json!(t.as_str()));
         }
         assert!(TingType::parse("peek.other").is_err());
+        assert_eq!(
+            TingType::ALL.map(TingType::as_str),
+            [
+                "peek.ask.answered",
+                "peek.ask.dismissed",
+                "peek.ask.expired",
+                "peek.message.received",
+                "peek.speech.finished",
+                "peek.show.dismissed",
+                "peek.send.expired",
+                "peek.schedule.due",
+                "peek.send.shown",
+            ]
+        );
+        // Descriptions are byte-identical in every context (registered once).
+        assert_eq!(
+            TingType::SendExpired.description(),
+            "A peek --speak or --show reached its --expires-in or --expires-at deadline before it finished; the data says whether it was shown."
+        );
+        assert_eq!(
+            TingType::ScheduleDue.description(),
+            "A scheduled peek send (--in or --at) came due; the data says whether it was shown, queued, expired or replaced the active peek."
+        );
+        assert_eq!(
+            TingType::SendShown.description(),
+            "A peek send appeared on screen for the Carbon (always for scheduled sends; opt-in with --notify shown)."
+        );
+        assert_eq!(
+            TingType::AskExpired.description(),
+            "A peek --ask reached its --expires-in deadline unanswered.",
+            "unchanged: re-registering a changed text breaks existing environments"
+        );
+        assert_eq!(TingType::SendExpired.key_event(), TingKeyEvent::SendExpired);
+        assert_eq!(TingType::ScheduleDue.key_event(), TingKeyEvent::Due);
+        assert_eq!(TingType::SendShown.key_event(), TingKeyEvent::Shown);
+        Ok(())
+    }
+
+    fn ts(s: &str) -> Result<Timestamp> {
+        Timestamp::parse(s)
+    }
+
+    fn send_expired() -> Result<SendExpired> {
+        Ok(SendExpired {
+            schema: SchemaV1,
+            send_id: SendId::generate(),
+            kind: "speak+show".into(),
+            created_at: ts("2026-09-27T12:00:00Z")?,
+            expires_at: ts("2026-09-27T12:10:00Z")?,
+            expired_at: ts("2026-09-27T12:10:00.020Z")?,
+            shown: false,
+            shown_at: None,
+            scheduled: false,
+            schedule_id: None,
+            slot: SlotIndex::new(3)?,
+            context: DataContext::Production,
+        })
+    }
+
+    fn schedule_due() -> Result<ScheduleDue> {
+        Ok(ScheduleDue {
+            schema: SchemaV1,
+            schedule_id: ScheduleId::generate(),
+            send_id: SendId::generate(),
+            ask_id: None,
+            kind: "show".into(),
+            due_at: ts("2026-09-27T12:30:00Z")?,
+            fired_at: ts("2026-09-27T12:30:00.012Z")?,
+            outcome: DueOutcome::Queued,
+            replaced_send_id: None,
+            waiting_reason: Some(WaitingReason::BehindOthers),
+            queue_position: Some(2),
+            expires_at: None,
+            slot: SlotIndex::new(3)?,
+            context: DataContext::Production,
+        })
+    }
+
+    fn send_shown() -> Result<SendShown> {
+        Ok(SendShown {
+            schema: SchemaV1,
+            send_id: SendId::generate(),
+            ask_id: Some(AskId::generate()),
+            kind: "speak+ask".into(),
+            created_at: ts("2026-09-27T12:00:00Z")?,
+            shown_at: ts("2026-09-27T12:30:00.300Z")?,
+            scheduled: true,
+            schedule_id: Some(ScheduleId::generate()),
+            slot: SlotIndex::new(3)?,
+            context: DataContext::Testing,
+        })
+    }
+
+    fn to_v<T: Serialize>(t: &T) -> Result<Value> {
+        serde_json::to_value(t).map_err(|e| Error::internal(e.to_string()))
+    }
+
+    #[test]
+    fn new_types_are_strict() -> Result<()> {
+        let cases = [
+            (TingType::SendExpired, to_v(&send_expired()?)?),
+            (TingType::ScheduleDue, to_v(&schedule_due()?)?),
+            (TingType::SendShown, to_v(&send_shown()?)?),
+        ];
+        for (t, v) in cases {
+            let parsed = TingData::from_value(t, v.clone())?;
+            parsed.validate()?;
+            assert_eq!(parsed.ting_type(), t);
+            assert_eq!(to_v(&parsed)?, v, "{}", t.as_str());
+            let mut extra = v.clone();
+            extra["extra"] = json!(1);
+            assert!(
+                TingData::from_value(t, extra).is_err(),
+                "{}: unknown field",
+                t.as_str()
+            );
+            let mut schema2 = v.clone();
+            schema2["schema"] = json!(2);
+            assert!(
+                TingData::from_value(t, schema2).is_err(),
+                "{}: schema 2",
+                t.as_str()
+            );
+            let mut slot9 = v.clone();
+            slot9["slot"] = json!(9);
+            assert!(
+                TingData::from_value(t, slot9).is_err(),
+                "{}: slot 9",
+                t.as_str()
+            );
+            let mut missing = v.clone();
+            if let Some(o) = missing.as_object_mut() {
+                o.remove("context");
+            }
+            assert!(
+                TingData::from_value(t, missing).is_err(),
+                "{}: context required",
+                t.as_str()
+            );
+        }
+        // Nullable fields are always present on the wire.
+        let v = to_v(&send_expired()?)?;
+        assert!(v["shown_at"].is_null() && v["schedule_id"].is_null());
+        let v = to_v(&schedule_due()?)?;
+        assert_eq!(v["outcome"], "queued");
+        assert_eq!(v["waiting_reason"], "behind_others");
+        assert!(
+            v["replaced_send_id"].is_null() && v["expires_at"].is_null() && v["ask_id"].is_null()
+        );
+        assert_eq!(v["fired_at"], "2026-09-27T12:30:00.012Z");
+        Ok(())
+    }
+
+    #[test]
+    fn new_types_semantic_checks() -> Result<()> {
+        let bad = |d: TingData| d.validate().is_err();
+        // peek.send.expired
+        let mut d = send_expired()?;
+        d.kind = "ask".into();
+        assert!(bad(TingData::SendExpired(d)));
+        for kind in ["speak", "show", "speak+show"] {
+            let mut d = send_expired()?;
+            d.kind = kind.into();
+            assert!(!bad(TingData::SendExpired(d)), "{kind}");
+        }
+        let mut d = send_expired()?;
+        d.shown = true;
+        assert!(
+            bad(TingData::SendExpired(d.clone())),
+            "shown without shown_at"
+        );
+        d.shown_at = Some(ts("2026-09-27T12:00:01Z")?);
+        assert!(!bad(TingData::SendExpired(d.clone())));
+        d.shown = false;
+        assert!(bad(TingData::SendExpired(d)), "shown_at without shown");
+        let mut d = send_expired()?;
+        d.scheduled = true;
+        assert!(bad(TingData::SendExpired(d.clone())));
+        d.schedule_id = Some(ScheduleId::generate());
+        assert!(!bad(TingData::SendExpired(d.clone())));
+        d.scheduled = false;
+        assert!(bad(TingData::SendExpired(d)));
+        let mut d = send_expired()?;
+        d.expired_at = ts("2026-09-27T11:59:59Z")?;
+        assert!(bad(TingData::SendExpired(d)));
+        // peek.schedule.due
+        let mut d = schedule_due()?;
+        d.kind = "speak+show+ask".into();
+        assert!(bad(TingData::ScheduleDue(d)));
+        let mut d = schedule_due()?;
+        d.outcome = DueOutcome::Replaced;
+        assert!(
+            bad(TingData::ScheduleDue(d.clone())),
+            "replaced needs replaced_send_id"
+        );
+        d.replaced_send_id = Some(SendId::generate());
+        d.queue_position = None;
+        assert!(
+            !bad(TingData::ScheduleDue(d.clone())),
+            "replaced but held keeps a waiting_reason"
+        );
+        d.waiting_reason = None;
+        assert!(!bad(TingData::ScheduleDue(d.clone())));
+        d.outcome = DueOutcome::Shown;
+        assert!(
+            bad(TingData::ScheduleDue(d.clone())),
+            "replaced_send_id only with replaced"
+        );
+        d.replaced_send_id = None;
+        assert!(!bad(TingData::ScheduleDue(d.clone())));
+        d.waiting_reason = Some(WaitingReason::Paused);
+        assert!(
+            bad(TingData::ScheduleDue(d.clone())),
+            "shown has no waiting_reason"
+        );
+        d.waiting_reason = None;
+        d.queue_position = Some(0);
+        assert!(
+            bad(TingData::ScheduleDue(d.clone())),
+            "queue_position only with queued"
+        );
+        d.queue_position = None;
+        d.outcome = DueOutcome::Expired;
+        assert!(!bad(TingData::ScheduleDue(d.clone())));
+        d.waiting_reason = Some(WaitingReason::CarbonAway);
+        assert!(
+            bad(TingData::ScheduleDue(d.clone())),
+            "expired has no waiting_reason"
+        );
+        let mut d = schedule_due()?;
+        d.waiting_reason = None;
+        assert!(
+            bad(TingData::ScheduleDue(d.clone())),
+            "queued needs a waiting_reason"
+        );
+        d.waiting_reason = Some(WaitingReason::QueueFull);
+        d.queue_position = None;
+        assert!(bad(TingData::ScheduleDue(d)), "queued needs queue_position");
+        let mut d = schedule_due()?;
+        d.fired_at = ts("2026-09-27T12:29:59Z")?;
+        assert!(bad(TingData::ScheduleDue(d)));
+        // peek.send.shown
+        let mut d = send_shown()?;
+        d.schedule_id = None;
+        assert!(bad(TingData::SendShown(d.clone())));
+        d.scheduled = false;
+        assert!(!bad(TingData::SendShown(d.clone())));
+        d.shown_at = ts("2026-09-27T11:00:00Z")?;
+        assert!(bad(TingData::SendShown(d)));
+        let mut d = send_shown()?;
+        d.kind = "speaking".into();
+        assert!(bad(TingData::SendShown(d)));
+        Ok(())
+    }
+
+    #[test]
+    fn new_types_deliver_with_their_keys() -> Result<()> {
+        let actor = ActorId::parse("si:cleanup")?;
+        let org = OrgId::parse("tos")?;
+        let expired = send_expired()?;
+        let due = schedule_due()?;
+        let shown = send_shown()?;
+        let cases = [
+            (
+                TingData::SendExpired(expired.clone()),
+                format!("si:cleanup/{}/send_expired", expired.send_id),
+                "peek.send.expired",
+            ),
+            (
+                TingData::ScheduleDue(due.clone()),
+                format!("si:cleanup/{}/due", due.schedule_id),
+                "peek.schedule.due",
+            ),
+            (
+                TingData::SendShown(shown.clone()),
+                format!("si:cleanup/{}/shown", shown.send_id),
+                "peek.send.shown",
+            ),
+        ];
+        for (data, key, name) in cases {
+            let req = DeliveryRequest::new(&actor, &data, TingMetadata::new(None))?;
+            assert_eq!(req.key, key);
+            let bytes = req.to_bytes()?;
+            let parsed: DeliveryRequest = crate::json::from_slice(&bytes, "delivery")?;
+            assert_eq!(parsed.validate_for(&actor)?, data);
+            let body = String::from_utf8(ting_send_body(&org, &actor, &parsed)?)
+                .map_err(|e| Error::internal(e.to_string()))?;
+            assert!(body.starts_with(&format!(
+                r#"{{"org_id":"tos","type":"{name}","for":"si:cleanup","key":"{key}""#
+            )));
+            let mut wrong = parsed.clone();
+            wrong.key = format!("si:other/{}", key.split_once('/').map_or("", |k| k.1));
+            assert!(wrong.validate_for(&actor).is_err());
+        }
+        // A delivery with invalid semantics is refused at construction.
+        let mut e = send_expired()?;
+        e.shown = true;
+        assert!(
+            DeliveryRequest::new(&actor, &TingData::SendExpired(e), TingMetadata::new(None))
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ask_expired_with_and_without_shown_and_esc_double() -> Result<()> {
+        let base = json!({"schema":1,"ask_id":AskId::generate(),"send_id":SendId::generate(),"question":"q",
+            "ask_type":"text","asked_at":"2026-09-26T10:00:00.000Z","expired_at":"2026-09-26T10:01:00.000Z",
+            "slot":2,"context":"production"});
+        let old = TingData::from_value(TingType::AskExpired, base.clone())?;
+        let TingData::AskExpired(old) = old else {
+            return Err(Error::internal("wrong variant"));
+        };
+        assert_eq!(old.shown, None);
+        assert!(to_v(&old)?.get("shown").is_none(), "absent stays absent");
+        let mut with = base;
+        with["shown"] = json!(false);
+        let new = TingData::from_value(TingType::AskExpired, with.clone())?;
+        assert_eq!(to_v(&new)?, with);
+        let esc = json!({"schema":1,"send_id":SendId::generate(),"gesture":"esc_double","visible_ms":900,
+            "dismissed_at":"2026-09-26T10:00:00Z","slot":2,"context":"production"});
+        let d = TingData::from_value(TingType::ShowDismissed, esc)?;
+        let TingData::ShowDismissed(d) = d else {
+            return Err(Error::internal("wrong variant"));
+        };
+        assert_eq!(d.gesture, Gesture::EscDouble);
+        let dismissed = json!({"schema":1,"ask_id":AskId::generate(),"send_id":SendId::generate(),"question":"q",
+            "ask_type":"text","gesture":"esc_double","asked_at":"2026-09-26T10:00:00Z",
+            "dismissed_at":"2026-09-26T10:01:00Z","slot":2,"context":"production"});
+        assert!(TingData::from_value(TingType::AskDismissed, dismissed).is_ok());
         Ok(())
     }
 }

@@ -11,6 +11,8 @@ import importlib.util
 import io
 import json
 import os
+import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -115,12 +117,64 @@ class VersionTests(Workspace):
                 else:
                     os.environ[key] = value
 
-    def test_real_manifest_is_manifest_b(self) -> None:
+    def test_real_manifest_is_manifest_a(self) -> None:
         text = (REPO / "honeycomb.yaml").read_text()
-        self.assertNotIn("install_script", text.split("\n", 1)[1])
         for platform, target in pkg.TARGETS.items():
             self.assertIn(f'root: "targets/{platform}"', text)
             self.assertIn(f'cli: "{target.executable}"', text)
+            line = next(l for l in text.splitlines() if l.strip().startswith(f"{platform}:"))
+            if platform.startswith("macos-"):
+                self.assertIn('install_script: "install-app.sh"', line, platform)
+            else:
+                self.assertNotIn("install_script", line, platform)
+        self.assertEqual(
+            pkg.manifest_install_scripts(text),
+            {p: ("install-app.sh" if p.startswith("macos-") else None) for p in pkg.TARGETS},
+        )
+        pkg.check_manifest_a(text)
+
+    def _manifest(self, text: str) -> None:
+        (self.root / "honeycomb.yaml").write_text(text)
+
+    def test_install_script_off_macos_is_refused(self) -> None:
+        text = (self.root / "honeycomb.yaml").read_text()
+        self._manifest(
+            text.replace(
+                'executables: { cli: "bin/peek" } }\n  linux-aarch64',
+                'executables: { cli: "bin/peek" }, install_script: "install-app.sh" }\n  linux-aarch64',
+                1,
+            )
+        )
+        with self.assertRaisesRegex(pkg.PackagingError, "Manifest A"):
+            pkg.repo_versions(self.root)
+
+    def test_install_script_missing_on_one_macos_target_is_refused(self) -> None:
+        text = (self.root / "honeycomb.yaml").read_text()
+        lines = [
+            l.replace(', install_script: "install-app.sh"', "") if l.strip().startswith("macos-x86_64:") else l
+            for l in text.splitlines()
+        ]
+        self._manifest("\n".join(lines) + "\n")
+        with self.assertRaisesRegex(pkg.PackagingError, r"targets\.macos-x86_64 install_script is None; Manifest A"):
+            pkg.repo_versions(self.root)
+
+    def test_other_hooks_and_block_style_are_checked(self) -> None:
+        text = (self.root / "honeycomb.yaml").read_text()
+        self._manifest(text.replace('install_script: "install-app.sh" }', 'install_script: "other.sh" }', 1))
+        with self.assertRaisesRegex(pkg.PackagingError, "Manifest A"):
+            pkg.repo_versions(self.root)
+        block = (
+            "targets:\n"
+            "  macos-aarch64:\n    root: targets/macos-aarch64\n    install_script: install-app.sh # hook\n"
+            "  macos-x86_64:\n    root: targets/macos-x86_64\n    install_script: 'install-app.sh'\n"
+            "  linux-x86_64:\n    root: targets/linux-x86_64\n"
+            "  linux-aarch64:\n    root: targets/linux-aarch64\n"
+            "  windows-x86_64:\n    root: targets/windows-x86_64\n"
+            "  windows-aarch64:\n    root: targets/windows-aarch64\n"
+        )
+        pkg.check_manifest_a(block)
+        with self.assertRaises(pkg.PackagingError):
+            pkg.check_manifest_a(block + "install_script: install-app.sh\n")
 
 
 class BinaryTests(Workspace):
@@ -467,6 +521,28 @@ class ShellSyntaxTests(unittest.TestCase):
         self.assertEqual(executed.returncode, 2)
 
 
+class TingTypeRegistrationTests(unittest.TestCase):
+    """bootstrap.sh and deploy/README.md register exactly the client crate's nine types, byte for byte."""
+
+    def test_descriptions_match_the_client_crate(self) -> None:
+        bootstrap = (REPO / "scripts/testing/bootstrap.sh").read_text()
+        block = bootstrap.split("TING_TYPES=(", 1)[1].split("\n)", 1)[0]
+        entries = re.findall(r'^\s*"([a-z.]+)\|([^"]+)"$', block, re.MULTILINE)
+        self.assertEqual(len(entries), 9, entries)
+        ting_rs = (REPO / "crates/client/src/ting.rs").read_text()
+        readme = (REPO / "deploy/README.md").read_text()
+        for name, description in entries:
+            self.assertIn(f'"{name}"', ting_rs, name)
+            self.assertIn(f'"{description}"', ting_rs, f"{name}: description differs from TingType::description")
+            self.assertIn(
+                f"--type '{name}'", readme, f"deploy/README.md does not register {name}"
+            )
+            self.assertIn(f"--description '{description}'", readme, name)
+        self.assertEqual(
+            [n for n, _ in entries][-3:], ["peek.send.expired", "peek.schedule.due", "peek.send.shown"]
+        )
+
+
 class InstallAppScriptTests(unittest.TestCase):
     """install-app.sh always exits 0 and degrades clearly (hermetic: scratch dirs, no launch)."""
 
@@ -496,6 +572,65 @@ class InstallAppScriptTests(unittest.TestCase):
         self.assertFalse((scratch / "Applications" / "Peek.app").exists())
         status = (scratch / "Support" / "install-status.txt").read_text()
         self.assertIn("degraded\tpayload", status)
+
+    def _installed(self, scratch: Path) -> tuple[Path, dict[str, str]]:
+        package = scratch / "pkg"
+        package.mkdir()
+        shutil.copyfile(REPO / "scripts/install-app.sh", package / "install-app.sh")
+        (package / "Peek.app.zip").write_bytes(b"not needed: Peek.app is already installed")
+        (package / "Peek.app.info").write_text(
+            "bundle_id=ai.tos.peek.dev\nbundle_version=1002\nshort_version=0.1.2\nteam_id=\n"
+            f"zip_sha256={'1' * 64}\nminimum_system_version=26.0\n"
+        )
+        app = scratch / "Applications" / "Peek.app" / "Contents"
+        app.mkdir(parents=True)
+        (app / "Info.plist").write_bytes(
+            plistlib.dumps({"CFBundleVersion": "1001", "CFBundleIdentifier": "ai.tos.peek.dev"})
+        )
+        env = {
+            "PEEK_INSTALL_APPLICATIONS_DIR": str(scratch / "Applications"),
+            "PEEK_INSTALL_SUPPORT_DIR": str(scratch / "Support"),
+            "HOME": str(scratch),
+        }
+        return package, env
+
+    @unittest.skipUnless(sys.platform == "darwin", "install-app.sh targets macOS")
+    def test_an_installed_app_is_kept_and_offered_the_build(self) -> None:
+        scratch = Path(tempfile.mkdtemp(prefix="peek-install-app-test-"))
+        self.addCleanup(shutil.rmtree, scratch, True)
+        package, env = self._installed(scratch)
+        env["PEEK_INSTALL_NO_LAUNCH"] = "1"
+        result = subprocess.run(
+            ["/bin/sh", str(package / "install-app.sh")],
+            env=env, capture_output=True, text=True, timeout=60, check=False,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("[ok] offer", result.stderr)
+        self.assertIn("[skip] install: Peek.app build 1001 is already at", result.stderr)
+        self.assertIn("[skip] launch: PEEK_INSTALL_NO_LAUNCH=1", result.stderr)
+        self.assertEqual(
+            (scratch / "Applications" / "Peek.app" / "Contents" / "Info.plist").read_bytes(),
+            plistlib.dumps({"CFBundleVersion": "1001", "CFBundleIdentifier": "ai.tos.peek.dev"}),
+            "an existing Peek.app is never replaced",
+        )
+
+    @unittest.skipUnless(
+        sys.platform == "darwin"
+        and subprocess.run(["/bin/launchctl", "managername"], capture_output=True, text=True).stdout.strip() != "Aqua",
+        "needs a process tree without an Aqua session (SSH or CI); here launching would open an app",
+    )
+    def test_an_installed_app_without_aqua_degrades_the_launch(self) -> None:
+        scratch = Path(tempfile.mkdtemp(prefix="peek-install-app-test-"))
+        self.addCleanup(shutil.rmtree, scratch, True)
+        package, env = self._installed(scratch)
+        result = subprocess.run(
+            ["/bin/sh", str(package / "install-app.sh")],
+            env=env, capture_output=True, text=True, timeout=60, check=False,
+        )
+        self.assertEqual(result.returncode, 0)
+        skip = result.stderr.index("[skip] install")
+        degraded = result.stderr.index("[degraded] launch")
+        self.assertLess(skip, degraded, result.stderr)
 
     @unittest.skipUnless(sys.platform == "darwin", "install-app.sh targets macOS")
     def test_corrupt_zip_degrades(self) -> None:

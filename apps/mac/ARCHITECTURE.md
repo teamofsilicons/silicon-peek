@@ -54,7 +54,7 @@ It contains no embedded frameworks, so it contains no symlinks: Honeycomb reject
 | **PeekDrawing** | **drawing agent** | `DrawingRuntime: DrawingRuntimeProviding`, per-Silicon `DrawingHosting` (JSRuntime thread, prelude, recorder, frame scheduler, compositor, CG replay, glass layers, validator, fallback visual) | PeekCore, CQuickJS, AppKit, SwiftUI, QuartzCore, CoreText |
 | **PeekAudio** | **audio-input agent** | `SpeechPlayer: SpeechPlaying`, `MicRecorder: MicRecording` | PeekCore, AVFoundation, Accelerate |
 | **PeekInput** | **audio-input agent** | `InputHub: InputHubbing` (+ per-bubble `DrawingInputSource`), `BackdropSampler: BackdropSampling`, `ImageCache: ImageProviding`, appearance, pointer | PeekCore, AppKit, ScreenCaptureKit, ImageIO |
-| **PeekUI** — Slots (incl. HotKeys), Chrome, coordinator | **ui-slots agent** | `PeekCoordinator` (event routing, `PeekPresenting`), `SlotManager`, `SlotPanel` (+ `_hasActiveAppearance`), slot state machine, `Slots/HotKeys.swift` (Carbon; also the transient Esc hot key of an open popup), chrome (arc, pills, question arc, curved text field, ask controls, mic/keyboard, waveform, down-arrow, TEST badge, hover tooltip and tap-to-expand popup) | all PeekKit modules, SwiftUI, AppKit, Carbon |
+| **PeekUI** — Slots (incl. HotKeys), Chrome, coordinator | **ui-slots agent** | `PeekCoordinator` (event routing, `PeekPresenting`), `SlotManager`, `SlotPanel` (+ `_hasActiveAppearance`), slot state machine, `Slots/HotKeys.swift` (Carbon; also the app-wide bare-Esc hot key of the Esc router, `Slots/EscapeRouting.swift`), chrome (arc, pills, question arc, curved text field, ask controls, mic/keyboard, waveform, down-arrow, TEST badge, hover tooltip and tap-to-expand popup) | all PeekKit modules, SwiftUI, AppKit, Carbon |
 | **PeekUI** — Settings, Simulation, MenuBar | **ui-settings agent** | `MenuBarContentView`, `MenuBarLabel`, `SettingsRootView`, Simulation, testing-environments view, settings persistence through `PeekCoordinator.setSetting` | as above |
 | **App target** (`Sources/App`) | foundation | scenes, delegate, service registration, update hooks | PeekUI, PeekCore, PeekIPC, ServiceManagement |
 
@@ -134,7 +134,8 @@ public protocol DaemonLinking: Sendable {
 | UI → peekd | `answer` | `AnswerRequest(sendID, askID, value: AskValue, via: .click/.keyboard)` |
 | UI → peekd | `voice.submit` | `VoiceSubmitRequest(sendID?, askID?, slot, durationMs)` + WAV blob → `VoiceSubmitReply(messageID?)` (names a voice message; `SlotManager` matches its `stt.result` by that id, keeps an outcome that overtakes the reply until the reply names it, and falls back to arrival order only for an older peekd's empty reply) |
 | UI → peekd | `message` | `MessageRequest(slot, text)` (`via` is always `keyboard`) |
-| UI → peekd | `dismissed` | `DismissedRequest(sendID, gesture: .downArrow/.downArrowDouble/.esc)` |
+| UI → peekd | `dismissed` | `DismissedRequest(sendID, gesture: .downArrow/.downArrowDouble/.esc/.escDouble)` (`esc_double`: two Escs within 0.4 s on a show/speak, peek 0.1.2) |
+| UI → peekd | `shown` | `ShownRequest(sendID)` (peek 0.1.2): the bubble's pre-warm started (on screen within 0.6 s); once per send per process, never for summons; `unknown_op` from an older peekd is tolerated |
 | UI → peekd | `speech.done` | `SpeechDoneRequest(sendID, stoppedByUser, playedMs, totalMs)` |
 | UI → peekd | `shown.done` | `ShownDoneRequest(sendID, visibleMs, reason: .auto/.speechDone)` |
 | UI → peekd | `focus` | `FocusRequest(slot)` |
@@ -142,11 +143,12 @@ public protocol DaemonLinking: Sendable {
 | UI → peekd | `telemetry` | `TelemetryRequest(events: [TelemetryEvent])` |
 | UI → peekd | `settings.changed` | `SettingsChangedRequest(key: PeekSettings.Key, value: JSONValue)` |
 | UI → peekd | `ui.status` | `UIStatusReport(mic, hotkeys, glass, services, appBuild, appVersion)` (additive; peekd keeps the latest for `peek doctor`) |
-| UI → peekd | `presence` | `PresenceRequest(available, reason: .ok/.locked/.asleep/.displayOff)` (additive; `PresenceMonitor` → `DaemonLink.setPresence`, sent right after every hello and on change; while unavailable peekd queues new sends with `carbon_away`; `unknown_op` from an older peekd is tolerated) |
+| UI → peekd | `presence` | `PresenceRequest(available, reason: .ok/.locked/.asleep/.displayOff, paused)` (additive; `PresenceMonitor` → `DaemonLink.setPresence`, sent right after every hello, on change and when the menu bar pause toggles (`paused`, peek 0.1.2); while unavailable peekd queues new sends with `carbon_away`; `unknown_op` from an older peekd is tolerated) |
 | peekd → UI event | `slots.state` | `DaemonEvent.slotsState(SlotsStateEvent)` |
 | peekd → UI event | `peek.show` | `.peekShow(PeekShowEvent)` |
 | peekd → UI event | `tts.begin` / `tts.chunk` / `tts.end` / `tts.error` | `.ttsBegin` / `.ttsChunk(TTSChunk incl. pcm Data)` / `.ttsEnd` / `.ttsError` |
-| peekd → UI event | `peek.cancel` | `.peekCancel(PeekCancelEvent)` |
+| peekd → UI event | `peek.cancel` | `.peekCancel(PeekCancelEvent)` (reason `replaced` = the Silicon's own `--replace`; its `peek.show` follows) |
+| peekd → UI event | `queue.state` | `.queueState(QueueStateEvent(slot, context, sendID, waiting))` (peek 0.1.2): the "+N" badge of that send's bubble |
 | peekd → UI event | `stt.result` | `.sttResult(STTResultEvent)` |
 | peekd → UI event | `restarting` | `.restarting(RestartingEvent)` |
 | peekd → UI request | `drawing.validate` | `DaemonRequest.drawingValidate(DrawingValidateRequest)` → `DaemonReply.validation(ValidationReport)` (PNG as blob) |
@@ -157,6 +159,9 @@ All replies to UI requests other than `hello` decode as `IPCAck` (any object). E
 (`code`, `message`, `hint`, `retryable`, `details`), identical to the CLI error shape.
 
 There is **no live word or transcript data** anywhere (D9): no `speech.word`, no `word` event, no `mic.transcript`.
+
+peek 0.1.2 also reads `peek.show.expires_at` (every kind), `replaces` and `schedule_id`, and `queued_behind` is the
+Silicon's waiting count (the badge's first value).
 
 Additive fields this build sends or reads beyond the §1.6 table (peekd ignores unknown fields):
 `voice.submit.context`, `voice.submit.languages` (Locale.preferredLanguages when `stt_language` is `auto`),
@@ -190,6 +195,7 @@ single choice → option id, multiple choice → array of option ids, slider →
     func wake()
     func isOverContent(unitPoint: CGPoint) -> Bool      // B9 hit test, for click-through
     func validate(_ script: DrawingScript, options: ValidationOptions) async -> ValidationReport
+    func awaitFrame(timeout: Duration) async -> Bool      // peek 0.1.2 pre-warm: the next frame is committed
 }
 ```
 
@@ -265,6 +271,8 @@ peek_vm_memory_used / peek_vm_run_gc / peek_vm_op_capacity / peek_monotonic_ns /
     func track(_ key: SiliconKey, rectOnScreen: CGRect?)
     func backdrop(for key: SiliconKey) -> Backdrop
     var onChange: (@MainActor (SiliconKey, Backdrop) -> Void)? { get set }
+    func warm(_ key: SiliconKey, rectOnScreen: CGRect?)                // peek 0.1.2: idle sample for occupied slots
+    func sampleAge(for key: SiliconKey) -> Double?                    // seconds since the last sample
 }
 @MainActor public protocol ImageProviding: AnyObject {
     func prepare(sendID: String, paths: [String]) async -> [String: PreparedImage]   // ≤ 512 px, palette
@@ -353,17 +361,50 @@ feedback (`.ref/notes/ui-feedback.md`, binding, overrides the blueprint) is impl
   not fire in a never-key panel of a never-active app) into `SlotChromeModel.pointerMoved(to:buttonDown:)`;
   interactive chrome has a rim and a lift shadow at rest, springs up on hover and squashes on press (`ChromeFeel`);
 - cut-short text is flagged on `ChromeLayout.Item.truncated` / `Question.truncated` with its full text;
-  `ChromeOverlay` builds the hover tooltip and the tap-to-expand popup (bounce in, spring out; Esc through a
-  transient Carbon hot key, a click outside through the polled mouse button);
+  `ChromeOverlay` builds the hover tooltip and the tap-to-expand popup (bounce in, spring out; Esc through the
+  Esc router's transient Carbon hot key, a click outside through the polled mouse button);
 - long text is a narrow, tall `TextColumn` that grows away from the screen edge and stays inside the panel;
 - sliders follow the pointer continuously and spring onto the nearest step on release, with a dot per step;
 - a text ask's field is a curved band (`ChromeLayout.CurvedField`, drawn by `CurvedFieldView` over an invisible
   `TextField`) right next to the question; upright question-over-field blocks on the left/right arcs;
 - the pointer over the chrome (or an open popup) pauses a show's auto-dismiss (`BubbleEvent.pointer(inside:)`).
 
+peek 0.1.2 (`.ref/notes/v0.1.2-contract.md` §8, binding with `v0.1.2-agreed.md`):
+
+- **Queue.** peekd holds each Silicon's FIFO queue; Peek.app gets only the current send. A same-Silicon `peek.show`
+  never replaces the bubble on screen (`SlotScheduler.decide` → `.enqueue`; only an idle summon makes way). `--replace`
+  arrives as `peek.cancel{replaced}` (the bubble leaves, speech stops) and the new `peek.show`, shown right after.
+- **"+N" badge** (`ChromeContent.waiting`, `ChromeLayout.Buttons.badge/badgeSize`, `WaitingBadgeView`): starts at
+  `peek.show.queued_behind`, follows `queue.state` for that send (`SlotManager.applyQueueState`; remembered for a send
+  still waiting for its slot). Static chrome, upright, pill shade, bumps 1.0 → 1.15 → 1.0 on change. Normal mode: at the
+  mid-angle between the down-arrow and the keyboard; compact mode: on the down-arrow's top-trailing rim.
+- **Pre-warm** (`BubbleMachine.Stage.prewarming`, `BubbleEffect.prewarm`, `SlotSurface.prewarm()`, `PrewarmStrategy`):
+  `.begin` orders the panel in at its real frame at 1 % opacity with the content at rest, sends `shown`, delivers
+  `enter` and the `send` snapshot; the slide starts once ≥ 0.35 s and ≥ 3 frames passed, the drawing committed a frame
+  (`DrawingHosting.awaitFrame`) and a backdrop sample exists (≤ 2 s old with the screen source, or 0.25 s passed), at
+  most 0.6 s (`prewarm_timeout` is logged with what was missing). `slideIn()` then jumps the content beyond the edge
+  (committed first) and restores full opacity. The off-screen variant is kept for comparison: the window server does
+  not run the display link off screen, so it always hits the cap (`scripts/capture-slide-in.sh --prewarm offscreen`).
+- **Early backdrop** (`BackdropSampling.warm/sampleAge`): `present` tracks the key at once (before activation);
+  `updateTable` keeps every occupied slot warm (wallpaper refresh / every 10 s with the screen source).
+- **Esc router** (`EscapeRouting`, `EscapeKeyProviding`, `CarbonEscapeKey`; replaces the popup's own Esc hot key): one
+  app-wide Carbon bare-Esc hot key ('PEES'), held only while a bubble is in its 3 s grace from its slide-in start, the
+  pointer is over a bubble, an Esc window the Carbon opened is running (0.4 s double-Esc, 2 s hint) or a popup is open,
+  and never while a Peek window is key. Target: popup → latest Esc window → hovered → newest bubble. A failed
+  registration adds "Esc for peeks is taken by another app; use the down-arrow" to the hotkey problems.
+- **Esc semantics** (`BubbleMachine`): show/speak — one Esc slides the visual out and keeps the audio (`esc` after
+  0.4 s), a second within 0.4 s also stops it (`esc_double`); ask — one Esc collapses it to the compact ask
+  (`AskPresentation.collapsed`: question, `^` and the buttons; controls hidden; still answerable), a second within 0.4 s
+  dismisses it (`esc`, speech stops); on a compact ask an Esc shows "Esc again to dismiss" (the row's hint pill,
+  fades in/out 0.2 s) and a second within 2 s dismisses it. Esc while typing or recording discards the input. `^`
+  (`ChromeTarget.expand`, `ChromeActions.expand`), a click on the question, the hotkey, the keyboard or mic button
+  expand it. The down-arrow always dismisses (asks included) and never collapses.
+
 Debug builds read `PEEK_DEBUG_HOVER`, `PEEK_DEBUG_PRESS`, `PEEK_DEBUG_EXPAND` (a target such as `option-1`,
-`text-0`, `image-0`, `question`, `mic`, `field`), `PEEK_DEBUG_DRAG` (a slider fraction held mid-drag) and
-`PEEK_DEBUG_TYPE` (text typed once the bubble is up) to force those states for screenshots (`ChromeDebugHooks`).
+`text-0`, `image-0`, `question`, `mic`, `field`, `expand`), `PEEK_DEBUG_DRAG` (a slider fraction held mid-drag) and
+`PEEK_DEBUG_TYPE` (text typed once the bubble is up) to force those states for screenshots (`ChromeDebugHooks`), plus
+`PEEK_DEBUG_SLIDE_LOG=1` (pre-warm, slide-in, landing and settle timestamps on stderr) and
+`PEEK_DEBUG_PREWARM=transparent|offscreen|none` (A/B captures of the pre-warm).
 
 ## 5. Models (PeekCore/Models.swift, Settings.swift, Paths.swift)
 
@@ -453,5 +494,20 @@ PEEK_NO_SERVICES=1 PEEK_SUPPORT_DIR=$TMP/support PEEK_CACHES_DIR=$TMP/caches PEE
 ```
 
 Scenarios: `show-text`, `show-cover`, `ask-single`, `ask-multi`, `ask-slider`, `ask-range`, `ask-text`, `speak`,
-`compact-show`, and for the UI feedback `show-long`, `show-long-mixed`, `ask-long-labels`, `ask-stepped`,
-`compact-long`. The panel's rectangle is printed in `screencapture -R` form.
+`compact-show`, for the UI feedback `show-long`, `show-long-mixed`, `ask-long-labels`, `ask-stepped`,
+`compact-long`, and for peek 0.1.2 `queue-badge` ("+3", updated live to "+4" after 2 s), `ask-compact` (collapsed by an
+Esc: `^` and "+2") and `ask-esc-hint` ("Esc again to dismiss"). `--simulate-again <seconds>[:<scenario>]` presents a
+second bubble on the reused panel. The panel's rectangle is printed in `screencapture -R` form.
+
+Slide-in capture (peek 0.1.2 contract §8.6 step 5; Debug build, isolated like the screenshots above, Screen Recording
+for the terminal):
+
+```sh
+apps/mac/scripts/capture-slide-in.sh build/Build/Products/Debug/Peek.app <out dir> --scenario show-text --position 5 \
+  [--prewarm transparent|offscreen|none] [--hold 1 --again 4 --again-scenario show-long-mixed] [--label after]
+```
+
+It records only Peek's windows at 60 fps over a vivid backdrop window of its own (so the glass samples another
+process's window, as over a real desktop) and reports the visual's per-frame saturation from landing to +600 ms (pass:
+max frame-to-frame change < 0.05, total < 0.08) and whether the pre-warm stayed invisible, with a contact sheet and
+the frames.

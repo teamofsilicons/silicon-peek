@@ -223,6 +223,11 @@ pub struct Timings {
     pub waiter_ack: Duration,
     /// Cooldown between pre-warms of one Silicon's session.
     pub prewarm_cooldown: Duration,
+    /// Longest the timer loop sleeps while a scheduled send or an expiring
+    /// send exists, so a Mac waking from sleep catches up promptly (tokio's
+    /// clock does not advance while the Mac sleeps; peekd compares wall-clock
+    /// times on every pass).
+    pub timer_catchup_cap: Duration,
 }
 
 impl Default for Timings {
@@ -265,6 +270,7 @@ impl Default for Timings {
             bubble_grace: s(30),
             waiter_ack: s(2),
             prewarm_cooldown: s(60),
+            timer_catchup_cap: s(15),
         }
     }
 }

@@ -200,8 +200,8 @@ runs for the bubble.",
     /// Release the position and delete the drawing (locally and on the server).
     #[command(
         long_about = "Releases this Silicon's position and shortcut, deletes its drawing on this Mac \
-and on the backend, and cancels its pending asks. No Ting events are sent. Register again with \
-`peek register side <1-8>` and `peek register drawing <FILE.js>`."
+and on the backend, and cancels its pending asks, queued sends and scheduled sends. No Ting events are \
+sent. Register again with `peek register side <1-8>` and `peek register drawing <FILE.js>`."
     )]
     Unregister,
 
@@ -209,12 +209,64 @@ and on the backend, and cancels its pending asks. No Ting events are sent. Regis
     #[command(
         long_about = "Speaks a sentence, shows up to three text or image elements, or asks one \
 question in this Silicon's bubble. Everything is validated before anything is shown, and the command \
-returns as soon as the bubble is scheduled: {\"send_id\",\"ask_id\",\"slot\",\"status\",\"speech\",\"warnings\"}.\n\n\
+returns as soon as the bubble is queued: {\"send_id\",\"ask_id\",\"slot\",\"status\",\"speech\",\"warnings\",\
+\"queue_position\",\"waiting\",\"expires_at\",\"schedule_id\",\"due_at\",\"tz\",\"replaced_send_id\"}.\n\n\
+Sends always queue: a new send never replaces what is on screen. It is shown when the one before it is \
+done, in order; at most five wait behind the one on screen (then queue_full, exit 4; see `peek queue`). \
+--replace takes over this Silicon's bubble at once. --expires-in / --expires-at drop a send that is not \
+shown or finished in time (you get peek.send.expired or peek.ask.expired). --in / --at schedule it \
+instead (see `peek schedule list`).\n\n\
 Answers to --ask arrive later as Ting events of type peek.ask.answered (see `peek docs ting`); inspect \
 them locally with `peek ask get <ASK_ID>`. With --wait the command stays open and prints the answer \
 itself (then no Ting event is sent for it). Needs a position and a drawing first (`peek register`)."
     )]
     Send(Box<SendArgs>),
+
+    /// This Silicon's queue on this position: the send on screen and the ones waiting (at most 5).
+    #[command(
+        args_conflicts_with_subcommands = true,
+        long_about = "Lists this Silicon's queue on this Mac: the send on screen (or held while the \
+Carbon's screen is locked, Peek is paused or Peek.app is not running) and the ones waiting behind it, \
+in the order they will be shown, with their IDs, kind, age, summary and deadline. At most five wait; \
+a send that would be the sixth fails with queue_full (exit 4). Remove one with `peek cancel <SEND_ID>` \
+or every waiting one with `peek queue clear`. Scheduled sends are counted here and listed by \
+`peek schedule list`."
+    )]
+    Queue {
+        /// The queue action (default: list).
+        #[command(subcommand)]
+        command: Option<QueueCommand>,
+    },
+
+    /// Withdraw one send: on screen, waiting or scheduled (any kind, asks included). No Ting event is sent.
+    #[command(
+        long_about = "Withdraws one of this Silicon's sends wherever it is: the bubble on screen slides \
+away (its speech stops), a waiting one is dropped before it is shown, a scheduled one is never sent. An \
+ask is cancelled without an answer. Nothing is sent to Ting for your own action. A send that already \
+closed is reported as it closed (exit 0). Takes a send ID (snd_…), an ask ID (ask_…) or a schedule ID \
+(sch_…)."
+    )]
+    Cancel {
+        /// snd_…, ask_… or sch_…
+        #[arg(value_name = "SEND_ID")]
+        id: String,
+    },
+
+    /// One-time scheduled sends (peek send --in / --at): list, cancel, clear.
+    #[command(
+        long_about = "Scheduled sends are made with `peek send … --in <DURATION>` or `--at <DATETIME>` \
+(one time, no recurrence; at most 500 per Silicon). When one comes due it joins this Silicon's queue \
+like any send and you receive peek.schedule.due, then peek.send.shown when it appears. If the Mac \
+sleeps or Peek.app is not running at the due time, it is shown once they are back (unless its \
+--expires-at passed: then it expires unseen).",
+        subcommand_required = true,
+        arg_required_else_help = true
+    )]
+    Schedule {
+        /// The schedule action.
+        #[command(subcommand)]
+        command: ScheduleCommand,
+    },
 
     /// Local state of this Silicon's asks: get, list, cancel.
     #[command(
@@ -392,7 +444,7 @@ resulting config. Parsing is strict: a non-object, a duplicate key or an unknown
 and details.valid_keys, and nothing is written. `null` resets a key to its default. The result is \
 also pushed to peekd (best effort).\n\n\
 Keys: telemetry (bool), voice (aura-2-<name>-<en|es|de|fr|nl|it|ja> or null), language (BCP 47 primary \
-subtag or null), notify (subset of [\"speech_finished\",\"show_dismissed\"]), api_url (https origin or \
+subtag or null), notify (subset of [\"speech_finished\",\"show_dismissed\",\"shown\"]), api_url (https origin or \
 null), delivery_max_age_hours (1–168)."
     )]
     Set {
@@ -526,18 +578,43 @@ pub struct SendArgs {
     #[arg(long, value_name = "SECS")]
     pub duration: Option<u64>,
 
-    /// Asks only: an unanswered ask slides away after this many seconds (10 s – 7 days) and
-    /// you receive peek.ask.expired.
-    #[arg(long, value_name = "SECS")]
-    pub expires_in: Option<u64>,
+    /// Drop the send if it is not shown/finished in time: 90s, 15m, 2h, 1d, 1h30m or plain
+    /// seconds (10 s – 7 d). Any kind. An ask that expires sends peek.ask.expired; a show or
+    /// speak sends peek.send.expired.
+    #[arg(long, value_name = "DURATION")]
+    pub expires_in: Option<String>,
 
-    /// Opt in to Ting events for this send: speech_finished, show_dismissed (comma-separated).
-    /// Defaults to config `notify`.
+    /// Absolute deadline: 2026-09-27T18:00, "2026-09-27 18:00", 18:00, …Z or …+05:30 (Mac
+    /// local time unless an offset or --tz is given). Not with --expires-in.
+    #[arg(long, value_name = "DATETIME")]
+    pub expires_at: Option<String>,
+
+    /// Schedule: send after this long (1 s – 365 d; same units as --expires-in). One-time,
+    /// no recurrence.
+    #[arg(id = "in", long = "in", value_name = "DURATION")]
+    pub in_: Option<String>,
+
+    /// Schedule: send at this time (Mac local time unless an offset or --tz is given; past
+    /// times are refused).
+    #[arg(long, value_name = "DATETIME")]
+    pub at: Option<String>,
+
+    /// IANA time zone for --at/--expires-at values without an offset, e.g. Asia/Kolkata.
+    #[arg(long, value_name = "IANA")]
+    pub tz: Option<String>,
+
+    /// Take over this Silicon's bubble now (any kind, even an ask: it is cancelled without a
+    /// ting). Default: queue behind it.
+    #[arg(long)]
+    pub replace: bool,
+
+    /// Opt in to Ting events for this send: speech_finished, show_dismissed, shown
+    /// (comma-separated). Defaults to config `notify`.
     #[arg(long, value_name = "LIST")]
     pub notify: Option<String>,
 
     /// Asks only: keep the command open and print the answer (default 120 s, at most 600).
-    /// Use --wait, --wait 60 or --wait=60.
+    /// Use --wait, --wait 60 or --wait=60. Not with --in/--at.
     #[arg(
         long,
         value_name = "SECS",
@@ -545,6 +622,39 @@ pub struct SendArgs {
         default_missing_value = "120"
     )]
     pub wait: Option<u64>,
+}
+
+/// `peek queue …`.
+#[derive(Debug, Subcommand)]
+pub enum QueueCommand {
+    /// Same as `peek queue`.
+    List,
+    /// Drop every waiting send (and due scheduled sends waiting for room); with --all also the one on screen.
+    #[command(
+        long_about = "Withdraws every send waiting in this Silicon's queue (asks are cancelled without \
+an answer), including scheduled sends that came due and wait for room. The send on screen stays unless \
+--all is given. No Ting events are sent."
+    )]
+    Clear {
+        /// Also withdraw the send on screen.
+        #[arg(long)]
+        all: bool,
+    },
+}
+
+/// `peek schedule …`.
+#[derive(Debug, Subcommand)]
+pub enum ScheduleCommand {
+    /// Scheduled sends that are not due yet, soonest first.
+    List,
+    /// Cancel one scheduled send before it is due.
+    Cancel {
+        /// sch_… (or its snd_…)
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+    /// Cancel every scheduled send of this Silicon.
+    Clear,
 }
 
 /// `peek ask …`.
@@ -587,10 +697,12 @@ pub enum AskStateArg {
     Answered,
     /// Closed by the Carbon without an answer.
     Dismissed,
-    /// Ran past --expires-in.
+    /// Ran past --expires-in or --expires-at.
     Expired,
     /// Cancelled by the Silicon.
     Cancelled,
+    /// Taken over by the Silicon's own --replace.
+    Replaced,
 }
 
 /// `peek history`.
@@ -769,6 +881,96 @@ mod tests {
         assert!(parse("0").is_ok());
         assert!(parse("89").is_ok());
         assert!(parse("90").is_err(), "there are 90 test frames, 0–89");
+    }
+
+    fn parse(args: &[&str]) -> Result<Command, clap::Error> {
+        let mut command_line = vec!["peek"];
+        command_line.extend_from_slice(args);
+        Cli::try_parse_from(command_line).map(|c| c.command)
+    }
+
+    #[test]
+    fn new_send_flags_parse() {
+        let Ok(Command::Send(a)) = parse(&[
+            "send",
+            "--speak",
+            "x",
+            "--in",
+            "2h",
+            "--tz",
+            "Asia/Kolkata",
+            "--replace",
+            "--expires-in",
+            "15m",
+            "--expires-at",
+            "18:00",
+            "--at",
+            "2026-09-27T18:00",
+        ]) else {
+            panic!("send parses");
+        };
+        assert_eq!(a.in_.as_deref(), Some("2h"));
+        assert_eq!(a.at.as_deref(), Some("2026-09-27T18:00"));
+        assert_eq!(a.tz.as_deref(), Some("Asia/Kolkata"));
+        assert_eq!(a.expires_in.as_deref(), Some("15m"));
+        assert_eq!(a.expires_at.as_deref(), Some("18:00"));
+        assert!(a.replace);
+        let Ok(Command::Send(a)) = parse(&["send", "--ask", "{}", "--expires-in", "60"]) else {
+            panic!("plain seconds still parse");
+        };
+        assert_eq!(a.expires_in.as_deref(), Some("60"));
+    }
+
+    #[test]
+    fn queue_cancel_and_schedule_parse() {
+        use super::{QueueCommand, ScheduleCommand};
+        assert!(matches!(
+            parse(&["queue"]),
+            Ok(Command::Queue { command: None })
+        ));
+        assert!(matches!(
+            parse(&["queue", "list"]),
+            Ok(Command::Queue {
+                command: Some(QueueCommand::List)
+            })
+        ));
+        assert!(matches!(
+            parse(&["queue", "clear", "--all"]),
+            Ok(Command::Queue {
+                command: Some(QueueCommand::Clear { all: true })
+            })
+        ));
+        assert!(matches!(
+            parse(&["queue", "clear"]),
+            Ok(Command::Queue {
+                command: Some(QueueCommand::Clear { all: false })
+            })
+        ));
+        assert!(matches!(parse(&["cancel", "snd_1"]), Ok(Command::Cancel { id }) if id == "snd_1"));
+        assert!(parse(&["cancel"]).is_err());
+        assert!(matches!(
+            parse(&["schedule", "list"]),
+            Ok(Command::Schedule {
+                command: ScheduleCommand::List
+            })
+        ));
+        assert!(matches!(
+            parse(&["schedule", "cancel", "sch_1"]),
+            Ok(Command::Schedule { command: ScheduleCommand::Cancel { id } }) if id == "sch_1"
+        ));
+        assert!(matches!(
+            parse(&["schedule", "clear"]),
+            Ok(Command::Schedule {
+                command: ScheduleCommand::Clear
+            })
+        ));
+        // `peek schedule` alone behaves exactly like `peek ask` alone.
+        let schedule = parse(&["schedule"])
+            .err()
+            .map(|e| (e.kind(), e.exit_code()));
+        let ask = parse(&["ask"]).err().map(|e| (e.kind(), e.exit_code()));
+        assert!(schedule.is_some());
+        assert_eq!(schedule, ask);
     }
 
     #[test]

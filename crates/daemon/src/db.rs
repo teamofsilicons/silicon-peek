@@ -8,6 +8,10 @@
 //! `sends.home_path/api_url/kind/warnings/speech_done_at`,
 //! `asks.event_id/created_at/closed_at`, `outbox.subject_id`,
 //! `telemetry_outbox.source`, table `cli_watchdog`) are documented inline.
+//!
+//! Schema 2 (peek 0.1.2: always-queue FIFO, expiry on every send, scheduling)
+//! adds `sends.expires_at/queued_at/overflow/schedule_id/due_at` and the
+//! `scheduled` table ([`SCHEMA_V2`]); `asks.state` may also be `replaced`.
 
 use std::{
     path::Path,
@@ -18,7 +22,7 @@ use rusqlite::Connection;
 use silicon_peek_client::{Error, ErrorCode, Result};
 
 /// The schema version this build writes (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE homes (
@@ -134,6 +138,42 @@ CREATE TABLE cli_watchdog (
 );
 "#;
 
+/// Schema 2 (peek 0.1.2): queue v2, expiry on every send, scheduling.
+pub const SCHEMA_V2: &str = r"
+ALTER TABLE sends ADD COLUMN expires_at  INTEGER;                    -- unix ms; every kind (asks also keep asks.expires_at)
+ALTER TABLE sends ADD COLUMN queued_at   INTEGER;                    -- unix ms it entered its queue (created_at, or fire time)
+ALTER TABLE sends ADD COLUMN overflow    INTEGER NOT NULL DEFAULT 0; -- 1 = due scheduled send waiting for a free spot
+ALTER TABLE sends ADD COLUMN schedule_id TEXT;                       -- sch_… when it came from --in/--at
+ALTER TABLE sends ADD COLUMN due_at      INTEGER;                    -- unix ms, scheduled sends
+UPDATE sends SET queued_at = created_at WHERE queued_at IS NULL;
+UPDATE sends SET expires_at = (SELECT a.expires_at FROM asks a WHERE a.send_id = sends.send_id)
+ WHERE expires_at IS NULL AND closed_at IS NULL;
+CREATE INDEX sends_expiry ON sends(closed_at, expires_at);
+CREATE INDEX sends_schedule ON sends(schedule_id);
+CREATE TABLE scheduled (
+  schedule_id TEXT PRIMARY KEY,           -- sch_<uuidv7>
+  send_id     TEXT NOT NULL UNIQUE,       -- pre-assigned snd_ (becomes sends.send_id when it fires)
+  ask_id      TEXT UNIQUE,                -- pre-assigned ask_ for --ask
+  context     TEXT NOT NULL,
+  org_id      TEXT NOT NULL,
+  actor_id    TEXT NOT NULL,
+  home_path   TEXT NOT NULL,
+  api_url     TEXT NOT NULL,
+  isi         TEXT,
+  payload     BLOB NOT NULL,              -- SendPayload JSON; image paths are cache paths (copied at schedule time)
+  notify      TEXT NOT NULL,              -- JSON array
+  kind        TEXT NOT NULL,
+  replace_current INTEGER NOT NULL DEFAULT 0, -- --replace (not named `replace`: an SQL keyword)
+  due_at      INTEGER NOT NULL,           -- unix ms
+  expires_at  INTEGER,                    -- unix ms, absolute
+  tz          TEXT,                       -- IANA name used for --at (display only)
+  warnings    TEXT,                       -- JSON array returned at schedule time
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX scheduled_due ON scheduled(due_at, schedule_id);
+CREATE INDEX scheduled_actor ON scheduled(context, org_id, actor_id, due_at);
+";
+
 /// Converts rusqlite errors into peek errors.
 pub trait SqlResult<T> {
     /// Maps the error to `internal_error` naming the database.
@@ -242,6 +282,12 @@ fn migrate(conn: &Connection, path: &Path) -> Result<()> {
         ))
         .sql()?;
     }
+    if version < 2 {
+        conn.execute_batch(&format!(
+            "BEGIN; {SCHEMA_V2} PRAGMA user_version = 2; COMMIT;"
+        ))
+        .sql()?;
+    }
     Ok(())
 }
 
@@ -265,7 +311,11 @@ mod tests {
                 .sql()
             })
             .await?;
-        assert_eq!(n, 8);
+        assert_eq!(n, 9);
+        let v: i64 = db
+            .call(|c| c.query_row("PRAGMA user_version", [], |r| r.get(0)).sql())
+            .await?;
+        assert_eq!(v, 2);
         drop(db);
         // Re-open is idempotent.
         let db = Db::open(&path)?;
@@ -279,6 +329,65 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o077, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_schema_1_database_is_migrated_with_backfills() -> Result<()> {
+        let dir = tempfile::tempdir().map_err(|e| Error::internal(e.to_string()))?;
+        let path = dir.path().join("peekd.sqlite");
+        {
+            let conn = Connection::open(&path).sql()?;
+            conn.execute_batch(&format!(
+                "BEGIN; {SCHEMA_V1} PRAGMA user_version = 1; COMMIT;"
+            ))
+            .sql()?;
+            conn.execute_batch(
+                "INSERT INTO sends (send_id, context, org_id, actor_id, slot, payload, notify, created_at, home_path, api_url, kind)
+                   VALUES ('snd_open', 'production', 'tos', 'si:a', 3, x'7b7d', '[]', 1000, '/h', 'https://x', 'ask'),
+                          ('snd_done', 'production', 'tos', 'si:a', 3, x'7b7d', '[]', 2000, '/h', 'https://x', 'show');
+                 UPDATE sends SET closed_at = 2500, close_reason = 'auto' WHERE send_id = 'snd_done';
+                 INSERT INTO asks (ask_id, send_id, state, expires_at, created_at)
+                   VALUES ('ask_open', 'snd_open', 'pending', 99000, 1000);",
+            )
+            .sql()?;
+        }
+        let db = Db::open(&path)?;
+        let rows: Vec<(String, Option<i64>, Option<i64>, i64)> = db
+            .call(|c| {
+                let mut st = c
+                    .prepare("SELECT send_id, expires_at, queued_at, overflow FROM sends ORDER BY send_id")
+                    .sql()?;
+                let v = st
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                    .sql()?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .sql()?;
+                Ok(v)
+            })
+            .await?;
+        assert_eq!(
+            rows,
+            vec![
+                ("snd_done".to_owned(), None, Some(2000), 0),
+                ("snd_open".to_owned(), Some(99000), Some(1000), 0),
+            ]
+        );
+        let scheduled: i64 = db
+            .call(|c| {
+                c.query_row("SELECT count(*) FROM scheduled", [], |r| r.get(0))
+                    .sql()
+            })
+            .await?;
+        assert_eq!(scheduled, 0);
+        drop(db);
+        // A newer schema (3) is refused.
+        {
+            let conn = Connection::open(&path).sql()?;
+            conn.execute("PRAGMA user_version = 3", []).sql()?;
+        }
+        let e = Db::open(&path).err();
+        assert!(e.is_some_and(|e| *e.code() == ErrorCode::StoreSchemaNewer));
         Ok(())
     }
 }

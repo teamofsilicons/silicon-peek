@@ -7,6 +7,7 @@ mod doctor;
 mod iam;
 mod login;
 mod org;
+mod queue;
 mod register;
 mod report;
 mod send;
@@ -16,6 +17,7 @@ mod update;
 
 use std::future::Future;
 
+use serde_json::json;
 use silicon_peek_client::{
     Error, ErrorCode, Result,
     error::Origin,
@@ -33,7 +35,7 @@ use crate::{
     context::{Globals, Session, cli_refresh_policy},
     docs, experience,
     output::Out,
-    telemetry,
+    service, telemetry,
 };
 
 /// Runs the parsed command.
@@ -60,6 +62,9 @@ pub async fn run(cli: Cli, path: &[String], g: &Globals) -> Result<()> {
         Command::Unregister => register::unregister(g, out).await,
         Command::Send(args) => send::run(g, out, *args).await,
         Command::Ask { command } => ask::run(g, out, command).await,
+        Command::Queue { command } => queue::queue(g, out, command).await,
+        Command::Cancel { id } => queue::cancel(g, out, &id).await,
+        Command::Schedule { command } => queue::schedule(g, out, command).await,
         Command::History(args) => ask::history(g, out, args).await,
         Command::Status => status::run(g, out).await,
         Command::Org { command } => org::run(g, out, command).await,
@@ -195,6 +200,47 @@ pub async fn sweep_revocations(store: &Store, telemetry_on: bool) {
         revoke_pending(store, client_for),
     )
     .await;
+}
+
+/// Refuses a new flag or command against a peekd that lacks its feature
+/// (contract §5.8): an older peekd would ignore an unknown field silently.
+/// `needed` pairs a feature with what it enables, for the message.
+///
+/// # Errors
+/// `app_update_pending` (exit 5, retryable) with `details.missing_features`.
+pub fn require_features(
+    svc: &service::Service,
+    needed: &[(&'static str, &'static str)],
+) -> Result<()> {
+    let missing: Vec<&(&str, &str)> = needed
+        .iter()
+        .filter(|(f, _)| !svc.hello.has_feature(f))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let mut whats: Vec<&str> = Vec::new();
+    for (_, what) in &missing {
+        if !whats.contains(what) {
+            whats.push(what);
+        }
+    }
+    let mut features: Vec<&str> = missing.iter().map(|(f, _)| *f).collect();
+    features.dedup();
+    Err(Error::new(
+        ErrorCode::AppUpdatePending,
+        format!(
+            "Peek.app on this Mac runs peekd {}, which does not support {} yet (it needs Peek 0.1.2 or newer); Peek.app updates itself when nothing is on screen",
+            svc.hello.peekd_version,
+            whats.join(", ")
+        ),
+    )
+    .with_hint("run `peek app update` to apply the bundled build now, then retry")
+    .with_retryable(true)
+    .with_details(json!({
+        "missing_features": features,
+        "peekd_version": svc.hello.peekd_version,
+    })))
 }
 
 /// The `Next:` hint block in human mode.

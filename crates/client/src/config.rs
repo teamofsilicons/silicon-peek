@@ -174,7 +174,7 @@ impl Config {
                         let mut out = Vec::with_capacity(items.len());
                         for item in items {
                             let s = item.as_str().ok_or_else(|| {
-                                bad(r#"an array of "speech_finished" and/or "show_dismissed""#)
+                                bad(r#"an array of "speech_finished", "show_dismissed" and/or "shown""#)
                             })?;
                             out.push(Notify::parse(s)?);
                         }
@@ -184,7 +184,7 @@ impl Config {
                     }
                     _ => {
                         return Err(bad(
-                            r#"an array of "speech_finished" and/or "show_dismissed""#,
+                            r#"an array of "speech_finished", "show_dismissed" and/or "shown""#,
                         ));
                     }
                 };

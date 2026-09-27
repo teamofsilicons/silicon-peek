@@ -9,10 +9,13 @@ import PeekCore
 /// Peek.app/Contents/MacOS/Peek --simulate ask-single [--simulate-position 3] [--simulate-hold 120]
 ///     [--simulate-tone light|dark|live] [--simulate-appearance system|light|dark] [--simulate-mode normal|compact]
 ///     [--simulate-backdrop <image file>]   # Debug builds only
+///     [--simulate-again <seconds>[:<scenario>]]   # once more (or another scenario) on the same, reused panel
 /// ```
 ///
 /// Scenarios are the ``SimulationPreset`` names (`show-text`, `show-cover`, `ask-single`,
-/// `ask-multi`, `ask-slider`, `ask-range`, `ask-text`, `speak`, `compact-show`). Shows stay up for
+/// `ask-multi`, `ask-slider`, `ask-range`, `ask-text`, `speak`, `compact-show`, the ui-feedback ones, and for
+/// peek 0.1.2 `queue-badge` (a "+3" badge that updates to "+4" after 2 s), `ask-compact` (an ask collapsed by an Esc,
+/// with `^` and a "+2" badge) and `ask-esc-hint` ("Esc again to dismiss" on the compact ask)). Shows stay up for
 /// `--simulate-hold` seconds (default 600) instead of the usual 4–15 s, so a screenshot tool has
 /// time; asks stay until answered. `--simulate-tone` picks the backdrop tone the pills are shaded for
 /// (`live` samples the real desktop picture), `--simulate-appearance` the `input.appearance` the drawing
@@ -32,10 +35,15 @@ public enum SimulationLaunchHook {
         public var mode: DisplayMode?
         /// A backdrop image (Debug builds): shown full screen under the bubble.
         public var backdropImage: String?
+        /// Present the scenario again this many seconds after the first one (the same panel, reused: slide-in captures
+        /// of a later bubble).
+        public var againSeconds: Int?
+        /// The scenario presented the second time (default: the same one), e.g. another tint for the drawing.
+        public var againPreset: SimulationPreset?
 
         public init(preset: SimulationPreset, position: SlotIndex? = nil, holdSeconds: Int = SimulationLaunchHook.defaultHoldSeconds,
                     tone: SimulationScenario.BackdropChoice? = nil, appearance: SimulationScenario.AppearanceChoice? = nil,
-                    mode: DisplayMode? = nil, backdropImage: String? = nil) {
+                    mode: DisplayMode? = nil, backdropImage: String? = nil, againSeconds: Int? = nil) {
             self.preset = preset
             self.position = position
             self.holdSeconds = holdSeconds
@@ -43,6 +51,7 @@ public enum SimulationLaunchHook {
             self.appearance = appearance
             self.mode = mode
             self.backdropImage = backdropImage
+            self.againSeconds = againSeconds
         }
 
         /// The scenario to present: the preset with the overrides applied.
@@ -65,6 +74,7 @@ public enum SimulationLaunchHook {
         case unknownScenario(String)
         case invalidPosition(String)
         case invalidHold(String)
+        case invalidAgain(String)
         case invalidChoice(flag: String, value: String, choices: [String])
 
         public var description: String {
@@ -77,6 +87,9 @@ public enum SimulationLaunchHook {
                 "--simulate-position must be a position from 1 (top centre) to 8 (top left), clockwise; got \"\(raw)\""
             case .invalidHold(let raw):
                 "--simulate-hold must be a whole number of seconds from 1 to \(SimulationLaunchHook.maxHoldSeconds); got \"\(raw)\""
+            case .invalidAgain(let raw):
+                "--simulate-again must be <seconds>[:<scenario>] with 1 to \(SimulationLaunchHook.maxHoldSeconds) seconds and one "
+                    + "of \(SimulationPreset.namesList); got \"\(raw)\""
             case .invalidChoice(let flag, let value, let choices):
                 "\(flag) must be one of \(choices.joined(separator: ", ")); got \"\(value)\""
             }
@@ -90,6 +103,7 @@ public enum SimulationLaunchHook {
     public nonisolated static let appearanceFlag = "--simulate-appearance"
     public nonisolated static let modeFlag = "--simulate-mode"
     public nonisolated static let backdropFlag = "--simulate-backdrop"
+    public nonisolated static let againFlag = "--simulate-again"
     public nonisolated static let defaultHoldSeconds = 600
     public nonisolated static let maxHoldSeconds = 86_400
 
@@ -97,7 +111,7 @@ public enum SimulationLaunchHook {
     public nonisolated static func parse(_ arguments: [String]) -> Result<Request, ParseError>? {
         var name: String??
         var values: [String: String] = [:]
-        let optionFlags = [positionFlag, holdFlag, toneFlag, appearanceFlag, modeFlag, backdropFlag]
+        let optionFlags = [positionFlag, holdFlag, toneFlag, appearanceFlag, modeFlag, backdropFlag, againFlag]
         var index = 1
         while index < arguments.count {
             let argument = arguments[index]
@@ -147,6 +161,17 @@ public enum SimulationLaunchHook {
                 return .failure(.invalidChoice(flag: modeFlag, value: raw, choices: DisplayMode.allCases.map(\.rawValue)))
             }
             request.mode = mode
+        }
+        if let raw = values[againFlag] {
+            let parts = raw.split(separator: ":", maxSplits: 1).map(String.init)
+            guard let first = parts.first, let seconds = Int(first), (1...maxHoldSeconds).contains(seconds) else {
+                return .failure(.invalidAgain(raw))
+            }
+            request.againSeconds = seconds
+            if parts.count == 2 {
+                guard let preset = SimulationPreset.named(parts[1]) else { return .failure(.invalidAgain(raw)) }
+                request.againPreset = preset
+            }
         }
         if let raw = values[backdropFlag] {
             guard !raw.isEmpty else { return .failure(.invalidChoice(flag: backdropFlag, value: raw, choices: ["<image file>"])) }
@@ -202,6 +227,19 @@ public enum SimulationLaunchHook {
                    isError: false)
             if await engine.simulate(scenario) {
                 reportPanelFrame(for: scenario)
+            }
+            if let again = request.againSeconds {
+                try? await Task.sleep(for: .seconds(again))
+                var next = scenario
+                if let preset = request.againPreset {
+                    var other = Request(preset: preset, position: request.position, holdSeconds: request.holdSeconds,
+                                        tone: request.tone, appearance: request.appearance, mode: request.mode)
+                    other.position = scenario.position
+                    next = other.scenario
+                }
+                report("peek simulation: presenting \((request.againPreset ?? request.preset).rawValue) (\(againFlag) \(again))",
+                       isError: false)
+                await engine.simulate(next)
             }
         }
     }

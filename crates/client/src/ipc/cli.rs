@@ -3,14 +3,14 @@
 //! receives.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::{Empty, EventBody, Op};
 use crate::{
     api::TelemetryEvent,
     error::{Error, ErrorCode, Result},
     identity::{ActorId, OrgId, SlotIndex, SlotInfo},
-    ids::{AskId, SendId},
+    ids::{AskId, ScheduleId, SendId},
     ipc::frame::blob_limit,
     schema::{
         ImageFormat, ImageHop, ImageRef,
@@ -18,7 +18,7 @@ use crate::{
         limits,
         send::{
             Notify, SendFlags, check_duration, check_expires_in, check_flags, check_isi,
-            check_speak, check_voice, normalize_language,
+            check_speak, check_tz_name, check_voice, normalize_language,
         },
         show::Show,
     },
@@ -60,6 +60,12 @@ pub mod warnings {
     pub const TING_NOT_ENROLLED: &str = "ting_not_enrolled";
     /// `$ISI` was invalid and was left out of the send.
     pub const ISI_IGNORED: &str = "isi_ignored";
+    /// Peek.app is paused by the Carbon: the send waits and is shown when
+    /// they resume.
+    pub const CARBON_PAUSED: &str = "carbon_paused";
+    /// The Mac's time zone could not be read; `--at`/`--expires-at` values
+    /// without an offset were read as UTC (CLI-local).
+    pub const TIMEZONE_FALLBACK_UTC: &str = "timezone_fallback_utc";
 }
 
 /// The bundled Peek.app a CLI copy carries (from its package's `Peek.app.info`).
@@ -151,6 +157,36 @@ pub struct HelloResult {
     /// App state (sent to CLIs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<HelloApp>,
+    /// Capabilities of this peekd (additive; absent from peekd ≤ 0.1.1,
+    /// which reads as none). See [`features`].
+    #[serde(default)]
+    pub features: Vec<String>,
+}
+
+impl HelloResult {
+    /// Whether peekd announced `feature`.
+    #[must_use]
+    pub fn has_feature(&self, feature: &str) -> bool {
+        self.features.iter().any(|f| f == feature)
+    }
+}
+
+/// peekd capabilities announced in [`HelloResult::features`]. The protocol
+/// stays 1; a CLI refuses a new flag or command against a peekd that lacks
+/// its feature instead of letting an older peekd silently ignore it.
+pub mod features {
+    /// Always-queue FIFO, `queue.list`, `queue.clear`, `send.cancel`, `queue_full`.
+    pub const QUEUE_V2: &str = "queue_v2";
+    /// `expires_in_s` / `expires_at` on every send kind.
+    pub const EXPIRY_ALL: &str = "expiry_all";
+    /// `SendOp::replace`.
+    pub const REPLACE: &str = "replace";
+    /// `SendOp::due_at`, `schedule.list`, `schedule.cancel`, `schedule.clear`.
+    pub const SCHEDULE: &str = "schedule";
+    /// `Notify::Shown` and `peek.send.shown`.
+    pub const NOTIFY_SHOWN: &str = "notify_shown";
+    /// Every feature of peekd 0.1.2.
+    pub const ALL: [&str; 5] = [QUEUE_V2, EXPIRY_ALL, REPLACE, SCHEDULE, NOTIFY_SHOWN];
 }
 
 impl Op for Hello {
@@ -234,6 +270,9 @@ pub struct CarbonStatus {
     pub available: bool,
     /// Why.
     pub reason: crate::ipc::ui::PresenceReason,
+    /// The Carbon paused all peeks in Peek.app (additive).
+    #[serde(default)]
+    pub paused: bool,
 }
 
 impl Default for CarbonStatus {
@@ -241,15 +280,61 @@ impl Default for CarbonStatus {
         Self {
             available: true,
             reason: crate::ipc::ui::PresenceReason::Ok,
+            paused: false,
         }
     }
 }
 
+/// Why a Silicon's current send is not on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeldReason {
+    /// The Carbon's screen is locked or asleep.
+    CarbonAway,
+    /// The Carbon paused Peek.
+    Paused,
+    /// Peek.app is not connected, or an app update swap is in progress.
+    AppNotRunning,
+}
+
+const fn five() -> u32 {
+    5
+}
+
 /// The Silicon's queue.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueStatus {
-    /// Sends waiting behind a pending ask (or for the Carbon to come back).
+    /// Sends waiting (not on screen): waiting plus due scheduled sends
+    /// waiting for room. The name is kept for older CLIs.
     pub pending: u32,
+    /// The current send (on screen or held).
+    #[serde(default)]
+    pub on_screen: Option<SendId>,
+    /// The same number as `pending`.
+    #[serde(default)]
+    pub waiting: u32,
+    /// How many may wait (5).
+    #[serde(default = "five")]
+    pub limit: u32,
+    /// Scheduled sends that are not due yet.
+    #[serde(default)]
+    pub scheduled: u32,
+    /// Why the current send is not on screen, when it is held.
+    #[serde(default)]
+    pub held: Option<HeldReason>,
+}
+
+impl Default for QueueStatus {
+    fn default() -> Self {
+        Self {
+            pending: 0,
+            on_screen: None,
+            waiting: 0,
+            limit: five(),
+            scheduled: 0,
+            held: None,
+        }
+    }
 }
 
 /// The Silicon's Ting deliveries (the drawing's backend copy is
@@ -403,6 +488,12 @@ pub struct UnregisterResult {
     pub released_slot: Option<SlotIndex>,
     /// Asks cancelled (no tings are sent for them).
     pub cancelled_asks: Vec<AskId>,
+    /// Non-ask sends that were current or waiting (additive).
+    #[serde(default)]
+    pub cancelled_sends: Vec<SendId>,
+    /// Scheduled sends cancelled before they were due (additive).
+    #[serde(default)]
+    pub cancelled_scheduled: Vec<ScheduleId>,
 }
 
 impl Op for Unregister {
@@ -430,20 +521,48 @@ pub struct SendOp {
     pub notify: Vec<Notify>,
     /// `--duration`, in milliseconds.
     pub duration_ms: Option<u64>,
-    /// `--expires-in`, in seconds.
+    /// `--expires-in`, seconds from peekd's receipt. Any kind (0.1.1: asks
+    /// only). Not with `due_at`.
     pub expires_in_s: Option<u64>,
     /// `--wait`: keep the connection open for `ask.result`.
     #[serde(default)]
     pub wait: bool,
+    /// `--expires-at`: an absolute deadline. Not with `expires_in_s`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<Timestamp>,
+    /// `--in` / `--at`: schedule instead of queueing now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_at: Option<Timestamp>,
+    /// The IANA zone the CLI used to read `--at`/`--expires-at` (display
+    /// only; at most 64 characters of `[A-Za-z0-9_+-/]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tz: Option<String>,
+    /// `--replace`: take over the Silicon's current bubble instead of queueing.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub replace: bool,
 }
 
 impl SendOp {
-    /// Every §7.4 rule, plus blob consistency: each blob is referenced exactly
-    /// once, is at most 10 MiB and is a supported image.
+    /// [`SendOp::validate_at`] with peekd's tolerance for CLI→peekd latency
+    /// ([`limits::SCHEDULE_SLACK_MS`]) at the current time.
     ///
     /// # Errors
     /// The first violated rule's error.
     pub fn validate(&self, blobs: &[Vec<u8>]) -> Result<()> {
+        self.validate_at(blobs, Timestamp::now(), limits::SCHEDULE_SLACK_MS)
+    }
+
+    /// Every §7.4 rule, plus blob consistency (each blob is referenced exactly
+    /// once, is at most 10 MiB and is a supported image), then the 0.1.2
+    /// deadline rules against `now`: `--tz`, `due_at` within `(now − slack,
+    /// now + 365 d + slack]`, and `expires_at` 10 s – 7 d after `now` (slack on
+    /// both ends) or, for a scheduled send, 10 s – 7 d after `due_at` (no
+    /// slack). The CLI passes `slack_ms = 0`; peekd passes
+    /// [`limits::SCHEDULE_SLACK_MS`].
+    ///
+    /// # Errors
+    /// The first violated rule's error.
+    pub fn validate_at(&self, blobs: &[Vec<u8>], now: Timestamp, slack_ms: i64) -> Result<()> {
         check_flags(SendFlags {
             speak: self.speak.is_some(),
             show: self.show.is_some(),
@@ -453,6 +572,11 @@ impl SendOp {
             duration: self.duration_ms.is_some(),
             expires_in: self.expires_in_s.is_some(),
             wait: self.wait,
+            expires_at: self.expires_at.is_some(),
+            schedule_in: false,
+            schedule_at: self.due_at.is_some(),
+            tz: self.tz.is_some(),
+            replace: self.replace,
         })?;
         if let Some(s) = &self.speak {
             check_speak(s)?;
@@ -473,9 +597,6 @@ impl SendOp {
                 )));
             }
             check_duration(ms / 1000)?;
-        }
-        if let Some(s) = self.expires_in_s {
-            check_expires_in(s)?;
         }
         let hop = ImageHop::Ipc { blobs: blobs.len() };
         let mut referenced = vec![0u32; blobs.len()];
@@ -517,18 +638,108 @@ impl SendOp {
                 ));
             }
         }
+        if let Some(tz) = &self.tz {
+            check_tz_name(tz)?;
+        }
+        self.check_deadlines(now, slack_ms)?;
+        if let Some(s) = self.expires_in_s {
+            check_expires_in(s)?;
+        }
         Ok(())
+    }
+
+    fn check_deadlines(&self, now: Timestamp, slack_ms: i64) -> Result<()> {
+        const SECOND_MS: i64 = 1000;
+        let secs_ms = |s: u64| {
+            i64::try_from(s)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(SECOND_MS)
+        };
+        let horizon = secs_ms(limits::SCHEDULE_IN_MAX_S);
+        let expires_min = secs_ms(limits::EXPIRES_IN_MIN_S);
+        let expires_max = secs_ms(limits::EXPIRES_IN_MAX_S);
+        let now_ms = now.unix_ms();
+        if let Some(due) = self.due_at {
+            let due_ms = due.unix_ms();
+            if due_ms <= now_ms.saturating_sub(slack_ms) {
+                return Err(Error::invalid_input(format!(
+                    "`--at` {due} is in the past (now {now})"
+                ))
+                .with_hint("give a time in the future, or use --in <DURATION>")
+                .with_details(json!({"field": "--at", "value": due, "now": now})));
+            }
+            if due_ms > now_ms.saturating_add(horizon).saturating_add(slack_ms) {
+                return Err(Error::invalid_input(format!(
+                    "`--at` {due} is more than 365 days ahead (now {now})"
+                ))
+                .with_hint("schedule at most 365 days ahead")
+                .with_details(json!({"field": "--at", "value": due, "now": now})));
+            }
+        }
+        if let Some(exp) = self.expires_at {
+            let exp_ms = exp.unix_ms();
+            let (low, high, base, what) = match self.due_at {
+                Some(due) => (
+                    due.unix_ms().saturating_add(expires_min),
+                    due.unix_ms().saturating_add(expires_max),
+                    due,
+                    "the due time",
+                ),
+                None => (
+                    now_ms.saturating_add(expires_min).saturating_sub(slack_ms),
+                    now_ms.saturating_add(expires_max).saturating_add(slack_ms),
+                    now,
+                    "now",
+                ),
+            };
+            if exp_ms < low || exp_ms > high {
+                return Err(Error::invalid_input(format!(
+                    "`--expires-at` {exp} must be 10 s – 7 d after {what} ({base})"
+                ))
+                .with_hint(if self.due_at.is_some() {
+                    "--expires-at <DATETIME> between 10 s and 7 days after --at/--in"
+                } else {
+                    "--expires-at <DATETIME> between 10 s and 7 days from now, or --expires-in 15m"
+                })
+                .with_details(json!({
+                    "field": "--expires-at",
+                    "value": exp,
+                    "min": Timestamp::from_unix_ms(low),
+                    "max": Timestamp::from_unix_ms(high)
+                })));
+            }
+        }
+        Ok(())
+    }
+
+    /// The send's kind: `speak`, `show`, `ask`, `speak+show` or `speak+ask`.
+    #[must_use]
+    pub fn kind(&self) -> String {
+        let mut parts = Vec::new();
+        if self.speak.is_some() {
+            parts.push("speak");
+        }
+        if self.show.is_some() {
+            parts.push("show");
+        }
+        if self.ask.is_some() {
+            parts.push("ask");
+        }
+        parts.join("+")
     }
 }
 
-/// Whether a send is on screen or waiting.
+/// Whether a send is on screen, waiting or scheduled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SendStatus {
-    /// The bubble is sliding in.
+    /// It became the Silicon's current bubble and is sliding in.
     Showing,
-    /// Queued behind a pending ask in this slot.
+    /// Waiting in the Silicon's queue, or current but held (Carbon away or
+    /// paused, Peek.app not running).
     Queued,
+    /// `--in`/`--at`: stored until due.
+    Scheduled,
 }
 
 /// TTS status of a send.
@@ -557,7 +768,9 @@ pub struct SpeechInfo {
     pub chars: u32,
 }
 
-/// `send` result.
+/// `send` result. The 0.1.2 fields are always serialized (null when they do
+/// not apply) so `--json` output has one stable shape; they default when a
+/// 0.1.1 peekd leaves them out.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SendResult {
     /// The send.
@@ -566,7 +779,7 @@ pub struct SendResult {
     pub ask_id: Option<AskId>,
     /// The slot.
     pub slot: SlotIndex,
-    /// Showing or queued.
+    /// Showing, queued or scheduled.
     pub status: SendStatus,
     /// TTS details, with `--speak`.
     #[serde(default)]
@@ -574,6 +787,29 @@ pub struct SendResult {
     /// Notes.
     #[serde(default)]
     pub warnings: Vec<Warning>,
+    /// 0 = current (showing or held), 1..=5 waiting (1 = next); null for
+    /// scheduled sends.
+    #[serde(default)]
+    pub queue_position: Option<u32>,
+    /// Sends waiting behind the current one after this send (waiting plus
+    /// due-waiting); null for scheduled sends.
+    #[serde(default)]
+    pub waiting: Option<u32>,
+    /// When it expires.
+    #[serde(default)]
+    pub expires_at: Option<Timestamp>,
+    /// The scheduled send, with `--in`/`--at`.
+    #[serde(default)]
+    pub schedule_id: Option<ScheduleId>,
+    /// When it is due, with `--in`/`--at`.
+    #[serde(default)]
+    pub due_at: Option<Timestamp>,
+    /// The IANA zone `--at` was read in (echo of the op's `tz`).
+    #[serde(default)]
+    pub tz: Option<String>,
+    /// `--replace`: the send it took over, if one was current.
+    #[serde(default)]
+    pub replaced_send_id: Option<SendId>,
 }
 
 impl Op for SendOp {
@@ -591,10 +827,12 @@ pub enum AskState {
     Answered,
     /// Closed without an answer.
     Dismissed,
-    /// Ran past `--expires-in`.
+    /// Ran past `--expires-in` / `--expires-at`.
     Expired,
     /// Cancelled by the Silicon (or `unregister`/`logout`).
     Cancelled,
+    /// Taken over by the Silicon's own `--replace`; no ting.
+    Replaced,
 }
 
 /// Delivery state of an answer.
@@ -715,8 +953,8 @@ pub struct AskCancelResult {
     /// The ask.
     pub ask_id: AskId,
     /// The ask's state after the call: `cancelled`, or the state it had
-    /// already closed in (`answered`, `dismissed`, `expired`), when there was
-    /// nothing left to cancel.
+    /// already closed in (`answered`, `dismissed`, `expired`, `replaced`),
+    /// when there was nothing left to cancel.
     pub state: AskState,
 }
 
@@ -777,6 +1015,18 @@ pub struct HistoryItem {
     /// returned, e.g. `speech_failed` when its speech became a text pill.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<Warning>,
+    /// When it appeared on screen (additive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown_at: Option<Timestamp>,
+    /// Its deadline (additive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<Timestamp>,
+    /// The scheduled send it came from (additive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_id: Option<ScheduleId>,
+    /// When it was due, for a scheduled send (additive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_at: Option<Timestamp>,
 }
 
 /// `history` result.
@@ -789,6 +1039,257 @@ pub struct HistoryResult {
 impl Op for History {
     const NAME: &'static str = "history";
     type Output = HistoryResult;
+}
+
+// ------------------------------------------------------------ queue ops
+
+/// `queue.list`: this Silicon's current send and the ones waiting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueList {}
+
+/// Where a send sits in its queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueItemState {
+    /// The current send, on screen.
+    OnScreen,
+    /// The current send, held (Carbon away or paused, Peek.app not running).
+    Held,
+    /// Waiting (at most five).
+    Waiting,
+    /// A due scheduled send waiting for a free spot.
+    DueWaiting,
+}
+
+/// One send of `queue.list`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueItem {
+    /// The send.
+    pub send_id: SendId,
+    /// Its ask.
+    pub ask_id: Option<AskId>,
+    /// `speak`, `show`, `ask`, `speak+show` or `speak+ask`.
+    pub kind: String,
+    /// At most 60 characters (may be empty).
+    pub summary: String,
+    /// Where it sits.
+    pub state: QueueItemState,
+    /// 0 = current; 1.. = the order it will be shown in.
+    pub queue_position: u32,
+    /// When `peek send` ran.
+    pub created_at: Timestamp,
+    /// When it entered the queue (the fire time for a scheduled send).
+    pub queued_at: Timestamp,
+    /// Milliseconds since `created_at`.
+    pub age_ms: u64,
+    /// Its deadline.
+    pub expires_at: Option<Timestamp>,
+    /// When it appeared.
+    pub shown_at: Option<Timestamp>,
+    /// The scheduled send it came from.
+    pub schedule_id: Option<ScheduleId>,
+    /// When it was due.
+    pub due_at: Option<Timestamp>,
+}
+
+/// `queue.list` result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueListResult {
+    /// The Silicon's position (null, with empty lists, when it holds none).
+    pub slot: Option<SlotIndex>,
+    /// How many may wait (5).
+    pub limit: u32,
+    /// The current send (state `on_screen` or `held`).
+    pub on_screen: Option<QueueItem>,
+    /// Waiting, then due-waiting, in show order.
+    pub waiting: Vec<QueueItem>,
+    /// Why the current send is held.
+    pub held: Option<HeldReason>,
+    /// Scheduled sends not due yet.
+    pub scheduled: u32,
+    /// How many may be scheduled (500).
+    pub scheduled_limit: u32,
+}
+
+impl Op for QueueList {
+    const NAME: &'static str = "queue.list";
+    type Output = QueueListResult;
+}
+
+/// `queue.clear`: drop every waiting send (and due scheduled sends waiting
+/// for room); with `all` also the current one. No ting is sent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueClear {
+    /// Also withdraw the current send.
+    #[serde(default)]
+    pub all: bool,
+}
+
+/// `queue.clear` result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueClearResult {
+    /// Waiting and due-waiting sends (plus the current one with `all`), in
+    /// queue order.
+    pub cancelled: Vec<SendId>,
+    /// The current send before the call.
+    pub on_screen: Option<SendId>,
+    /// Whether the current send was withdrawn.
+    pub on_screen_cancelled: bool,
+}
+
+impl Op for QueueClear {
+    const NAME: &'static str = "queue.clear";
+    type Output = QueueClearResult;
+}
+
+/// `send.cancel`: withdraw one send (on screen, waiting or scheduled; any
+/// kind). No ting is sent. The ID travels as `target` because `id` is the
+/// request envelope's own field.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendCancel {
+    /// `snd_…`, `ask_…` or `sch_…`.
+    pub target: String,
+}
+
+/// Where a cancelled send was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancelledFrom {
+    /// The current send, on screen.
+    OnScreen,
+    /// The current send, held.
+    Held,
+    /// Waiting.
+    Waiting,
+    /// A due scheduled send waiting for room.
+    DueWaiting,
+    /// Scheduled, not due yet.
+    Scheduled,
+    /// It had already closed; nothing was cancelled.
+    Closed,
+}
+
+/// `send.cancel` result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendCancelResult {
+    /// The send.
+    pub send_id: SendId,
+    /// Its ask.
+    pub ask_id: Option<AskId>,
+    /// Its scheduled send.
+    pub schedule_id: Option<ScheduleId>,
+    /// Where it was.
+    pub was: CancelledFrom,
+    /// Its place in the queue (for `on_screen`, `held`, `waiting`, `due_waiting`).
+    pub queue_position: Option<u32>,
+    /// `cancelled`, or for `was: closed` the final close reason or ask state
+    /// it already had (`answered`, `dismissed`, `expired`, `replaced`,
+    /// `auto`, `speech_done`, …).
+    pub state: String,
+    /// When it was due, for a scheduled send (additive).
+    #[serde(default)]
+    pub due_at: Option<Timestamp>,
+    /// The IANA zone its `--at` was given in, for a scheduled send (additive).
+    #[serde(default)]
+    pub tz: Option<String>,
+}
+
+impl Op for SendCancel {
+    const NAME: &'static str = "send.cancel";
+    type Output = SendCancelResult;
+}
+
+/// `schedule.list`: scheduled sends that are not due yet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleList {}
+
+/// One scheduled send.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduledItem {
+    /// The scheduled send.
+    pub schedule_id: ScheduleId,
+    /// The send it becomes when it fires.
+    pub send_id: SendId,
+    /// Its ask.
+    pub ask_id: Option<AskId>,
+    /// `speak`, `show`, `ask`, `speak+show` or `speak+ask`.
+    pub kind: String,
+    /// At most 60 characters (may be empty).
+    pub summary: String,
+    /// When it is due.
+    pub due_at: Timestamp,
+    /// The IANA zone `--at` was given in.
+    pub tz: Option<String>,
+    /// Its deadline.
+    pub expires_at: Option<Timestamp>,
+    /// `--replace`.
+    pub replace: bool,
+    /// When `peek send` ran.
+    pub created_at: Timestamp,
+}
+
+/// `schedule.list` result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleListResult {
+    /// Soonest first (then by schedule ID).
+    pub scheduled: Vec<ScheduledItem>,
+    /// How many may be scheduled (500).
+    pub limit: u32,
+    /// The Silicon's position (additive; null when it holds none).
+    #[serde(default)]
+    pub slot: Option<SlotIndex>,
+}
+
+impl Op for ScheduleList {
+    const NAME: &'static str = "schedule.list";
+    type Output = ScheduleListResult;
+}
+
+/// `schedule.cancel`: cancel one scheduled send before it is due. The ID
+/// travels as `target` (`id` is the request envelope's own field).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleCancel {
+    /// `sch_…` or its `snd_…`.
+    pub target: String,
+}
+
+/// `schedule.cancel` result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleCancelResult {
+    /// The scheduled send.
+    pub schedule_id: ScheduleId,
+    /// Its send.
+    pub send_id: SendId,
+    /// `cancelled`, or `fired` when it already came due (then it is in the
+    /// queue or closed; use `send.cancel`).
+    pub state: String,
+    /// When it was due (additive).
+    #[serde(default)]
+    pub due_at: Option<Timestamp>,
+    /// The IANA zone its `--at` was given in (additive).
+    #[serde(default)]
+    pub tz: Option<String>,
+}
+
+impl Op for ScheduleCancel {
+    const NAME: &'static str = "schedule.cancel";
+    type Output = ScheduleCancelResult;
+}
+
+/// `schedule.clear`: cancel every scheduled send of this Silicon.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleClear {}
+
+/// `schedule.clear` result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleClearResult {
+    /// The scheduled sends cancelled.
+    pub cancelled: Vec<ScheduleId>,
+}
+
+impl Op for ScheduleClear {
+    const NAME: &'static str = "schedule.clear";
+    type Output = ScheduleClearResult;
 }
 
 /// The config subset peekd mirrors.
@@ -1033,7 +1534,7 @@ impl Op for Doctor {
 pub struct AskResult {
     /// The ask.
     pub ask_id: AskId,
-    /// `answered`, `dismissed`, `expired` or `cancelled`.
+    /// `answered`, `dismissed`, `expired`, `cancelled` or `replaced`.
     pub state: AskState,
     /// The answer.
     #[serde(default)]
@@ -1074,7 +1575,6 @@ impl Op for AskResultAck {
 mod tests {
     use super::*;
     use crate::ipc::Request;
-    use serde_json::json;
 
     fn png() -> Vec<u8> {
         b"\x89PNG\r\n\x1a\n0000".to_vec()
@@ -1100,6 +1600,10 @@ mod tests {
             duration_ms: None,
             expires_in_s: None,
             wait: false,
+            expires_at: None,
+            due_at: None,
+            tz: None,
+            replace: false,
         };
         base.validate(&[])?;
         let mut s = base.clone();
@@ -1161,6 +1665,10 @@ mod tests {
             duration_ms: None,
             expires_in_s: Some(60),
             wait: true,
+            expires_at: None,
+            due_at: None,
+            tz: None,
+            replace: false,
         };
         let req = Request::new(&op, None, vec![])?;
         assert_eq!(req.fields["ask"]["type"], "single_choice");
@@ -1170,6 +1678,257 @@ mod tests {
         );
         assert_eq!(req.fields["notify"], json!(["speech_finished"]));
         assert_eq!(req.parse::<SendOp>()?, op);
+        // A plain op is byte-compatible with a 0.1.1 peekd: no new keys.
+        for key in ["expires_at", "due_at", "tz", "replace"] {
+            assert!(!req.fields.contains_key(key), "{key}");
+        }
+        // A full op round-trips.
+        let mut full = op.clone();
+        full.wait = false;
+        full.expires_in_s = None;
+        full.due_at = Some(Timestamp::parse("2026-09-27T12:30:00Z")?);
+        full.expires_at = Some(Timestamp::parse("2026-09-27T13:00:00Z")?);
+        full.tz = Some("Asia/Kolkata".into());
+        full.replace = true;
+        let req = Request::new(&full, None, vec![])?;
+        assert_eq!(req.fields["due_at"], "2026-09-27T12:30:00.000Z");
+        assert_eq!(req.fields["replace"], true);
+        assert_eq!(req.parse::<SendOp>()?, full);
+        assert_eq!(full.kind(), "speak+ask");
+        Ok(())
+    }
+
+    fn speak_op() -> SendOp {
+        SendOp {
+            isi: None,
+            speak: Some("hi".into()),
+            show: None,
+            ask: None,
+            voice: None,
+            lang: None,
+            notify: vec![],
+            duration_ms: None,
+            expires_in_s: None,
+            wait: false,
+            expires_at: None,
+            due_at: None,
+            tz: None,
+            replace: false,
+        }
+    }
+
+    #[test]
+    fn validate_at_deadlines() -> Result<()> {
+        let now = Timestamp::parse("2026-09-27T06:12:00Z")?;
+        let ms = |n: i64| Timestamp::from_unix_ms(now.unix_ms() + n);
+        let s = 1000;
+        let day = 86_400 * s;
+        let check = |op: &SendOp, slack: i64| op.validate_at(&[], now, slack);
+        let field = |r: Result<()>| {
+            r.err().and_then(|e| {
+                e.details()
+                    .and_then(|d| d["field"].as_str().map(str::to_owned))
+            })
+        };
+        let mut op = speak_op();
+        // due_at, strict.
+        op.due_at = Some(now);
+        assert_eq!(field(check(&op, 0)).as_deref(), Some("--at"));
+        op.due_at = Some(ms(1));
+        check(&op, 0)?;
+        op.due_at = Some(ms(365 * day));
+        check(&op, 0)?;
+        op.due_at = Some(ms(365 * day + 1));
+        assert_eq!(field(check(&op, 0)).as_deref(), Some("--at"));
+        // due_at with peekd's slack.
+        op.due_at = Some(ms(-4 * s));
+        check(&op, 5000)?;
+        op.due_at = Some(ms(-6 * s));
+        assert!(check(&op, 5000).is_err());
+        // expires_at of a regular send.
+        let mut op = speak_op();
+        op.expires_at = Some(ms(9 * s));
+        assert_eq!(field(check(&op, 0)).as_deref(), Some("--expires-at"));
+        op.expires_at = Some(ms(10 * s));
+        check(&op, 0)?;
+        op.expires_at = Some(ms(7 * day));
+        check(&op, 0)?;
+        op.expires_at = Some(ms(7 * day + 1));
+        assert!(check(&op, 0).is_err());
+        op.expires_at = Some(ms(5 * s));
+        check(&op, 5000)?;
+        op.expires_at = Some(ms(4 * s));
+        assert!(check(&op, 5000).is_err());
+        // expires_at of a scheduled send: relative to due, no slack.
+        let mut op = speak_op();
+        op.due_at = Some(ms(3600 * s));
+        op.expires_at = Some(ms(3600 * s + 9 * s));
+        assert!(check(&op, 5000).is_err());
+        op.expires_at = Some(ms(3600 * s + 10 * s));
+        check(&op, 0)?;
+        op.expires_at = Some(ms(3600 * s + 7 * day));
+        check(&op, 0)?;
+        op.expires_at = Some(ms(3600 * s + 7 * day + 1));
+        assert!(check(&op, 5000).is_err());
+        // expires_in_s is not for scheduled sends; tz is checked.
+        let mut op = speak_op();
+        op.due_at = Some(ms(60 * s));
+        op.expires_in_s = Some(60);
+        assert_eq!(
+            check(&op, 0).err().map(|e| e.code().clone()),
+            Some(ErrorCode::ConflictingFlags)
+        );
+        let mut op = speak_op();
+        op.tz = Some("Asia/Kolkata".into());
+        assert_eq!(
+            check(&op, 0).err().map(|e| e.code().clone()),
+            Some(ErrorCode::ConflictingFlags),
+            "--tz needs --at or --expires-at"
+        );
+        op.due_at = Some(ms(60 * s));
+        check(&op, 0)?;
+        op.tz = Some("Asia Kolkata".into());
+        assert_eq!(field(check(&op, 0)).as_deref(), Some("--tz"));
+        op.tz = Some("x".repeat(65));
+        assert!(check(&op, 0).is_err());
+        // --expires-in on a speak is valid now; --replace with anything.
+        let mut op = speak_op();
+        op.expires_in_s = Some(900);
+        op.replace = true;
+        check(&op, 0)?;
+        op.expires_in_s = Some(9);
+        assert!(check(&op, 0).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn send_results_decode_old_replies_and_serialize_every_key() -> Result<()> {
+        let e = |x: serde_json::Error| Error::internal(x.to_string());
+        let sid = SendId::generate();
+        let old: SendResult =
+            serde_json::from_value(json!({"send_id": sid, "ask_id": null, "slot": 3,
+            "status": "showing", "speech": null, "warnings": []}))
+            .map_err(e)?;
+        assert_eq!(old.queue_position, None);
+        assert_eq!(old.schedule_id, None);
+        let v = serde_json::to_value(&old).map_err(e)?;
+        for key in [
+            "queue_position",
+            "waiting",
+            "expires_at",
+            "schedule_id",
+            "due_at",
+            "tz",
+            "replaced_send_id",
+        ] {
+            assert!(v.get(key).is_some_and(Value::is_null), "{key}");
+        }
+        let scheduled: SendResult = serde_json::from_value(json!({"send_id": sid, "ask_id": null, "slot": 3,
+            "status": "scheduled", "schedule_id": ScheduleId::generate(), "due_at": "2026-09-27T12:30:00Z",
+            "tz": "Asia/Kolkata"}))
+        .map_err(e)?;
+        assert_eq!(scheduled.status, SendStatus::Scheduled);
+        assert_eq!(scheduled.tz.as_deref(), Some("Asia/Kolkata"));
+        Ok(())
+    }
+
+    #[test]
+    fn hello_results_carry_features() -> Result<()> {
+        let e = |x: serde_json::Error| Error::internal(x.to_string());
+        let old: HelloResult =
+            serde_json::from_value(json!({"protocol":1,"peekd_version":"0.1.1"})).map_err(e)?;
+        assert!(old.features.is_empty());
+        assert!(!old.has_feature(features::QUEUE_V2));
+        let new = HelloResult {
+            protocol: 1,
+            peekd_version: "0.1.2".into(),
+            app: None,
+            features: features::ALL.iter().map(|f| (*f).to_owned()).collect(),
+        };
+        let v = serde_json::to_value(&new).map_err(e)?;
+        assert_eq!(
+            v["features"],
+            json!([
+                "queue_v2",
+                "expiry_all",
+                "replace",
+                "schedule",
+                "notify_shown"
+            ])
+        );
+        assert!(new.has_feature(features::SCHEDULE));
+        Ok(())
+    }
+
+    #[test]
+    fn queue_and_schedule_ops() -> Result<()> {
+        let e = |x: serde_json::Error| Error::internal(x.to_string());
+        assert_eq!(QueueList::NAME, "queue.list");
+        assert_eq!(QueueClear::NAME, "queue.clear");
+        assert_eq!(SendCancel::NAME, "send.cancel");
+        assert_eq!(ScheduleList::NAME, "schedule.list");
+        assert_eq!(ScheduleCancel::NAME, "schedule.cancel");
+        assert_eq!(ScheduleClear::NAME, "schedule.clear");
+        let req = Request::new(&QueueClear { all: true }, None, vec![])?;
+        assert_eq!(req.parse::<QueueClear>()?, QueueClear { all: true });
+        let bare: QueueClear = serde_json::from_value(json!({})).map_err(e)?;
+        assert!(!bare.all);
+        let sid = SendId::generate();
+        for id in [
+            sid.to_string(),
+            AskId::generate().to_string(),
+            ScheduleId::generate().to_string(),
+        ] {
+            let req = Request::new(&SendCancel { target: id.clone() }, None, vec![])?;
+            assert_eq!(req.fields["target"], id.as_str());
+            assert_eq!(req.parse::<SendCancel>()?.target, id);
+            let req = Request::new(&ScheduleCancel { target: id.clone() }, None, vec![])?;
+            assert_eq!(req.parse::<ScheduleCancel>()?.target, id);
+        }
+        let item = json!({"send_id": sid, "ask_id": null, "kind": "show", "summary": "Build finished",
+            "state": "on_screen", "queue_position": 0, "created_at": "2026-09-27T12:00:00Z",
+            "queued_at": "2026-09-27T12:00:00Z", "age_ms": 12000, "expires_at": null,
+            "shown_at": "2026-09-27T12:00:01Z", "schedule_id": null, "due_at": null});
+        let list: QueueListResult = serde_json::from_value(json!({"slot": 3, "limit": 5,
+            "on_screen": item, "waiting": [], "held": null, "scheduled": 4, "scheduled_limit": 500}))
+        .map_err(e)?;
+        assert_eq!(
+            list.on_screen.as_ref().map(|i| i.state),
+            Some(QueueItemState::OnScreen)
+        );
+        let back = serde_json::to_value(&list).map_err(e)?;
+        assert_eq!(back["on_screen"]["state"], "on_screen");
+        assert_eq!(back["held"], Value::Null);
+        let due: QueueItemState = serde_json::from_value(json!("due_waiting")).map_err(e)?;
+        assert_eq!(due, QueueItemState::DueWaiting);
+        let sched: ScheduleListResult =
+            serde_json::from_value(json!({"limit": 500, "scheduled": [{
+            "schedule_id": ScheduleId::generate(), "send_id": sid, "ask_id": null, "kind": "ask",
+            "summary": "Stand-up in 5?", "due_at": "2026-09-27T12:30:00Z", "tz": "Asia/Kolkata",
+            "expires_at": null, "replace": true, "created_at": "2026-09-27T10:00:00Z"}]}))
+            .map_err(e)?;
+        assert!(sched.scheduled[0].replace);
+        let cancelled: SendCancelResult =
+            serde_json::from_value(json!({"send_id": sid, "ask_id": null,
+            "schedule_id": null, "was": "closed", "queue_position": null, "state": "speech_done"}))
+            .map_err(e)?;
+        assert_eq!(cancelled.was, CancelledFrom::Closed);
+        let status: QueueStatus = serde_json::from_value(json!({"pending": 2})).map_err(e)?;
+        assert_eq!(status.limit, 5, "an older peekd's status still reads");
+        assert_eq!(QueueStatus::default().limit, 5);
+        let held: HeldReason = serde_json::from_value(json!("app_not_running")).map_err(e)?;
+        assert_eq!(held, HeldReason::AppNotRunning);
+        let replaced: AskState = serde_json::from_value(json!("replaced")).map_err(e)?;
+        assert_eq!(replaced, AskState::Replaced);
+        let unreg: UnregisterResult =
+            serde_json::from_value(json!({"released_slot": 3, "cancelled_asks": []})).map_err(e)?;
+        assert!(unreg.cancelled_sends.is_empty() && unreg.cancelled_scheduled.is_empty());
+        let hist: HistoryItem = serde_json::from_value(json!({"send_id": sid, "kind": "show",
+            "created_at": "2026-09-27T12:00:00Z"}))
+        .map_err(e)?;
+        assert!(hist.shown_at.is_none());
+        let v = serde_json::to_value(&hist).map_err(e)?;
+        assert!(v.get("schedule_id").is_none(), "absent unless set");
         Ok(())
     }
 
@@ -1216,7 +1975,8 @@ mod tests {
             r.carbon,
             Some(CarbonStatus {
                 available: false,
-                reason: crate::ipc::ui::PresenceReason::Locked
+                reason: crate::ipc::ui::PresenceReason::Locked,
+                paused: false,
             })
         );
         let h = History {

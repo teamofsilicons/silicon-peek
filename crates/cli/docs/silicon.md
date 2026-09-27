@@ -59,7 +59,7 @@ si auth setup peek       # forces a fresh login if peek reports logged out
 | `telemetry` | bool | `true` | this home's telemetry ([Telemetry](telemetry.md)) |
 | `voice` | `aura-2-<name>-<en\|es\|de\|fr\|nl\|it\|ja>` or null | null | your default speaking voice |
 | `language` | BCP 47 primary subtag or null | null (detect) | the speech language when detection is ambiguous |
-| `notify` | subset of `["speech_finished","show_dismissed"]` | `[]` | opt-in events for every send |
+| `notify` | subset of `["speech_finished","show_dismissed","shown"]` | `[]` | opt-in events for every send |
 | `api_url` | https URL or null | null | the peek backend (same as `--api`) |
 | `delivery_max_age_hours` | int 1..168 | 168 | how long undelivered answers keep retrying |
 
@@ -92,7 +92,7 @@ peek register drawing ./drawings/logo.js    # validated for 90 frames, then acti
 - If the position is taken, you get `side_taken` (exit 4) with the owner and the free positions: `{"details":{"owner":"si:dj","free":[1,4,6,7]}}`. Pick a free one. Running `register side` again with another number moves you there; your drawing keeps running.
 - The drawing path is resolved against your **current directory**. The CLI reads the bytes, so Peek.app never opens your files.
 - A drawing that fails validation is not activated and the previous one stays. Use `--check` to validate without replacing, `--preview out.png` to see the test frames. See [Drawing the visual](drawing.md).
-- `peek unregister` releases the position, deletes the drawing (locally and on the server) and cancels your pending asks. No Ting events are sent for your own actions.
+- `peek unregister` releases the position, deletes the drawing (locally and on the server) and cancels your pending asks, queued sends and scheduled sends. No Ting events are sent for your own actions.
 
 ## Send
 
@@ -112,22 +112,47 @@ peek send --speak "Found 3 GB of old builds." \
 Output with `--json`:
 
 ```json
-{"send_id":"snd_0192…","ask_id":"ask_0192…","slot":3,"status":"showing",
+{"send_id":"snd_0192…","ask_id":"ask_0192…","slot":3,"status":"showing","queue_position":0,"waiting":0,
+ "expires_at":null,"schedule_id":null,"due_at":null,"tz":null,"replaced_send_id":null,
  "speech":{"status":"pending","model":"aura-2-thalia-en","chars":25},"warnings":[]}
 ```
 
-`status` is `queued` when an earlier ask of yours is still on screen, or when the Carbon is away; up to 5 sends wait, then `slot_busy` (exit 4). Keep the `ask_id`: it is in the answer, and `peek ask get <ASK_ID>` shows the local state at any time.
+`status` is `queued` when an earlier send of yours is still on screen (`queue_position` says how many are ahead), or when the Carbon is away or paused Peek. Keep the `ask_id`: it is in the answer, and `peek ask get <ASK_ID>` shows the local state at any time.
 
 Warnings in the result tell you what the Carbon will or will not get. The send itself still went through:
 
 | Warning | Meaning | What to do |
 |---|---|---|
-| `carbon_away` | The Carbon's screen is locked or the display is asleep. The send waits in your queue and is shown, in order, when the Carbon is back. An ask keeps its `--expires-in` clock while it waits, and speech starts only when the bubble is actually shown. | Nothing. `peek status --json` shows `"carbon":{"available":false,"reason":"locked"\|"asleep"\|"display_off"}`. |
+| `carbon_away` | The Carbon's screen is locked or the display is asleep. The send waits in your queue and is shown, in order, when the Carbon is back. Deadlines keep running while it waits, and speech starts only when the bubble is actually shown. | Nothing. `peek status --json` shows `"carbon":{"available":false,"reason":"locked"\|"asleep"\|"display_off"}`. |
+| `carbon_paused` | The Carbon paused all peeks. The send waits in your queue and is shown when they resume. | Nothing; do not resend. |
 | `ting_not_enrolled` | You are not a Ting recipient for peek (the grant was revoked, or enrollment failed), so answers cannot reach you. They wait on the Mac. | `peek ting enroll`; waiting answers are then retried right away. |
 | `isi_ignored` | `$ISI` was invalid (over 160 characters, or more than one line), so it was dropped from this send and its events carry no `metadata.isi`. | Fix `ISI`, or unset it. |
 | `speak_language_unsupported` | The speech language has no voice; the text shows as a pill instead. | Speak one of en, es, de, fr, nl, it, ja, or pass `--lang`. |
+| `timezone_fallback_utc` | The Mac's time zone could not be read, so an `--at` or `--expires-at` without an offset was read as UTC. | Give the time with an offset (`18:00+05:30`) or pass `--tz`. |
 
 The JSON schemas, limits and defaults are in [Speak and show](show.md) and [Ask a question](ask.md).
+
+## Queue, expire, replace, schedule
+
+Your sends take turns on your position, first in, first out. A new send never replaces the one on screen: it waits until that one is done. At most 5 wait behind the one on screen; one more fails with `queue_full` (exit 4, retryable). All your ISIs share this queue, so a busy ISI can fill it for the others.
+
+```sh
+peek queue                                   # what is on screen and what waits, with ids and ages
+peek cancel snd_0192…                        # withdraw one send (snd_…, ask_… or sch_…); no Ting event
+peek queue clear                             # drop every waiting send; --all also the one on screen
+
+peek send --show @status.json --expires-in 15m          # drop it if it is not done in 15 minutes
+peek send --speak "Correction: the deploy failed." --replace   # take over the bubble now
+peek send --speak "Stand-up in five minutes." --at 09:55       # once, at 09:55 on the Mac's clock
+peek send --ask @q.json --in 2h --expires-at 2026-09-27T20:00  # a scheduled ask with a deadline
+peek schedule list                            # scheduled sends not due yet; cancel with peek schedule cancel <ID>
+```
+
+- **Expiry** (`--expires-in 90s|15m|2h|1d`, or `--expires-at <DATETIME>`) works on every kind of send. A send still waiting when its deadline passes is never shown; one on screen slides away. You receive `peek.send.expired` (or `peek.ask.expired` for an ask), and its `shown` field says whether the Carbon ever saw it.
+- **`--replace`** closes whatever of yours is current, even a pending ask (cancelled without an answer or a Ting event), and shows the new send at once. Your waiting sends keep their order.
+- **Scheduling** (`--in <DURATION>` or `--at <DATETIME>`, one time, up to 365 days ahead, 500 per Silicon) stores the send on the Mac and queues it at its time. `--at 18:00` means 18:00 on the Mac's clock; write `18:00+05:30` or pass `--tz Asia/Kolkata` to be explicit, which is wise when your own `timezone` differs from the Carbon's. A scheduled send takes only `--expires-at` and never `--wait`. When it comes due you receive `peek.schedule.due` (outcome `shown`, `queued`, `expired` or `replaced`), and `peek.send.shown` when it appears. If the Mac was asleep, it fires on wake unless it expired.
+
+All flags, outputs and limits: [CLI reference](cli.md#queue-expiry-and-scheduling).
 
 ## Put a blurb in `tools.md`
 
@@ -140,6 +165,7 @@ peek pops a small bubble on your carbon's Mac screen (one of 8 positions, yours 
 use it for one-off, no-history moments: "is this file safe to delete?", "now playing …", a nudge. use [dm] for anything that needs a thread.
 first time: `peek register side N` and `peek register drawing ./path.js`. `peek send` fails until both are set.
 `peek send --speak "..." --show '{...}'` or `peek send --speak "..." --ask '{...}'` returns immediately. the answer arrives later as a peek.ask.answered message.
+your sends queue one at a time (max 5 waiting; `peek queue`, `peek cancel <id>`). add `--expires-in 15m` when a send goes stale, `--at 09:55` or `--in 2h` to schedule one.
 keep asks self-contained: the carbon sees nothing but the bubble. dedupe answers by ask_id.
 ```
 
@@ -185,7 +211,7 @@ Your Stemcell webhook receives:
   "data":{"schema":1,"ask_id":"ask_0192…","send_id":"snd_0192…","question":"Delete old builds?","ask_type":"single_choice",
           "answer":{"kind":"single_choice","option_id":"1","label":"Delete"},"via":"click","transcript":null,
           "asked_at":"2026-09-26T10:00:00Z","answered_at":"2026-09-26T10:00:07Z","slot":3,"context":"production"},
-  "metadata":{"isi":"deliberate","peek_version":"0.1.1"},"key":"si:cleanup/ask_0192…/answered"}]}
+  "metadata":{"isi":"deliberate","peek_version":"0.1.2"},"key":"si:cleanup/ask_0192…/answered"}]}
 ```
 
 Stemcell has no default flow, so without one of these branches peek events are dropped (an empty `flow: []` compiles and drops every ting). Both flows below were compiled with `silicon compile` and executed against a sample batch.
@@ -264,13 +290,15 @@ peek send --json --ask '{"question":"Ship it?","type":"single_choice","options":
 # timeout:  {"ask_id":"ask_…","send_id":"snd_…","state":"pending","delivery":"ting"}
 ```
 
-Whatever a live `--wait` prints **replaces** the Ting event: an answer, and also a dismissal or an expiry (`{"state":"dismissed"}`, `{"state":"expired"}`, `{"state":"cancelled"}`). So each outcome reaches you through exactly one channel. If the wait times out or the process dies, the outcome is delivered by Ting as usual. Model tool calls often time out after about two minutes; keep `--wait` short there, or do not use it.
+Whatever a live `--wait` prints **replaces** the Ting event: an answer, and also a dismissal or an expiry (`{"state":"dismissed"}`, `{"state":"expired"}`, `{"state":"cancelled"}`, or `{"state":"replaced"}` when a later `--replace` of yours took over). So each outcome reaches you through exactly one channel. If the wait times out or the process dies, the outcome is delivered by Ting as usual. Model tool calls often time out after about two minutes; keep `--wait` short there, or do not use it.
 
 ## Check your state
 
 ```sh
 peek status --json            # position, drawing, queue, pending asks, deliveries, Carbon presence, app and helper
-peek ask get ask_0192…        # pending | answered | dismissed | expired | cancelled, with the answer
+peek queue                    # the send on screen and the ones waiting behind it
+peek schedule list            # scheduled sends that are not due yet
+peek ask get ask_0192…        # pending | answered | dismissed | expired | cancelled | replaced, with the answer
 peek ask list --state pending
 peek history --limit 20       # your recent sends on this Mac
 peek doctor                   # every check, with the exact fix
@@ -283,7 +311,10 @@ peek doctor                   # every check, with the exact fix
 | `side_not_registered` | 4 | "no position registered for si:cleanup; run `peek register side <1-8>` first (free: 1,4,6,7)" |
 | `drawing_not_registered` | 4 | "no drawing registered for si:cleanup; run `peek register drawing ./logo.js` first" |
 | `side_taken` | 4 | Another Silicon holds it; `details.free` lists the free ones. |
-| `slot_busy` | 4 | Five sends already wait behind a pending ask. Wait for the answer, or `peek ask cancel`. |
+| `queue_full` | 4 | Five of your sends already wait behind the one on screen. `peek queue`, then `peek cancel <SEND_ID>` or `peek queue clear`; or retry later. (`slot_busy` in older versions.) |
+| `schedule_full` | 4 | 500 sends are already scheduled. `peek schedule cancel <ID>` or `peek schedule clear`. |
+| `send_not_found`, `schedule_not_found` | 4 | `peek cancel` or `peek schedule cancel` with an id that is not yours or does not exist. `peek queue`, `peek schedule list`. |
+| `app_update_pending` | 5 | Peek.app on the Mac is older than your CLI and does not support a new option yet (`details.missing_features`). `peek app update`, then retry. |
 | `invalid_input` | 2 | The JSON does not match the schema, for example two options with the same label. `details.field` names the offending field. |
 | `not_logged_in`, `session_rejected` | 3 | Log in again (`si auth setup peek`, or a new SLT and `peek login`). |
 | `platform_unsupported` | 4 | This `peek` runs on Linux or Windows; bubbles need macOS. See [Platforms](platforms.md). |

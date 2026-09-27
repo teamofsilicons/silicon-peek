@@ -78,6 +78,8 @@ public final class SimulationEngine {
     @ObservationIgnored private var recordTask: Task<Void, Never>?
     @ObservationIgnored private var streamTask: Task<Void, Never>?
     @ObservationIgnored private var pollTask: Task<Void, Never>?
+    /// Queue updates and Escs a 0.1.2 scenario performs after its bubble appears.
+    @ObservationIgnored private var followUpTask: Task<Void, Never>?
     @ObservationIgnored private var pcmCache: [String: SimulationSpeechSynth.Clip] = [:]
     @ObservationIgnored private var nextLogID = 0
     @ObservationIgnored private let logger = PeekLogger(category: "simulation")
@@ -174,7 +176,53 @@ public final class SimulationEngine {
         append(.info, Self.describe(event, scenario: scenario))
         if let speak = event.speak { startSpeech(sendID: sendID, text: speak.text, pipeline: pipeline) }
         startPolling(pipeline: pipeline)
+        startFollowUps(scenario, sendID: sendID, pipeline: pipeline)
         return true
+    }
+
+    // MARK: peek 0.1.2 follow-ups (queue badge, Esc on the ask)
+
+    /// After the bubble is up: the scenario's `queue.state` (the badge's live update) and the Escs that collapse the ask
+    /// and show "Esc again to dismiss" (pressed again whenever it fades, so screenshots can catch it).
+    private func startFollowUps(_ scenario: SimulationScenario, sendID: String, pipeline: SimulationPipeline) {
+        followUpTask?.cancel()
+        guard scenario.queueUpdate != nil || scenario.askEsc != .none,
+              let manager = (pipeline.presenter as? PeekCoordinator)?.slotManager else { return }
+        let slot = scenario.position
+        followUpTask = Task { @MainActor [weak self] in
+            @MainActor func visible() -> Bool {
+                manager.machine(on: slot)?.event?.sendID == sendID && manager.machine(on: slot)?.stage == .visible
+            }
+            var waited = 0
+            while !visible() {
+                try? await Task.sleep(for: .milliseconds(50))
+                waited += 1
+                if Task.isCancelled || waited > 200 { return }
+            }
+            if scenario.askEsc != .none {
+                try? await Task.sleep(for: .milliseconds(400))
+                guard !Task.isCancelled else { return }
+                manager.escapePressed(fromKeySlot: nil)
+                self?.append(.info, "pressed Esc: the ask collapsed to the compact ask (^ expands it)")
+            }
+            if let waiting = scenario.queueUpdate {
+                try? await Task.sleep(for: SimulationScenario.queueUpdateDelay)
+                guard !Task.isCancelled else { return }
+                manager.applyQueueState(QueueStateEvent(slot: slot, context: .simulation, sendID: sendID, waiting: waiting))
+                self?.append(.info, "queue.state: \(waiting) waiting behind \(sendID) (the badge updates live)")
+            }
+            guard scenario.askEsc == .hint else { return }
+            let timing = manager.timing
+            try? await Task.sleep(for: .milliseconds(Int((timing.escDouble + 0.2) * 1000)))
+            while !Task.isCancelled, manager.machine(on: slot)?.event?.sendID == sendID {
+                if manager.machine(on: slot)?.escHintVisible == false, manager.machine(on: slot)?.escArmedUntil == nil {
+                    manager.escapePressed(fromKeySlot: nil)
+                    self?.append(.info, "pressed Esc on the compact ask: \"\(BubbleMachine.escAgainHint)\" shows for "
+                        + "\(timing.escHint) s")
+                }
+                try? await Task.sleep(for: .milliseconds(Int((timing.escHint + 0.15) * 1000)))
+            }
+        }
     }
 
     /// Slides the simulated bubble out and stops its speech.
@@ -280,6 +328,8 @@ public final class SimulationEngine {
     private func dismissCurrent(reason: String) {
         streamTask?.cancel()
         streamTask = nil
+        followUpTask?.cancel()
+        followUpTask = nil
         guard let sendID = currentSendID, let pipeline else {
             currentSendID = nil
             return

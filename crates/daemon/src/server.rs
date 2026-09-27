@@ -17,16 +17,17 @@ use silicon_peek_client::{
         Empty, Event, Message, Reply, Request, SUPPORTED_PROTOCOLS,
         cli::{
             AppOffer, AppUninstall, AskCancel, AskCancelResult, AskGet, AskList, AskListResult,
-            AskResultAck, AskState, Attach, ConfigSync, DaemonStatus, DaemonStatusResult, Detach,
-            Doctor, Hello, HelloApp, HelloResult, History, HistoryItem, RegisterDrawing,
-            RegisterSide, SendOp, StatusOp, Telemetry, UiStatus, Unregister, Warning,
+            AskResultAck, AskState, Attach, CliHello, ConfigSync, DaemonStatus, DaemonStatusResult,
+            Detach, Doctor, Hello, HelloApp, HelloResult, History, HistoryItem, QueueClear,
+            QueueList, RegisterDrawing, RegisterSide, ScheduleCancel, ScheduleClear, ScheduleList,
+            SendCancel, SendOp, StatusOp, Telemetry, UiStatus, Unregister, Warning, features,
         },
         frame::{AsyncFrameReader, Frame, FrameLimits, blob_limit, write_frame_async},
         negotiate,
         ui::{
             AnswerOp, CancelReason, Dismissed, DrawingError, Focus, MessageOp, Presence,
-            SettingsChanged, ShownDone, SpeechDone, UiAppUninstall, UiDoctor, UiStatusReport,
-            UiTelemetry, VoiceSubmit,
+            SettingsChanged, Shown, ShownDone, SpeechDone, UiAppUninstall, UiDoctor,
+            UiStatusReport, UiTelemetry, VoiceSubmit,
         },
     },
     runtime::daemon::verify_peer,
@@ -54,7 +55,7 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// accept one but do not need it).
 const NO_AUTH: [&str; 3] = ["daemon.status", "app.uninstall", "doctor"];
 /// Ops only a CLI may send.
-const CLI_OPS: [&str; 17] = [
+const CLI_OPS: [&str; 23] = [
     "attach",
     "detach",
     "status",
@@ -72,9 +73,15 @@ const CLI_OPS: [&str; 17] = [
     "daemon.status",
     "app.uninstall",
     "doctor",
+    "queue.list",
+    "queue.clear",
+    "send.cancel",
+    "schedule.list",
+    "schedule.cancel",
+    "schedule.clear",
 ];
 /// Ops only Peek.app may send.
-const UI_OPS: [&str; 12] = [
+const UI_OPS: [&str; 13] = [
     "answer",
     "voice.submit",
     "ui.status",
@@ -87,7 +94,75 @@ const UI_OPS: [&str; 12] = [
     "drawing.error",
     "telemetry",
     "settings.changed",
+    "shown",
 ];
+
+/// The first CLI version with queue v2 (`queue_full`, ask state `replaced`).
+const QUEUE_V2_CLI: (u64, u64, u64) = (0, 1, 2);
+
+/// Whether a CLI predates 0.1.2 (contract §4.2): it gets `slot_busy` for
+/// `queue_full` and ask state `cancelled` for `replaced`. The version is
+/// compared as major.minor.patch, ignoring a pre-release; an unparsable one
+/// counts as legacy.
+fn legacy_cli(hello: &CliHello) -> bool {
+    let core = hello
+        .cli_version
+        .split(['-', '+'])
+        .next()
+        .unwrap_or_default();
+    let parts: Vec<Option<u64>> = core.split('.').map(|p| p.parse().ok()).collect();
+    match parts.as_slice() {
+        [Some(major), Some(minor), Some(patch)] => (*major, *minor, *patch) < QUEUE_V2_CLI,
+        _ => true,
+    }
+}
+
+/// Rewrites a reply for a legacy CLI (see [`legacy_cli`]).
+fn downgrade_reply(op: &str, reply: &mut Reply) {
+    match &mut reply.outcome {
+        Err(e) if e.code == ErrorCode::QueueFull => e.code = ErrorCode::SlotBusy,
+        Err(_) => {}
+        Ok(v) => {
+            let fix = |state: &mut Value| {
+                if state == "replaced" {
+                    *state = json!("cancelled");
+                }
+            };
+            match op {
+                "ask.get" | "ask.cancel" => {
+                    if let Some(st) = v.get_mut("state") {
+                        fix(st);
+                    }
+                }
+                "ask.list" => {
+                    for a in v
+                        .get_mut("asks")
+                        .and_then(Value::as_array_mut)
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(st) = a.get_mut("state") {
+                            fix(st);
+                        }
+                    }
+                }
+                "history" => {
+                    for i in v
+                        .get_mut("items")
+                        .and_then(Value::as_array_mut)
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(st) = i.get_mut("ask_state") {
+                            fix(st);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
 
 fn protocol_error(msg: impl Into<String>) -> Error {
     Error::new(ErrorCode::ProtocolError, msg).with_hint(
@@ -259,12 +334,14 @@ impl Shared {
                 build: self.installed_build().await,
                 ui_running: self.ui.is_connected(),
             }),
+            features: features::ALL.iter().map(|f| (*f).to_owned()).collect(),
         };
+        let legacy = legacy_cli(&h);
         if write(&mut w, Message::Reply(ok(req, &result, Vec::new())))
             .await
             .is_ok()
         {
-            self.cli_loop(reader, w).await;
+            self.cli_loop(reader, w, legacy).await;
         }
     }
 
@@ -311,6 +388,7 @@ impl Shared {
             protocol,
             peekd_version: silicon_peek_client::VERSION.to_owned(),
             app: None,
+            features: features::ALL.iter().map(|f| (*f).to_owned()).collect(),
         };
         if write(&mut w, Message::Reply(ok(req, &result, Vec::new())))
             .await
@@ -327,6 +405,7 @@ impl Shared {
         self: SharedRef,
         mut reader: AsyncFrameReader<tokio::net::unix::OwnedReadHalf>,
         mut w: OwnedWriteHalf,
+        legacy: bool,
     ) {
         loop {
             let frame = match reader.read_frame().await {
@@ -350,7 +429,10 @@ impl Shared {
             };
             let started = Instant::now();
             let op = req.op.clone();
-            let (reply, waiter) = self.cli_request(&req).await;
+            let (mut reply, waiter) = self.cli_request(&req, legacy).await;
+            if legacy {
+                downgrade_reply(&op, &mut reply);
+            }
             let outcome = if reply.outcome.is_ok() { "ok" } else { "error" };
             let error_code = reply.outcome.as_ref().err().map(|e| e.code.to_string());
             if write(&mut w, Message::Reply(reply)).await.is_err() {
@@ -366,7 +448,8 @@ impl Shared {
             rec.home = req.auth.as_ref().map(|a| a.home.clone());
             self.record(rec);
             if let Some((ask_id, rx)) = waiter {
-                self.wait_for_result(&mut reader, &mut w, &ask_id, rx).await;
+                self.wait_for_result(&mut reader, &mut w, &ask_id, rx, legacy)
+                    .await;
                 return;
             }
         }
@@ -394,6 +477,7 @@ impl Shared {
         w: &mut OwnedWriteHalf,
         ask_id: &silicon_peek_client::ids::AskId,
         rx: oneshot::Receiver<WaiterMsg>,
+        legacy: bool,
     ) {
         let mut shutdown = self.shutdown.subscribe();
         if *shutdown.borrow() {
@@ -402,7 +486,10 @@ impl Shared {
         }
         tokio::select! {
             msg = rx => {
-                if let Ok(WaiterMsg { result, ack }) = msg {
+                if let Ok(WaiterMsg { mut result, ack }) = msg {
+                    if legacy && result.state == AskState::Replaced {
+                        result.state = AskState::Cancelled;
+                    }
                     let written = match Event::new(&result, Vec::new()) {
                         Ok(e) => write(w, Message::Event(e)).await.is_ok(),
                         Err(_) => false,
@@ -452,6 +539,7 @@ impl Shared {
     async fn cli_request(
         self: &SharedRef,
         req: &Request,
+        legacy: bool,
     ) -> (
         Reply,
         Option<(
@@ -586,8 +674,16 @@ impl Shared {
                             "--limit {limit} must be 1–200"
                         )));
                     }
+                    // A legacy CLI knows `replaced` as `cancelled`.
+                    let states = match op.state {
+                        Some(AskState::Cancelled) if legacy => {
+                            vec![AskState::Cancelled, AskState::Replaced]
+                        }
+                        Some(s) => vec![s],
+                        None => Vec::new(),
+                    };
                     Ok(AskListResult {
-                        asks: self.list_asks(&caller.key, op.state, limit).await?,
+                        asks: self.list_asks(&caller.key, &states, limit).await?,
                     })
                 }
                 .await,
@@ -667,6 +763,54 @@ impl Shared {
                 async {
                     let op = req.parse::<AppOffer>()?;
                     self.handle_app_offer(&op).await
+                }
+                .await,
+            ),
+            "queue.list" => reply_of(
+                req,
+                async {
+                    req.parse::<QueueList>()?;
+                    self.queue_list(&caller).await
+                }
+                .await,
+            ),
+            "queue.clear" => reply_of(
+                req,
+                async {
+                    let op = req.parse::<QueueClear>()?;
+                    self.queue_clear(&caller, op.all).await
+                }
+                .await,
+            ),
+            "send.cancel" => reply_of(
+                req,
+                async {
+                    let op = req.parse::<SendCancel>()?;
+                    self.send_cancel(&caller, &op.target).await
+                }
+                .await,
+            ),
+            "schedule.list" => reply_of(
+                req,
+                async {
+                    req.parse::<ScheduleList>()?;
+                    self.schedule_list(&caller).await
+                }
+                .await,
+            ),
+            "schedule.cancel" => reply_of(
+                req,
+                async {
+                    let op = req.parse::<ScheduleCancel>()?;
+                    self.schedule_cancel(&caller, &op.target).await
+                }
+                .await,
+            ),
+            "schedule.clear" => reply_of(
+                req,
+                async {
+                    req.parse::<ScheduleClear>()?;
+                    self.schedule_clear(&caller).await
                 }
                 .await,
             ),
@@ -806,7 +950,8 @@ impl Shared {
             .call(move |c| {
                 let mut st = c
                     .prepare(
-                        "SELECT s.send_id, s.kind, s.created_at, s.closed_at, s.close_reason, a.ask_id, a.state, s.warnings
+                        "SELECT s.send_id, s.kind, s.created_at, s.closed_at, s.close_reason, a.ask_id, a.state, s.warnings,
+                                s.shown_at, s.expires_at, s.schedule_id, s.due_at
                          FROM sends s LEFT JOIN asks a ON a.send_id = s.send_id
                          WHERE s.context = ?1 AND s.org_id = ?2 AND s.actor_id = ?3 AND (?4 IS NULL OR s.send_id < ?4)
                          ORDER BY s.send_id DESC LIMIT ?5",
@@ -825,6 +970,10 @@ impl Shared {
                                 r.get::<_, Option<String>>(5)?,
                                 r.get::<_, Option<String>>(6)?,
                                 r.get::<_, Option<String>>(7)?,
+                                r.get::<_, Option<i64>>(8)?,
+                                r.get::<_, Option<i64>>(9)?,
+                                r.get::<_, Option<String>>(10)?,
+                                r.get::<_, Option<i64>>(11)?,
                             ))
                         },
                     )
@@ -832,7 +981,7 @@ impl Shared {
                     .collect::<rusqlite::Result<Vec<_>>>()
                     .sql()?;
                 let mut out = Vec::new();
-                for (send_id, kind, created, closed, reason, ask_id, ask_state, warnings) in rows {
+                for (send_id, kind, created, closed, reason, ask_id, ask_state, warnings, shown_at, expires_at, schedule_id, due_at) in rows {
                     let Ok(send_id) = silicon_peek_client::ids::SendId::parse(&send_id) else { continue };
                     let item = HistoryItem {
                         send_id,
@@ -845,6 +994,11 @@ impl Shared {
                         warnings: warnings
                             .and_then(|w| serde_json::from_str::<Vec<Warning>>(&w).ok())
                             .unwrap_or_default(),
+                        shown_at: shown_at.map(Timestamp::from_unix_ms),
+                        expires_at: expires_at.map(Timestamp::from_unix_ms),
+                        schedule_id: schedule_id
+                            .and_then(|s| silicon_peek_client::ids::ScheduleId::parse(&s).ok()),
+                        due_at: due_at.map(Timestamp::from_unix_ms),
                     };
                     let v = serde_json::to_value(item)
                         .map_err(|e| Error::internal(format!("serializing history failed: {e}")))?;
@@ -891,6 +1045,8 @@ impl Shared {
         self.record(Record::new("ui.connected", "ok"));
         self.push_slots_state().await;
         self.push_all().await;
+        // Anything that came due while Peek.app was away is handled now.
+        self.timers_wake.notify_one();
         let mut shutdown = self.shutdown.subscribe();
         loop {
             if *shutdown.borrow() {
@@ -990,11 +1146,21 @@ impl Shared {
     }
 
     /// `presence`: kept on the connection that sent it. When the Carbon comes
-    /// back, every bubble held while they were away is shown, in order.
+    /// back, every bubble held while they were away is shown, in order. Any
+    /// change wakes the timers (a display waking from sleep catches up on
+    /// due and expired sends at once).
     async fn ui_presence(self: &SharedRef, link: &UiLink, presence: Presence) {
         let before = link.set_presence(presence);
         if before == presence {
             return;
+        }
+        self.timers_wake.notify_one();
+        if before.paused != presence.paused {
+            tracing::info!(
+                paused = presence.paused,
+                "the Carbon {} Peek",
+                if presence.paused { "paused" } else { "resumed" }
+            );
         }
         let reason = serde_json::to_value(presence.reason)
             .ok()
@@ -1043,6 +1209,7 @@ impl Shared {
             "shown.done" => {
                 empty(async { self.ui_shown_done(req.parse::<ShownDone>()?).await }.await)
             }
+            "shown" => empty(async { self.ui_shown(req.parse::<Shown>()?).await }.await),
             "focus" => empty(
                 async {
                     let op = req.parse::<Focus>()?;
@@ -1103,5 +1270,81 @@ fn reply_of<T: serde::Serialize>(req: &Request, r: Result<T>) -> Reply {
     match r {
         Ok(v) => ok(req, &v, Vec::new()),
         Err(e) => req.reply_err(&e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hello(version: &str) -> CliHello {
+        CliHello {
+            cli_version: version.to_owned(),
+            protocols: vec![1],
+            platform: "macos-aarch64".into(),
+            bundled_app: None,
+        }
+    }
+
+    #[test]
+    fn legacy_clis_are_those_before_0_1_2() {
+        for (v, legacy) in [
+            ("0.1.1", true),
+            ("0.1.0", true),
+            ("0.0.9", true),
+            ("0.1.2", false),
+            ("0.1.2-dev.3", false),
+            ("0.1.10", false),
+            ("0.2.0", false),
+            ("1.0.0", false),
+            ("0.1.1-rc.1", true),
+            ("0.1", true),
+            ("garbage", true),
+            ("", true),
+        ] {
+            assert_eq!(legacy_cli(&hello(v)), legacy, "{v}");
+        }
+    }
+
+    #[test]
+    fn legacy_replies_are_downgraded() {
+        let e = Error::new(ErrorCode::QueueFull, "full").with_details(json!({"queued": 5}));
+        let mut r = Reply::err("1", e.to_object());
+        downgrade_reply("send", &mut r);
+        let Err(obj) = &r.outcome else {
+            panic!("an error reply");
+        };
+        assert_eq!(obj.code, ErrorCode::SlotBusy);
+        assert_eq!(obj.message, "full");
+        assert_eq!(obj.details, Some(json!({"queued": 5})));
+        let mut r = Reply {
+            id: "2".into(),
+            outcome: Ok(json!({"asks": [{"state": "replaced"}, {"state": "answered"}]})),
+            blobs: Vec::new(),
+        };
+        downgrade_reply("ask.list", &mut r);
+        assert_eq!(
+            r.outcome.ok(),
+            Some(json!({"asks": [{"state": "cancelled"}, {"state": "answered"}]}))
+        );
+        for op in ["ask.get", "ask.cancel"] {
+            let mut r = Reply {
+                id: "3".into(),
+                outcome: Ok(json!({"state": "replaced"})),
+                blobs: Vec::new(),
+            };
+            downgrade_reply(op, &mut r);
+            assert_eq!(r.outcome.ok(), Some(json!({"state": "cancelled"})));
+        }
+        let mut r = Reply {
+            id: "4".into(),
+            outcome: Ok(json!({"items": [{"ask_state": "replaced"}, {"ask_state": null}]})),
+            blobs: Vec::new(),
+        };
+        downgrade_reply("history", &mut r);
+        assert_eq!(
+            r.outcome.ok(),
+            Some(json!({"items": [{"ask_state": "cancelled"}, {"ask_state": null}]}))
+        );
     }
 }

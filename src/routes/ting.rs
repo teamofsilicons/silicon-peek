@@ -167,6 +167,9 @@ pub(crate) async fn deliver(
     .await
 }
 
+/// The `context` every peek payload carries. Exhaustive on purpose: a new
+/// Ting type in the client crate does not compile here until its plane check
+/// is wired.
 fn data_context(data: &TingData) -> DataContext {
     match data {
         TingData::AskAnswered(d) => d.context,
@@ -175,6 +178,9 @@ fn data_context(data: &TingData) -> DataContext {
         TingData::MessageReceived(d) => d.context,
         TingData::SpeechFinished(d) => d.context,
         TingData::ShowDismissed(d) => d.context,
+        TingData::SendExpired(d) => d.context,
+        TingData::ScheduleDue(d) => d.context,
+        TingData::SendShown(d) => d.context,
     }
 }
 

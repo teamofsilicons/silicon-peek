@@ -13,10 +13,16 @@ import PeekCore
 ///
 /// Luminance is Rec. 709 on linearised sRGB; the tone flips with hysteresis at 0.45 / 0.55 and `ink` is the
 /// opposite of the tone (``Backdrop/sample(red:green:blue:source:previousTone:)``).
+///
+/// Two cadences (peek 0.1.2): keys **tracked** (a send arrived or its bubble is on screen) are sampled at once and then
+/// at 2 Hz with the `screen` source; keys **warmed** (an occupied slot with nothing on screen) are sampled once and then
+/// kept fresh at an idle cadence (every wallpaper refresh; every 10 s with the `screen` source), so a bubble's pill
+/// shade is already known when it arrives and never changes after it lands.
 @MainActor
 public final class BackdropSampler: BackdropSampling {
     public static let wallpaperRefreshInterval: Duration = .seconds(60)
     public static let screenSampleInterval: Duration = .milliseconds(500)
+    public static let idleScreenSampleInterval: Duration = .seconds(10)
 
     public var source: BackdropSourceSetting {
         didSet {
@@ -35,18 +41,25 @@ public final class BackdropSampler: BackdropSampling {
     public let refreshInterval: Duration
     /// How often the screen is sampled with the `screen` source (default 2 Hz).
     public let sampleInterval: Duration
+    /// How often warmed (idle) keys are sampled with the `screen` source (default 10 s).
+    public let idleSampleInterval: Duration
+    /// Monotonic seconds (sample ages); injectable for tests.
+    public var clock: @MainActor () -> Double = { Double(DispatchTime.now().uptimeNanoseconds) / 1e9 }
 
     private let wallpaper: any WallpaperProviding
     private let capture: any ScreenCapturing
     private let appearance: any AppearanceProviding
     private var tracked: [SiliconKey: CGRect] = [:]
+    private var warmed: [SiliconKey: CGRect] = [:]
     private var current: [SiliconKey: Backdrop] = [:]
+    private var sampledAt: [SiliconKey: Double] = [:]
     private var wallpapers: [UInt32: CachedWallpaper] = [:]
     private var captureInFlight: Set<SiliconKey> = []
     private var observers: [Int: @MainActor (SiliconKey, Backdrop) -> Void] = [:]
     private var nextObserverID = 0
     private var wallpaperTimer: Task<Void, Never>?
     private var screenTimer: Task<Void, Never>?
+    private var idleScreenTimer: Task<Void, Never>?
     private let logger = PeekLogger(category: "backdrop")
 
     private struct CachedWallpaper {
@@ -60,10 +73,12 @@ public final class BackdropSampler: BackdropSampling {
                 capture: any ScreenCapturing = ScreenCaptureKitSampler(),
                 appearance: any AppearanceProviding = SystemAppearance(),
                 refreshInterval: Duration = BackdropSampler.wallpaperRefreshInterval,
-                sampleInterval: Duration = BackdropSampler.screenSampleInterval) {
+                sampleInterval: Duration = BackdropSampler.screenSampleInterval,
+                idleSampleInterval: Duration = BackdropSampler.idleScreenSampleInterval) {
         self.paths = paths
         self.refreshInterval = refreshInterval
         self.sampleInterval = sampleInterval
+        self.idleSampleInterval = idleSampleInterval
         self.source = source
         self.wallpaper = wallpaper
         self.capture = capture
@@ -75,6 +90,7 @@ public final class BackdropSampler: BackdropSampling {
     isolated deinit {
         wallpaperTimer?.cancel()
         screenTimer?.cancel()
+        idleScreenTimer?.cancel()
     }
 
     // MARK: BackdropSampling
@@ -89,6 +105,23 @@ public final class BackdropSampler: BackdropSampling {
         tracked[key] = rect
         updateTimers()
         resample(key)
+    }
+
+    public func warm(_ key: SiliconKey, rectOnScreen: CGRect?) {
+        guard let rect = rectOnScreen, rect.width > 0, rect.height > 0 else {
+            warmed.removeValue(forKey: key)
+            updateTimers()
+            return
+        }
+        guard warmed[key] != rect else { return }
+        warmed[key] = rect
+        updateTimers()
+        // A tracked key is sampled at its own (faster) cadence; a new idle key gets its first sample now.
+        if tracked[key] == nil { resample(key) }
+    }
+
+    public func sampleAge(for key: SiliconKey) -> Double? {
+        sampledAt[key].map { max(0, clock() - $0) }
     }
 
     public func backdrop(for key: SiliconKey) -> Backdrop {
@@ -111,6 +144,9 @@ public final class BackdropSampler: BackdropSampling {
     /// Keys being sampled now.
     public var trackedKeys: Set<SiliconKey> { Set(tracked.keys) }
 
+    /// Keys kept warm at the idle cadence.
+    public var warmedKeys: Set<SiliconKey> { Set(warmed.keys) }
+
     /// Screen captures started and not finished yet (diagnostics and tests).
     public var pendingCaptureCount: Int { captureInFlight.count }
 
@@ -121,13 +157,25 @@ public final class BackdropSampler: BackdropSampling {
 
     // MARK: Sampling
 
-    /// Samples every tracked bubble now.
+    /// Samples every tracked and warmed key now.
     public func resampleAll() {
+        let keys = Set(tracked.keys).union(warmed.keys)
+        for key in keys.sorted(by: { $0.description < $1.description }) { resample(key) }
+    }
+
+    private func resampleTracked() {
         for key in tracked.keys.sorted(by: { $0.description < $1.description }) { resample(key) }
     }
 
+    private func resampleWarmedIdle() {
+        for key in warmed.keys.sorted(by: { $0.description < $1.description }) where tracked[key] == nil { resample(key) }
+    }
+
+    /// Where `key` is sampled: its tracked rectangle, else its warmed one.
+    private func rect(for key: SiliconKey) -> CGRect? { tracked[key] ?? warmed[key] }
+
     private func resample(_ key: SiliconKey) {
-        guard let rect = tracked[key] else { return }
+        guard let rect = rect(for: key) else { return }
         if effectiveSource == .screen {
             sampleScreen(key, rect: rect)
         } else {
@@ -147,7 +195,7 @@ public final class BackdropSampler: BackdropSampling {
             }
             guard let self else { return }
             self.captureInFlight.remove(key)
-            guard self.tracked[key] == rect else { return }
+            guard self.rect(for: key) == rect else { return }
             switch result {
             case .success(let color):
                 self.apply(color, source: .screen, to: key)
@@ -189,8 +237,10 @@ public final class BackdropSampler: BackdropSampling {
             let snapshot = await provider.snapshot(for: key)
             guard let self, !Task.isCancelled, self.wallpapers[screen.id]?.key == key else { return }
             self.wallpapers[screen.id] = CachedWallpaper(key: key, snapshot: snapshot, loading: nil)
-            for (trackedKey, rect) in self.tracked where ScreenInfo.screen(for: rect, in: [screen]) != nil {
-                self.sampleWallpaper(trackedKey, rect: rect)
+            let keys = Set(self.tracked.keys).union(self.warmed.keys)
+            for sampledKey in keys.sorted(by: { $0.description < $1.description }) {
+                guard let rect = self.rect(for: sampledKey), ScreenInfo.screen(for: rect, in: [screen]) != nil else { continue }
+                self.sampleWallpaper(sampledKey, rect: rect)
             }
         }
         let entry = CachedWallpaper(key: key, snapshot: nil, loading: loading)
@@ -220,6 +270,7 @@ public final class BackdropSampler: BackdropSampling {
     private func publish(_ next: Backdrop, for key: SiliconKey) {
         let previous = current[key]
         current[key] = next
+        sampledAt[key] = clock()
         guard previous.map({ $0.tone != next.tone || $0.color != next.color || $0.source != next.source }) ?? true
         else { return }
         onChange?(key, next)
@@ -233,21 +284,30 @@ public final class BackdropSampler: BackdropSampling {
     // MARK: Timers
 
     private func updateTimers() {
-        let active = !tracked.isEmpty
+        let active = !tracked.isEmpty || !warmed.isEmpty
         if active, wallpaperTimer == nil {
             wallpaperTimer = repeating(every: refreshInterval) { $0.refreshWallpapers() }
         } else if !active {
             wallpaperTimer?.cancel()
             wallpaperTimer = nil
         }
-        let screenActive = active && source == .screen
+        let screenActive = !tracked.isEmpty && source == .screen
         if screenActive, screenTimer == nil {
             screenTimer = repeating(every: sampleInterval) { sampler in
-                if sampler.effectiveSource == .screen { sampler.resampleAll() }
+                if sampler.effectiveSource == .screen { sampler.resampleTracked() }
             }
         } else if !screenActive {
             screenTimer?.cancel()
             screenTimer = nil
+        }
+        let idleActive = !warmed.isEmpty && source == .screen
+        if idleActive, idleScreenTimer == nil {
+            idleScreenTimer = repeating(every: idleSampleInterval) { sampler in
+                if sampler.effectiveSource == .screen { sampler.resampleWarmedIdle() }
+            }
+        } else if !idleActive {
+            idleScreenTimer?.cancel()
+            idleScreenTimer = nil
         }
     }
 

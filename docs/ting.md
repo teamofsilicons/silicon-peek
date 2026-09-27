@@ -1,23 +1,28 @@
 # Ting events
 
-Everything the Carbon does in response to a Silicon (an answer, a dismissal, a message) comes back to that Silicon as a Ting event. This page lists the six event types, their exact payloads, how delivery behaves, how to route them in a Stemcell flow, and how to receive them without Stemcell.
+Everything the Carbon does in response to a Silicon (an answer, a dismissal, a message), and what becomes of the Silicon's sends when it cannot watch (one expired, a scheduled one came due, one appeared), comes back to that Silicon as a Ting event. This page lists the nine event types, their exact payloads, how delivery behaves, how to route them in a Stemcell flow, and how to receive them without Stemcell.
 
 peek never talks to your Silicon directly. peekd records the event on the Mac, the peek backend proves it to Ting with your own session, and Ting delivers it to your Silicon's webhook. Under Stemcell that is `http://<handle>.<org>.localhost/events`, where Stemcell runs your flow. Without Stemcell, you point Ting at a webhook of your own ([Receive answers without Stemcell](#receive-answers-without-stemcell)).
 
-## The six types
+## The nine types
 
 | Type | Sent when | Default |
 |---|---|---|
 | `peek.ask.answered` | the Carbon answered an `--ask` (voice, keyboard or click) | always |
 | `peek.ask.dismissed` | the Carbon closed an ask without answering (Esc, down-arrow) | always |
-| `peek.ask.expired` | an ask with `--expires-in` ran out unanswered | always (only asks that set the flag) |
+| `peek.ask.expired` | an ask with `--expires-in` or `--expires-at` ran out unanswered, on screen or while it waited | always (only asks with a deadline) |
 | `peek.message.received` | the Carbon spoke or typed to the Silicon with no pending ask (ctrl+cmd+N, then `\` or typing) | always |
 | `peek.speech.finished` | a `--speak` finished or was stopped | only with `--notify speech_finished` or config `notify` |
 | `peek.show.dismissed` | the Carbon closed a `--show` before it retracted on its own | only with `--notify show_dismissed` or config `notify` |
+| `peek.send.expired` | a `--speak` or `--show` send with `--expires-in` or `--expires-at` ran out before it finished, on screen or before it was ever shown | always (only sends with a deadline) |
+| `peek.schedule.due` | a scheduled send (`--in`, `--at`) came due; says whether it was shown, queued, expired or replaced your active bubble | always (only scheduled sends) |
+| `peek.send.shown` | a send appeared on the Carbon's screen | always for scheduled sends; otherwise only with `--notify shown` or config `notify` |
 
-Nothing is sent for your own actions: `peek ask cancel`, `peek unregister`, `peek logout` and a show replaced by your next send. The last two types are opt-in because a catch-all flow branch (like Flow A) forwards every one of them as a message, and each event costs an IAM proof and a Ting verification.
+Nothing is sent for your own actions: `peek cancel`, `peek ask cancel`, `peek queue clear`, `peek schedule cancel` and `clear`, `peek unregister`, `peek logout`, and a send you took over with `--replace`. `peek.speech.finished`, `peek.show.dismissed` and `peek.send.shown` are opt-in because a catch-all flow branch (like Flow A) forwards every one of them as a message, and each event costs an IAM proof and a Ting verification.
 
-The type names are final: Ting types cannot be deleted, so these six will not be renamed.
+An expiry is always reported with exactly one type: `peek.ask.expired` for an ask, `peek.send.expired` for anything else. A scheduled send whose deadline passed before it came due gets both `peek.schedule.due` (outcome `expired`) and that expiry event.
+
+The type names are final: Ting types cannot be deleted, so these nine will not be renamed.
 
 ## Payloads
 
@@ -39,7 +44,8 @@ Every `data` object carries `"schema":1`, `"slot"` (1–8) and `"context"` (`"pr
 {"schema":1,"ask_id","send_id","question","ask_type","gesture":"esc|down_arrow|down_arrow_double","asked_at","dismissed_at","slot","context"}
 
 // peek.ask.expired
-{"schema":1,"ask_id","send_id","question","ask_type","asked_at","expired_at","slot","context"}
+{"schema":1,"ask_id","send_id","question","ask_type","asked_at","expired_at","slot","context",
+ "shown":true|false}                      // was it ever on screen (added in 0.1.2; absent from older helpers)
 
 // peek.message.received
 {"schema":1,"message_id":"cmsg_0192…","text":"remind me about this at 5","via":"voice|keyboard","sent_at","slot","context",
@@ -49,21 +55,64 @@ Every `data` object carries `"schema":1`, `"slot"` (1–8) and `"context"` (`"pr
 {"schema":1,"send_id","stopped_by_user":false,"played_ms":4210,"total_ms":4210,"finished_at","slot","context"}
 
 // peek.show.dismissed
-{"schema":1,"send_id","gesture":"down_arrow|down_arrow_double|esc","visible_ms":2300,"dismissed_at","slot","context"}
+{"schema":1,"send_id","gesture":"down_arrow|down_arrow_double|esc|esc_double","visible_ms":2300,"dismissed_at","slot","context"}
+
+// peek.send.expired (never for an ask; asks use peek.ask.expired)
+{"schema":1,"send_id":"snd_0192…","kind":"speak|show|speak+show",
+ "created_at":"2026-09-27T10:00:00.000Z",  // when peek send ran
+ "expires_at":"2026-09-27T10:10:00.000Z",  // the deadline you set
+ "expired_at":"2026-09-27T10:10:00.004Z",  // when peek expired it: at or after expires_at (later after sleep)
+ "shown":false,"shown_at":null,            // shown_at is set exactly when shown is true
+ "scheduled":false,"schedule_id":null,     // schedule_id is set exactly when it came from --in/--at
+ "slot":3,"context":"production"}
+
+// peek.schedule.due (once, when the scheduled send fires: at its due time, or on catch-up after sleep)
+{"schema":1,"schedule_id":"sch_0192…","send_id":"snd_0192…","ask_id":null,"kind":"show",
+ "due_at":"2026-09-27T12:30:00.000Z","fired_at":"2026-09-27T12:30:00.012Z",
+ "outcome":"queued",                       // shown | queued | expired | replaced
+ "replaced_send_id":null,                  // set exactly when outcome is replaced
+ "waiting_reason":"behind_others",         // behind_others | queue_full | carbon_away | paused | app_not_running
+ "queue_position":2,                       // set exactly when outcome is queued
+ "expires_at":null,"slot":3,"context":"production"}
+
+// peek.send.shown
+{"schema":1,"send_id":"snd_0192…","ask_id":null,"kind":"speak+show",
+ "created_at":"2026-09-27T12:00:00.000Z","shown_at":"2026-09-27T12:30:00.412Z",
+ "scheduled":true,"schedule_id":"sch_0192…","slot":3,"context":"production"}
 ```
 
-`metadata` is `{"isi":"<ISI>","peek_version":"0.1.1"}`. `isi` is the `$ISI` of the process that ran `peek send`, and is **omitted** when it was unknown or invalid (an invalid `ISI` is dropped with an `isi_ignored` warning; the send still goes out). For `peek.message.received` it is the ISI of your most recent send in that position. Route on it (see below); never treat it as authority.
+Notes on the three types added in 0.1.2:
 
-Ids: `ask_`, `snd_`, `cmsg_` and `evt_`, each followed by 32 hex characters (a UUIDv7, so they sort by time).
+- **`kind`** is `speak`, `show`, `ask`, `speak+show` or `speak+ask`. `peek.send.expired` never describes an ask, so its `kind` is `speak`, `show` or `speak+show`.
+- **`peek.schedule.due` `outcome`:**
+  - `shown`: it became your active bubble and went to the screen at once (`peek.send.shown` confirms when it actually appeared);
+  - `queued`: it waits; `waiting_reason` says why: `behind_others` (your earlier sends, `queue_position` 1–5), `queue_full` (five were already waiting, so it takes the next free spot, `queue_position` 6 or more), or it is your active bubble but held (`queue_position` 0) by `carbon_away`, `paused` or `app_not_running`;
+  - `expired`: its `--expires-at` had passed before it could fire; the expiry event (`peek.ask.expired` or `peek.send.expired`, `"shown":false`) follows;
+  - `replaced`: it was a `--replace` send and took over the send in `replaced_send_id`; `waiting_reason` is set too when the new bubble is held.
+- **`peek.send.shown`** is sent when Peek.app starts presenting the bubble, at most once per send. A scheduled send always sends it; a regular send only with `--notify shown`.
+- **Esc gestures.** A show closed with one Esc reports `esc`; two Escs within 0.4 s (which also stop the speech) report `esc_double`. An ask dismissed by Esc always reports `esc`.
+
+`metadata` is `{"isi":"<ISI>","peek_version":"0.1.2"}`. `isi` is the `$ISI` of the process that ran `peek send`, and is **omitted** when it was unknown or invalid (an invalid `ISI` is dropped with an `isi_ignored` warning; the send still goes out). For `peek.message.received` it is the ISI of your most recent send in that position. For a scheduled send it is the ISI that ran `peek send --in` or `--at`. Route on it (see below); never treat it as authority.
+
+Ids: `ask_`, `snd_`, `sch_` (a scheduled send), `cmsg_` and `evt_`, each followed by 32 hex characters (a UUIDv7, so they sort by time).
 
 ## What your webhook receives
 
 ```json
 {"tings":[{"id":"msg_…","created_at":"2026-09-26T10:00:07Z","type":"peek.ask.answered","data":{…},
-  "metadata":{"isi":"deliberate","peek_version":"0.1.1"},"key":"si:dj/ask_0192…/answered"}]}
+  "metadata":{"isi":"deliberate","peek_version":"0.1.2"},"key":"si:dj/ask_0192…/answered"}]}
 ```
 
-The `key` is `"<your actor id>/<ask_id | send_id | message_id>/<answered | dismissed | expired | message | speech_finished | show_dismissed>"`. It is unique per semantic event, so Ting drops duplicates of the same event.
+The `key` is `"<your actor id>/<subject>/<event>"`. It is unique per semantic event, so Ting drops duplicates of the same event:
+
+| Type | Subject | Event |
+|---|---|---|
+| `peek.ask.answered`, `peek.ask.dismissed`, `peek.ask.expired` | `ask_id` | `answered`, `dismissed`, `expired` |
+| `peek.message.received` | `message_id` | `message` |
+| `peek.speech.finished`, `peek.show.dismissed` | `send_id` | `speech_finished`, `show_dismissed` |
+| `peek.send.expired` | `send_id` | `send_expired` |
+| `peek.schedule.due` | `schedule_id` | `due` |
+| `peek.send.shown` | `send_id` | `shown` |
 
 ## Delivery guarantees
 
@@ -71,7 +120,7 @@ The `key` is `"<your actor id>/<ask_id | send_id | message_id>/<answered | dismi
 - **Durable on the Mac.** peekd writes each event to an outbox before trying to deliver it. If the Mac is offline, or the backend or Ting is down, it retries with backoff (1 s, 2 s, 5 s, 15 s, 30 s, 1 min, 2 min, 5 min, 10 min, then every 15 min) until `delivery_max_age_hours` (default 168, at most one week) has passed. Then the event is marked expired.
 - **Sent with your own session.** Only the answering Silicon's own peek session can deliver its events, and events of one Silicon are never sent with another's. If your session is rejected, events wait in `authority_required` until you log in again.
 - **Exactly one channel with `--wait`.** When a live `peek send --wait` prints the outcome of its ask (`answered`, `dismissed`, `expired` or `cancelled`), that outcome is not also sent through Ting, and `peek ask get` shows `delivery.status:"wait"`. If the wait timed out or the process died first, the event goes through Ting as usual.
-- **Nothing is sent to nobody.** While the Carbon's screen is locked or the display is asleep, Peek.app shows nothing: new sends stay queued (`status:"queued"` with a `carbon_away` warning), asks keep their `--expires-in` clock, and speech starts only when the bubble is actually shown. `peek.speech.finished` and `peek.show.dismissed` therefore always describe something the Carbon could see or hear.
+- **Nothing is sent to nobody.** While the Carbon's screen is locked or the display is asleep, Peek.app shows nothing: new sends stay queued (`status:"queued"` with a `carbon_away` warning), deadlines keep running, and speech starts only when the bubble is actually shown. `peek.speech.finished`, `peek.show.dismissed` and `peek.send.shown` therefore always describe something the Carbon could see or hear, and the expiry events say with `shown` whether the Carbon ever saw the send.
 
 Check delivery at any time:
 
@@ -127,7 +176,7 @@ Without Stemcell nothing listens on `http://<handle>.<org>.localhost/events`, so
      "data":{"schema":1,"ask_id":"ask_0192…","send_id":"snd_0192…","question":"Delete old builds?","ask_type":"single_choice",
              "answer":{"kind":"single_choice","option_id":"1","label":"Delete"},"via":"click","transcript":null,
              "asked_at":"2026-09-26T10:00:00Z","answered_at":"2026-09-26T10:00:07Z","slot":3,"context":"production"},
-     "metadata":{"isi":"deliberate","peek_version":"0.1.1"},"key":"si:<handle>/ask_0192…/answered"}]}
+     "metadata":{"isi":"deliberate","peek_version":"0.1.2"},"key":"si:<handle>/ask_0192…/answered"}]}
    ```
    Answer `204 No Content` (any 2xx) once you have stored the batch. Anything else, or no answer, makes Ting retry, so dedupe by ting `id`.
 
@@ -155,6 +204,8 @@ Stemcell has no default flow: without a peek branch in `flow`, peek events are d
 - **Flow A** sends every event whose type starts with `peek.` to one ISI.
 - **Flow B** routes each event to the ISI in `metadata.isi`, including session-mode addresses such as `worker.terminal:build-17`, and falls back to `intuit`. It never pastes ting data into generated expressions, so it is safe against CEL injection.
 
+Both match on the `peek.` prefix, so they route the types added in 0.1.2 (`peek.send.expired`, `peek.schedule.due`, `peek.send.shown`) without changes. A scheduled send produces two events (`peek.schedule.due` when it fires, `peek.send.shown` when it appears) on top of any answer. To keep one type out of an ISI, add `&& t.type != "peek.send.shown"` (for example) to both the `exists` condition and the `filter` of Flow A's first branch, and `&& var.t.type != \"peek.send.shown\"` (escaped, because it sits inside a JSON string) to the conditions of Flow B's three `peek.` branches.
+
 Test a branch locally by posting a fake batch to your Silicon:
 
 ```sh
@@ -165,14 +216,14 @@ curl --fail-with-body -H 'Content-Type: application/json' --data '{"tings":[{"id
 
 | Step | Who | Credential |
 |---|---|---|
-| The event is recorded | peekd, when Peek.app reports an answer, dismissal, message, finished speech or dismissed show, or when an ask expires | none; it writes an outbox row with the exact request bytes |
+| The event is recorded | peekd, when Peek.app reports an answer, dismissal, message, finished speech, dismissed show or a bubble that appeared, or when a send expires or a scheduled send comes due | none; it writes an outbox row with the exact request bytes |
 | Delivery request | peekd: refresh your session if it expires within 120 s, then `POST /api/v1/deliveries` | your `oat_` access token |
 | Proof and send | peek backend: one IAM on-behalf-of proof per attempt for `tings.send`, whose subject is your own token, then `POST /v1/tings` to Ting | peek's app secret signs the exchange |
 | Receipt | Ting → your ting-daemon → Stemcell → your flow | – |
 
 The backend builds the Ting body only from your verified identity and the request fields, hashes it into the proof, and sends exactly those bytes. `for` is always you: an event can only ever be delivered to the Silicon whose session sent it. The backend records a delivery receipt (event id, type, ting key, ting id, status); it does not store the event data. See [IAM and sessions](iam.md) and [Privacy](privacy.md).
 
-Registering the types is an operator step, done once per data context (production and every testing environment) with byte-identical descriptions:
+Registering the types is an operator step, done once per data context (production and every testing environment) with byte-identical descriptions. A type must be registered before any helper sends it, so the three types added in 0.1.2 are registered before 0.1.2 is released:
 
 ```sh
 ting --org tos types register --type 'peek.ask.answered'     --description 'A Carbon answered a peek --ask (voice, keyboard or click).' --json
@@ -181,5 +232,10 @@ ting --org tos types register --type 'peek.ask.expired'      --description 'A pe
 ting --org tos types register --type 'peek.message.received' --description 'A Carbon spoke or typed to the Silicon from its peek with no pending ask.' --json
 ting --org tos types register --type 'peek.speech.finished'  --description 'A peek --speak finished playing or was stopped by the Carbon.' --json
 ting --org tos types register --type 'peek.show.dismissed'   --description 'A Carbon closed a peek --show before it retracted.' --json
+ting --org tos types register --type 'peek.send.expired'     --description 'A peek --speak or --show reached its --expires-in or --expires-at deadline before it finished; the data says whether it was shown.' --json
+ting --org tos types register --type 'peek.schedule.due'     --description 'A scheduled peek send (--in or --at) came due; the data says whether it was shown, queued, expired or replaced the active peek.' --json
+ting --org tos types register --type 'peek.send.shown'       --description 'A peek send appeared on screen for the Carbon (always for scheduled sends; opt-in with --notify shown).' --json
 ting --org tos types list --app peek --json
 ```
+
+The description of `peek.ask.expired` still says `--expires-in` although asks now also take `--expires-at`: descriptions must stay byte-identical in every context, so registered texts are never edited.

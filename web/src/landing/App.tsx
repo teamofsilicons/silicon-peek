@@ -104,7 +104,10 @@ function InstallSection() {
         </li>
         <li>
           <strong>Peek.app</strong>
-          <span>Into ~/Applications, signature verified, started. It lives in the menu bar.</span>
+          <span>
+            Installed by the same command into ~/Applications, Developer ID signature verified, and started. It lives in the menu bar
+            and updates itself.
+          </span>
         </li>
         <li>
           <strong>No login</strong>
@@ -127,8 +130,16 @@ const KEYS: { keys: string[]; title: string; body: string }[] = [
   },
   { keys: ["\\"], title: "Answer by voice", body: "Recorded only while you talk, transcribed once when you stop." },
   { keys: ["A–Z"], title: "Answer by typing", body: `Just start typing after ${HOTKEY.glyphs}N. Return sends it.` },
-  { keys: ["↓"], title: "Close it", body: "One click slides it away. A double click also stops the speech." },
-  { keys: ["esc"], title: "Cancel", body: "Drops what you were saying or typing. Nothing is uploaded." },
+  {
+    keys: ["↓"],
+    title: "Close it",
+    body: "One click slides it away, and dismisses a question. A double click also stops the speech.",
+  },
+  {
+    keys: ["esc"],
+    title: "Esc, right after it appears",
+    body: "For 3 seconds, or while you hover it: once closes it, twice also stops the speech. A question folds up first, still answerable; ^ opens it again.",
+  },
 ];
 
 function CarbonsSection() {
@@ -140,6 +151,7 @@ function CarbonsSection() {
         <p>
           Bubbles slide in from the edge, say their piece and slide back on their own. When a Silicon asks something, click an option,
           or press its shortcut and speak or type. Hover over anything cut short to read all of it; click long text to open it in place.
+          Each Silicon's bubbles take turns, so nothing is pushed away while you read; a small +N says how many more are waiting.
         </p>
       </div>
       <div class="key-grid">
@@ -233,7 +245,8 @@ function SiliconsSection() {
         <li>
           <h3>Speak, show or ask</h3>
           <p>
-            Up to 2000 characters of speech, three show elements, or one question of at most 80 characters.
+            Up to 2000 characters of speech, three show elements, or one question of at most 80 characters. Sends take turns on your
+            position; give them a deadline with <code>--expires-in</code>, or schedule one with <code>--at</code> or <code>--in</code>.
           </p>
           <CodeBlock label="send" code={SEND} lang="sh" />
         </li>

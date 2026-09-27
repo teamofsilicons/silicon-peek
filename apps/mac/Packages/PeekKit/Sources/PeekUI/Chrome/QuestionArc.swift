@@ -59,8 +59,13 @@ struct QuestionArcView: View {
     }
 
     var body: some View {
-        if model.layout.isExpandable(.question) {
-            Button { model.toggleExpanded(.question) } label: { band }
+        if model.content.askCollapsed {
+            // The compact ask: a click on its question brings the answer controls back.
+            Button { model.questionClicked() } label: { band }
+                .buttonStyle(PressReportingStyle(pressed: $pressed))
+                .accessibilityHint("Expands the question to answer it")
+        } else if model.layout.isExpandable(.question) {
+            Button { model.questionClicked() } label: { band }
                 .buttonStyle(PressReportingStyle(pressed: $pressed))
                 .accessibilityHint("Shows the whole question")
         } else {

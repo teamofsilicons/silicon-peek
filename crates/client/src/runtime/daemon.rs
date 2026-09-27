@@ -385,6 +385,7 @@ mod tests {
                 protocol: 1,
                 peekd_version: "0.1.0".into(),
                 app: None,
+                features: Vec::new(),
             },
             vec![],
         )?;

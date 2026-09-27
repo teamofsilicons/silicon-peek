@@ -6,14 +6,16 @@ directory: a fake API on 127.0.0.1 serves only this archive, `honeycomb install 
 runs with PATH removed, stdin at /dev/null, a scratch SILICON_HOME and HOME, and updates,
 services, telemetry and PATH edits off. Then:
 
-  1. the install JSON must say status "installed" for this version;
+  1. the install JSON must say status "installed" for this version; on macOS it must also say
+     install_script.status "succeeded" (Manifest A: Honeycomb runs install-app.sh itself);
   2. the installed macOS package must hold bin/peek (0755), Peek.app.zip (same bytes),
      Peek.app.info, install-app.sh (0755) and LICENSE;
   3. `peek iam --json` (PATH removed) must print {"app_id":"peek", "version":<version>, ...};
-  4. on macOS, the packaged install-app.sh runs with PEEK_INSTALL_APPLICATIONS_DIR and
-     PEEK_INSTALL_SUPPORT_DIR inside the scratch directory and PEEK_INSTALL_NO_LAUNCH=1; it must
-     report "[ok] install" and leave a Peek.app that passes codesign --verify --deep --strict;
-  5. on macOS, the installed CLI's own `peek app install --json` (ensure_app(), the Manifest B path)
+  4. on macOS, the install-app.sh Honeycomb ran (with PEEK_INSTALL_APPLICATIONS_DIR and
+     PEEK_INSTALL_SUPPORT_DIR inside the scratch directory and PEEK_INSTALL_NO_LAUNCH=1, passed
+     through Honeycomb's environment) must have recorded "[ok] install" and "[skip] launch" in
+     install-status.txt and left a Peek.app that passes codesign --verify --deep --strict;
+  5. on macOS, the installed CLI's own `peek app install --json` (ensure_app(), the fallback path)
      runs against a second pair of scratch directories with PEEK_INSTALL_NO_LAUNCH=1 and a scratch
      PEEK_DAEMON_SOCKET: it must install and verify the bundled Peek.app, then stop at the launch
      step with peek_service_unavailable (exit 5, launching is forbidden by design); `peek app status
@@ -180,7 +182,10 @@ def loopback(args: argparse.Namespace, scratch: Path) -> dict[str, Any]:
         config = {"api": server.url, "auto_update": False, "telemetry": False}
         (packages / ".honeycomb" / "dir" / "config.json").write_text(json.dumps(config))
         (scratch / "home").mkdir()
+        applications, support = scratch / "Applications", scratch / "Support"
         # Stemcell's environment, minus PATH (silicon-stemcell apps.rs); everything rooted in scratch.
+        # Honeycomb passes its environment to install-app.sh (Manifest A), so the script's test hooks
+        # keep it inside scratch: it resolves the account's real home with dscl otherwise.
         env = {
             "HOME": str(scratch / "home"),
             "TMPDIR": str(scratch),
@@ -193,6 +198,9 @@ def loopback(args: argparse.Namespace, scratch: Path) -> dict[str, Any]:
             "HONEYCOMB_AUTO_UPDATE": "0",
             "SPACE_STATION_TELEMETRY": "0",
             "PEEK_TELEMETRY": "0",
+            "PEEK_INSTALL_APPLICATIONS_DIR": str(applications),
+            "PEEK_INSTALL_SUPPORT_DIR": str(support),
+            "PEEK_INSTALL_NO_LAUNCH": "1",
         }
         installed = run([honeycomb, "install", app_id, "--json"], env=env, cwd=packages, timeout=args.timeout)
         if installed.returncode != 0:
@@ -206,8 +214,16 @@ def loopback(args: argparse.Namespace, scratch: Path) -> dict[str, Any]:
             raise LoopbackError(f"honeycomb install --json printed non-JSON: {installed.stdout!r}") from error
         if result.get("status") != "installed" or result.get("version") != version:
             raise LoopbackError(f"honeycomb install reported {result}; expected status installed, version {version}")
-        if "install_script" in result and result["install_script"].get("status") != "succeeded":
-            raise LoopbackError(f"install_script did not succeed: {result['install_script']}")
+        on_mac = bool(target and target.startswith("macos-"))
+        if on_mac:
+            script_result = result.get("install_script")
+            if not isinstance(script_result, dict) or script_result.get("status") != "succeeded":
+                raise LoopbackError(
+                    f"honeycomb install reported install_script {script_result!r}; Manifest A must run "
+                    "install-app.sh and it must succeed (status \"succeeded\")"
+                )
+        elif "install_script" in result:
+            raise LoopbackError(f"{target} has no install_script in Manifest A, but Honeycomb ran {result['install_script']}")
         help_command = str(result.get("help_command", ""))
         launcher = Path(help_command.removesuffix(" --help"))
         if not help_command.endswith(" --help") or not launcher.is_file():
@@ -259,27 +275,16 @@ def loopback(args: argparse.Namespace, scratch: Path) -> dict[str, Any]:
             raise LoopbackError(f"peek iam --json returned {identity}; expected app_id peek and version {version}")
         checks["peek_iam"] = {"app_id": identity["app_id"], "version": identity["version"]}
 
-        if args.skip_app_install or not (target and target.startswith("macos-")):
-            checks["install_app_sh"] = "skipped"
+        if args.skip_app_install or not on_mac:
+            checks["install_app_sh"] = "skipped" if not on_mac else result.get("install_script")
         else:
-            applications, support = scratch / "Applications", scratch / "Support"
-            script_env = {
-                "HOME": str(scratch / "home"),
-                "TMPDIR": str(scratch),
-                "PEEK_INSTALL_APPLICATIONS_DIR": str(applications),
-                "PEEK_INSTALL_SUPPORT_DIR": str(support),
-                "PEEK_INSTALL_NO_LAUNCH": "1",
-            }
-            script = run(
-                ["/bin/sh", str(checks["package_dir"]) + "/install-app.sh"], env=script_env, cwd=scratch, timeout=200
-            )
-            report = script.stderr.strip()
-            if script.returncode != 0:
-                raise LoopbackError(
-                    f"install-app.sh exited {script.returncode}; its contract is to always exit 0\n{report}"
-                )
-            if "peek install-app: [ok] install:" not in report:
-                raise LoopbackError(f"install-app.sh did not install Peek.app:\n{report}")
+            status_path = support / "install-status.txt"
+            status_file = status_path.read_text(encoding="utf-8") if status_path.is_file() else ""
+            lines = [l for l in status_file.splitlines() if not l.startswith("run\t")]
+            if not any(l.startswith("ok\tinstall\t") for l in lines):
+                raise LoopbackError(f"the install-app.sh Honeycomb ran did not install Peek.app:\n{status_file}")
+            if "skip\tlaunch\tPEEK_INSTALL_NO_LAUNCH=1" not in lines:
+                raise LoopbackError(f"install-app.sh did not honour PEEK_INSTALL_NO_LAUNCH=1:\n{status_file}")
             verify = run(
                 ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(applications / "Peek.app")],
                 env={"PATH": "/usr/bin:/bin"},
@@ -288,9 +293,9 @@ def loopback(args: argparse.Namespace, scratch: Path) -> dict[str, Any]:
             )
             if verify.returncode != 0:
                 raise LoopbackError(f"the installed Peek.app fails codesign --verify: {verify.stderr.strip()}")
-            checks["install_app_sh"] = [line for line in report.splitlines() if line.startswith("peek install-app:")]
+            checks["install_app_sh"] = {"install_script": result.get("install_script"), "status": lines}
 
-        if args.skip_app_install or not (target and target.startswith("macos-")):
+        if args.skip_app_install or not on_mac:
             checks["peek_app_install"] = "skipped"
         else:
             checks["peek_app_install"] = cli_app_install(launcher, Path(checks["package_dir"]), version, scratch)
@@ -393,7 +398,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--timeout", type=int, default=180, help="seconds allowed for honeycomb install (default 180)")
     parser.add_argument(
-        "--skip-app-install", action="store_true", help="skip install-app.sh and `peek app install` (Peek.app steps)"
+        "--skip-app-install",
+        action="store_true",
+        help="skip checking install-app.sh's Peek.app and `peek app install` (Honeycomb still runs the script, in scratch)",
     )
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory for inspection")
     args = parser.parse_args(argv)

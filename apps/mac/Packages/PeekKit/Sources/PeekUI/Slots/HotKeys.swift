@@ -33,8 +33,9 @@ public enum HotKeyPlan {
 }
 
 /// Global per-slot shortcuts with Carbon `RegisterEventHotKey`, which needs no Accessibility or
-/// Input Monitoring permission (notes/macos §3). Bare `\` and Esc are never registered globally:
-/// they are handled by the summoned panel while it is key.
+/// Input Monitoring permission (notes/macos §3). Bare `\` is never registered globally: it is handled by the summoned
+/// panel while it is key. Bare Esc is held only briefly, by ``CarbonEscapeKey`` for the Esc router (a new peek's 3 s
+/// grace, hover, an Esc window the Carbon opened, an open popup).
 @MainActor
 public final class HotKeyCenter {
     /// 'PEEK'
@@ -130,56 +131,135 @@ private func hotKeyHandler(_ call: EventHandlerCallRef?, _ event: EventRef?, _ u
     return handled ? noErr : OSStatus(eventNotHandledErr)
 }
 
-/// Esc for an open tap-to-expand popup (ui-feedback.md #5). The popup's panel is not key (the Carbon is reading, not
-/// typing), so the key never reaches it; while a popup is open, bare Esc is registered as a Carbon hot key (no
-/// Accessibility permission needed) and released the moment the popup closes. Nothing else ever holds Esc globally.
+/// Where the Esc router (``SlotManager``) gets bare Esc from. The app uses ``CarbonEscapeKey``; tests and GUI-less runs
+/// use ``InertEscapeKey`` or a fake. Nothing here ever uses Input Monitoring or Accessibility.
 @MainActor
-final class EscapeHotKey {
-    /// 'PEEC'
-    nonisolated static let signature: OSType = 0x5045_4543
-    nonisolated static let escapeKeyCode: UInt16 = 53
+public protocol EscapeKeyProviding: AnyObject {
+    /// A press while held. Return true when it was used.
+    var onPress: (@MainActor () -> Bool)? { get set }
+    /// With several clients in one app (the app's slots and Simulation's), the one whose newest Esc target is the most
+    /// recent gets the press first.
+    var priority: (@MainActor () -> Double)? { get set }
+    /// Whether this client asked for Esc.
+    var isHeld: Bool { get }
+    /// Asks for (true) or gives back (false) bare Esc. Returns a sentence when it could not be registered (another app
+    /// holds it); the client then works without Esc until it asks again.
+    @discardableResult
+    func setHeld(_ held: Bool) -> String?
+}
 
-    var onPress: (@MainActor () -> Void)?
-    private(set) var isActive = false
-    private var ref: EventHotKeyRef?
-    private var handler: EventHandlerRef?
-    private let id: UInt32
-    private let logger = PeekLogger(category: "hotkeys")
+/// Never registers anything (tests, headless runs).
+@MainActor
+public final class InertEscapeKey: EscapeKeyProviding {
+    public var onPress: (@MainActor () -> Bool)?
+    public var priority: (@MainActor () -> Double)?
+    public private(set) var isHeld = false
 
-    private static var nextID: UInt32 = 1
+    public init() {}
 
-    init() {
-        id = Self.nextID
-        Self.nextID &+= 1
+    @discardableResult
+    public func setHeld(_ held: Bool) -> String? {
+        isHeld = held
+        return nil
+    }
+}
+
+/// Bare Esc as a Carbon hot key (`RegisterEventHotKey(kVK_Escape, 0)`, signature 'PEES'): no Accessibility or Input
+/// Monitoring permission (notes/macos §3). One registration serves every client in the app; it exists only while at
+/// least one client holds it, so Esc belongs to the frontmost app the rest of the time (agreed 0.1.2 #12, #13).
+@MainActor
+public final class CarbonEscapeKey: EscapeKeyProviding {
+    public var onPress: (@MainActor () -> Bool)?
+    public var priority: (@MainActor () -> Double)?
+    public private(set) var isHeld = false
+
+    public init() {
+        CarbonEscapeCenter.shared.add(self)
     }
 
-    func setActive(_ active: Bool) {
-        guard active != isActive else { return }
-        isActive = active
-        if active {
-            var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-            let userData = Unmanaged.passUnretained(self).toOpaque()
-            if InstallEventHandler(GetApplicationEventTarget(), escapeHotKeyHandler, 1, &spec, userData, &handler) != noErr {
-                handler = nil
+    isolated deinit {
+        CarbonEscapeCenter.shared.remove(self)
+    }
+
+    @discardableResult
+    public func setHeld(_ held: Bool) -> String? {
+        guard held != isHeld else { return nil }
+        isHeld = held
+        return CarbonEscapeCenter.shared.update()
+    }
+}
+
+/// The app-wide Carbon registration behind every ``CarbonEscapeKey``.
+@MainActor
+final class CarbonEscapeCenter {
+    static let shared = CarbonEscapeCenter()
+    /// 'PEES'
+    nonisolated static let signature: OSType = 0x5045_4553
+    nonisolated static let escapeKeyCode: UInt32 = 53
+
+    private final class WeakClient {
+        weak var client: CarbonEscapeKey?
+        init(_ client: CarbonEscapeKey) { self.client = client }
+    }
+
+    private var clients: [ObjectIdentifier: WeakClient] = [:]
+    private var ref: EventHotKeyRef?
+    private var handler: EventHandlerRef?
+    private let logger = PeekLogger(category: "hotkeys")
+
+    /// Whether bare Esc is registered right now (diagnostics).
+    var isRegistered: Bool { ref != nil }
+
+    func add(_ client: CarbonEscapeKey) { clients[ObjectIdentifier(client)] = WeakClient(client) }
+
+    func remove(_ client: CarbonEscapeKey) {
+        clients.removeValue(forKey: ObjectIdentifier(client))
+        _ = update()
+    }
+
+    /// Registers bare Esc while any client holds it, releases it otherwise. Returns a problem when registering failed.
+    func update() -> String? {
+        clients = clients.filter { $0.value.client != nil }
+        let wanted = clients.values.contains { $0.client?.isHeld == true }
+        if wanted, ref == nil {
+            if handler == nil {
+                var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+                let userData = Unmanaged.passUnretained(self).toOpaque()
+                if InstallEventHandler(GetApplicationEventTarget(), escapeHotKeyHandler, 1, &spec, userData, &handler) != noErr {
+                    handler = nil
+                }
             }
-            let hotKeyID = EventHotKeyID(signature: Self.signature, id: id)
-            let status = RegisterEventHotKey(UInt32(Self.escapeKeyCode), 0, hotKeyID, GetApplicationEventTarget(), 0, &ref)
-            if status != noErr {
-                ref = nil
-                logger.notice("Esc for the expanded text is unavailable (Carbon error \(status)); click to close it")
+            var newRef: EventHotKeyRef?
+            let status = RegisterEventHotKey(Self.escapeKeyCode, 0, EventHotKeyID(signature: Self.signature, id: 1),
+                                             GetApplicationEventTarget(), 0, &newRef)
+            guard status == noErr, let newRef else {
+                logger.notice("registering bare Esc failed with Carbon error \(status); peeks work without Esc meanwhile")
+                return Self.problem(status: status)
             }
-        } else {
-            if let ref { UnregisterEventHotKey(ref) }
+            ref = newRef
+            logger.debug("bare Esc registered for peeks")
+        } else if !wanted, let current = ref {
+            UnregisterEventHotKey(current)
             ref = nil
+            logger.debug("bare Esc given back")
             if let handler { RemoveEventHandler(handler) }
             handler = nil
         }
+        return nil
     }
 
-    fileprivate func pressed(_ hotKeyID: EventHotKeyID) -> Bool {
-        guard isActive, hotKeyID.signature == Self.signature, hotKeyID.id == id else { return false }
-        onPress?()
-        return true
+    static func problem(status: OSStatus) -> String {
+        Int(status) == eventHotKeyExistsErr
+            ? "Esc for peeks is taken by another app; use the down-arrow"
+            : "Esc for peeks is unavailable (Carbon error \(status)); use the down-arrow"
+    }
+
+    /// Hands the press to the holding client with the most recent target; false when none used it.
+    fileprivate func pressed() -> Bool {
+        let holders = clients.values.compactMap(\.client).filter(\.isHeld)
+            .sorted { ($0.priority?() ?? 0) > ($1.priority?() ?? 0) }
+        for client in holders where client.onPress?() == true { return true }
+        return false
     }
 }
 
@@ -190,8 +270,8 @@ private func escapeHotKeyHandler(_ call: EventHandlerCallRef?, _ event: EventRef
     var id = EventHotKeyID()
     let status = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
                                    MemoryLayout<EventHotKeyID>.size, nil, &id)
-    guard status == noErr, id.signature == EscapeHotKey.signature else { return OSStatus(eventNotHandledErr) }
-    let owner = Unmanaged<EscapeHotKey>.fromOpaque(userData).takeUnretainedValue()
-    let handled = MainActor.assumeIsolated { owner.pressed(id) }
+    guard status == noErr, id.signature == CarbonEscapeCenter.signature else { return OSStatus(eventNotHandledErr) }
+    let center = Unmanaged<CarbonEscapeCenter>.fromOpaque(userData).takeUnretainedValue()
+    let handled = MainActor.assumeIsolated { center.pressed() }
     return handled ? noErr : OSStatus(eventNotHandledErr)
 }

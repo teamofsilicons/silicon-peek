@@ -20,8 +20,13 @@ answer (the TTS audio, resampled to 16 kHz mono WAV, voice.submit → real STT
 → matched → ting) → Carbon voice message (the voice.submit reply names the
 message; its stt.result carries that id → ting) → Carbon message → early
 token expiry (one forced refresh) → send --ask --wait (answer on stdout, no
-ting) → ui.status push + doctor → logout. Exits
-non-zero on the first failed check; latencies are printed at the end.
+ting) → queue v2 (strict FIFO, queue_full with exit 4, peek queue, peek cancel,
+peek queue clear, --replace) → --expires-in on a show while the screen is
+locked (expires unseen: peek.send.expired shown:false) → scheduling (--in 5s
+fires: peek.schedule.due, then peek.send.shown after the UI's `shown`;
+schedule list/cancel/clear) → ui.status push + doctor → logout. The fake UI
+behaves like Peek.app build 1002 (it reports `shown`). Exits non-zero on the
+first failed check; latencies are printed at the end.
 """
 
 from __future__ import annotations
@@ -258,7 +263,7 @@ class Run:
         print("presence: a locked screen holds bubbles; unlocking shows them in order")
         self.ui.call("presence", {"available": False, "reason": "locked"})
         s = self.peek("status")
-        check(s.get("carbon") == {"available": False, "reason": "locked"}, "peek status reports the Carbon away (locked)")
+        check(s.get("carbon") == {"available": False, "reason": "locked", "paused": False}, "peek status reports the Carbon away (locked)")
         first_args = ["--speak", "Welcome back."] if speech else ["--show", json.dumps({"elements": [{"type": "text", "text": "welcome back"}]})]
         a = self.peek("send", *first_args)
         check(a["status"] == "queued" and any(w["code"] == "carbon_away" for w in a["warnings"]), "a send while the screen is locked is queued with warning carbon_away")
@@ -276,6 +281,8 @@ class Run:
             check(end["event"] == "tts.end", "speech starts only once the bubble is actually shown")
             total_ms = end["total_frames"] // 24
             self.ui.call("speech.done", {"send_id": a["send_id"], "stopped_by_user": False, "played_ms": total_ms, "total_ms": total_ms})
+            # A speak-only bubble closes on its slide-back (shown.done), never on speech.done.
+            self.ui.call("shown.done", {"send_id": a["send_id"], "visible_ms": total_ms + 1500, "reason": "speech_done"})
         else:
             self.ui.call("shown.done", {"send_id": a["send_id"], "visible_ms": 4000, "reason": "auto"})
         self.ui.wait_event(lambda e: e.get("event") == "peek.show" and e.get("send_id") == b["send_id"], 15, "peek.show of the second held send")
@@ -285,6 +292,112 @@ class Run:
         h = self.peek("history", "--limit", "5")
         held_items = [i for i in h.get("items", []) if i["send_id"] == a["send_id"]]
         check(bool(held_items) and any(w["code"] == "carbon_away" for w in held_items[0].get("warnings") or []), "history keeps the carbon_away warning")
+
+    # ------------------------------------------------------------ 0.1.2 steps
+    @staticmethod
+    def show_json(text: str) -> str:
+        return json.dumps({"elements": [{"type": "text", "text": text}]})
+
+    @staticmethod
+    def error_of(r: dict) -> dict:
+        """The {"error":{…}} object a failed --json run printed on stderr."""
+        for line in reversed(r.get("_stderr", "").splitlines()):
+            try:
+                return json.loads(line)["error"]
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+        raise Failure(f"no JSON error on stderr: {r.get('_stderr')!r}")
+
+    def wait_show(self, send_id: str, what: str) -> dict:
+        return self.ui.wait_event(lambda e: e.get("event") == "peek.show" and e.get("send_id") == send_id, 15, what)
+
+    def done(self, send_id: str) -> None:
+        self.ui.call("shown.done", {"send_id": send_id, "visible_ms": 4000, "reason": "auto"})
+
+    def queue_v2(self) -> None:
+        print("queue v2: always queue (strict FIFO), queue_full, peek queue, cancel, clear, --replace")
+        tings_before = len(self.tings())
+        a = self.peek("send", "--show", self.show_json("A"))
+        check(a["status"] == "showing" and a["queue_position"] == 0 and a["waiting"] == 0, "the first send is shown (queue position 0)")
+        self.wait_show(a["send_id"], "peek.show of A")
+        waiting = []
+        for text in ["B", "C", "D", "E", "F"]:
+            r = self.peek("send", "--show", self.show_json(text))
+            check(r["status"] == "queued" and r["queue_position"] == len(waiting) + 1, f"{text} waits at position {len(waiting) + 1} (nothing is replaced)")
+            waiting.append(r["send_id"])
+        badge = self.ui.wait_event(lambda e: e.get("event") == "queue.state" and e.get("send_id") == a["send_id"] and e.get("waiting") == 5, 10, "queue.state +5")
+        check(badge["slot"] == SLOT, "queue.state tells the UI the +5 badge of the bubble on screen")
+        full = self.peek("send", "--show", self.show_json("G"), ok=False)
+        err = self.error_of(full)
+        check(full["_exit"] == 4 and err["code"] == "queue_full", "a sixth waiting send fails with queue_full (exit 4)")
+        check(err["details"]["queued"] == 5 and err["details"]["limit"] == 5 and err["details"]["on_screen"] == a["send_id"], "queue_full details: queued 5, limit 5, the send on screen")
+        check("peek cancel <send_id>" in err["message"] and "peek queue clear" in err["message"], "the message says how to make room")
+        q = self.peek("queue")
+        check(q["on_screen"]["send_id"] == a["send_id"] and [w["send_id"] for w in q["waiting"]] == waiting, "peek queue lists the one on screen and the five waiting, in order")
+        c = self.peek("cancel", waiting[1])
+        check(c["was"] == "waiting" and c["queue_position"] == 2 and c["state"] == "cancelled", "peek cancel withdraws C (#2 in line)")
+        cleared = self.peek("queue", "clear")
+        rest = [waiting[0], *waiting[2:]]
+        check(cleared["cancelled"] == rest and cleared["on_screen_cancelled"] is False, "peek queue clear drops the four still waiting; A stays")
+        self.ui.wait_event(lambda e: e.get("event") == "queue.state" and e.get("send_id") == a["send_id"] and e.get("waiting") == 0, 10, "queue.state +0")
+        x = self.peek("send", "--show", self.show_json("X"))
+        y = self.peek("send", "--show", self.show_json("Y"))
+        self.done(a["send_id"])
+        sx = self.wait_show(x["send_id"], "peek.show of X")
+        check(sx["queued_behind"] == 1, "A done → X shown next with Y behind it (FIFO)")
+        self.done(x["send_id"])
+        self.wait_show(y["send_id"], "peek.show of Y")
+        z = self.peek("send", "--show", self.show_json("Z"), "--replace")
+        check(z["status"] == "showing" and z["replaced_send_id"] == y["send_id"], "--replace takes over Y at once")
+        cancel = self.ui.wait_event(lambda e: e.get("event") == "peek.cancel" and e.get("send_id") == y["send_id"], 10, "peek.cancel of Y")
+        check(cancel["reason"] == "replaced", "peek.cancel{reason: replaced} for the replaced bubble")
+        sz = self.wait_show(z["send_id"], "peek.show of Z")
+        check(sz.get("replaces") == y["send_id"], "peek.show of Z names the send it replaces")
+        self.done(z["send_id"])
+        h = self.peek("history", "--limit", "20")
+        reasons = {i["send_id"]: i.get("close_reason") for i in h["items"]}
+        check(reasons.get(waiting[1]) == "cancelled" and reasons.get(waiting[0]) == "cleared" and reasons.get(y["send_id"]) == "replaced", "history: cancelled, cleared and replaced")
+        time.sleep(1.0)
+        check(len(self.tings()) == tings_before, "no Ting event for the Silicon's own cancel, clear or replace")
+
+    def expiry_while_locked(self) -> None:
+        print("--expires-in on a show while the screen is locked: expires unseen")
+        self.ui.call("presence", {"available": False, "reason": "locked", "paused": False})
+        r = self.peek("send", "--show", self.show_json("stale news"), "--expires-in", "10s")
+        check(r["status"] == "queued" and r["expires_at"] is not None, "the show waits (held) with its deadline")
+        ting = self.wait_ting(f"{ACTOR}/{r['send_id']}/send_expired", timeout=40)
+        data = self.check_exact_body(ting, "peek.send.expired")
+        check(data["send_id"] == r["send_id"] and data["kind"] == "show", "peek.send.expired names the send and its kind")
+        check(data["shown"] is False and data["shown_at"] is None, "it says the send was never shown")
+        check(data["scheduled"] is False and data["schedule_id"] is None, "it was not scheduled")
+        self.ui.call("presence", {"available": True, "reason": "ok", "paused": False})
+        time.sleep(1.0)
+        check(not any(e.get("send_id") == r["send_id"] for e in self.ui.events_named("peek.show")), "an expired send is never shown")
+
+    def scheduling(self) -> None:
+        print("scheduling: --in 5s comes due, is shown, and both events reach the Silicon")
+        r = self.peek("send", "--show", self.show_json("scheduled hello"), "--in", "5s")
+        check(r["status"] == "scheduled" and r["schedule_id"].startswith("sch_") and r["queue_position"] is None, "send --in 5s is scheduled")
+        listed = self.peek("schedule", "list")
+        check([i["schedule_id"] for i in listed["scheduled"]] == [r["schedule_id"]], "peek schedule list shows it")
+        due = self.wait_ting(f"{ACTOR}/{r['schedule_id']}/due", timeout=40)
+        data = self.check_exact_body(due, "peek.schedule.due")
+        check(data["send_id"] == r["send_id"] and data["outcome"] == "shown" and data["replaced_send_id"] is None, "peek.schedule.due: outcome shown, same send_id")
+        show = self.wait_show(r["send_id"], "peek.show of the scheduled send")
+        check(show.get("schedule_id") == r["schedule_id"], "peek.show carries the schedule_id")
+        shown = self.wait_ting(f"{ACTOR}/{r['send_id']}/shown", timeout=20)
+        data = self.check_exact_body(shown, "peek.send.shown")
+        check(data["scheduled"] is True and data["schedule_id"] == r["schedule_id"], "peek.send.shown after the UI's shown, scheduled true")
+        self.done(r["send_id"])
+        later = self.peek("send", "--speak", "later", "--in", "1h")
+        c = self.peek("schedule", "cancel", later["schedule_id"])
+        check(c["state"] == "cancelled" and c["send_id"] == later["send_id"], "peek schedule cancel withdraws one before it is due")
+        fired = self.peek("schedule", "cancel", r["schedule_id"])
+        check(fired["state"] == "fired", "cancelling one that already fired says so")
+        self.peek("send", "--speak", "one", "--in", "2h")
+        self.peek("send", "--speak", "two", "--in", "3h")
+        cl = self.peek("schedule", "clear")
+        check(len(cl["cancelled"]) == 2, "peek schedule clear cancels the rest")
 
     def wait_delivery(self, ask_id: str) -> dict:
         deadline = time.monotonic() + 15
@@ -374,8 +487,8 @@ class Run:
             "hotkeys": {"modifier": "ctrl+cmd", "registered": [f"ctrl+cmd+{SLOT}"], "failed": [], "problems": []},
             "glass": "live",
             "services": "disabled",
-            "app_build": 1000,
-            "app_version": "0.1.0",
+            "app_build": 1002,
+            "app_version": "0.1.2",
         }
         check(self.ui.call("ui.status", status) == {}, "peekd accepts the app's ui.status push")
         d = self.peek("doctor")
@@ -427,6 +540,9 @@ def main() -> int:
         run.message()
         run.refresh()
         run.wait_answer()
+        run.queue_v2()
+        run.expiry_while_locked()
+        run.scheduling()
         run.doctor()
         run.logout()
         ok = True

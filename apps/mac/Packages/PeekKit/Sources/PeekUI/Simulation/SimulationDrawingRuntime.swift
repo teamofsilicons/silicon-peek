@@ -100,4 +100,6 @@ final class SimulationDrawingHost: DrawingHosting {
     func validate(_ script: DrawingScript, options: ValidationOptions) async -> ValidationReport {
         await inner.validate(script, options: options)
     }
+
+    func awaitFrame(timeout: Duration) async -> Bool { await inner.awaitFrame(timeout: timeout) }
 }

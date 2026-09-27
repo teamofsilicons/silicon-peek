@@ -126,6 +126,18 @@ public final class SimulatedBackdrop: BackdropSampling {
         }
     }
 
+    public func warm(_ key: SiliconKey, rectOnScreen: CGRect?) {
+        live.warm(key, rectOnScreen: rectOnScreen)
+    }
+
+    /// A fixed tone is always known (age 0); the live sampler reports its own.
+    public func sampleAge(for key: SiliconKey) -> Double? {
+        switch tone {
+        case .fixed: 0
+        case .live: live.sampleAge(for: key)
+        }
+    }
+
     /// The simulated samples: a pale warm desk for light, a deep blue-grey for dark.
     public static func fixedBackdrop(_ tone: BackdropTone) -> Backdrop {
         switch tone {

@@ -309,8 +309,47 @@ pub mod daemon {
         })
     }
 
-    /// Starts the fake on `socket`.
+    /// The hello of a peekd 0.1.1 (no features).
+    pub fn legacy_hello() -> HelloResult {
+        HelloResult {
+            protocol: 1,
+            peekd_version: "0.1.0".into(),
+            app: Some(HelloApp {
+                build: 1000,
+                ui_running: true,
+            }),
+            features: Vec::new(),
+        }
+    }
+
+    /// The hello of a peekd 0.1.2 (every feature).
+    pub fn v2_hello() -> HelloResult {
+        HelloResult {
+            protocol: 1,
+            peekd_version: "0.1.2".into(),
+            app: Some(HelloApp {
+                build: 1002,
+                ui_running: true,
+            }),
+            features: silicon_peek_client::ipc::cli::features::ALL
+                .iter()
+                .map(|f| (*f).to_owned())
+                .collect(),
+        }
+    }
+
+    /// Starts the fake on `socket` as an older peekd (no features).
     pub fn start(socket: &Path, handler: Handler) -> FakeDaemon {
+        start_with(socket, legacy_hello(), handler)
+    }
+
+    /// Starts the fake on `socket` as peekd 0.1.2 (every feature).
+    pub fn start_v2(socket: &Path, handler: Handler) -> FakeDaemon {
+        start_with(socket, v2_hello(), handler)
+    }
+
+    /// Starts the fake on `socket`, answering `hello` with `hello`.
+    pub fn start_with(socket: &Path, hello: HelloResult, handler: Handler) -> FakeDaemon {
         let listener = tokio::net::UnixListener::bind(socket).expect("bind fake peekd");
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_task = seen.clone();
@@ -321,6 +360,7 @@ pub mod daemon {
                 };
                 let handler = handler.clone();
                 let seen = seen_task.clone();
+                let hello = hello.clone();
                 tokio::spawn(async move {
                     let (r, mut w) = stream.into_split();
                     let mut reader = AsyncFrameReader::new(r);
@@ -329,16 +369,8 @@ pub mod daemon {
                             return;
                         };
                         let replies = if req.op == "hello" {
-                            let result = HelloResult {
-                                protocol: 1,
-                                peekd_version: "0.1.0".into(),
-                                app: Some(HelloApp {
-                                    build: 1000,
-                                    ui_running: true,
-                                }),
-                            };
                             vec![Message::Reply(
-                                req.reply(&result, Vec::new()).expect("hello"),
+                                req.reply(&hello, Vec::new()).expect("hello"),
                             )]
                         } else {
                             seen.lock().unwrap().push(Seen {

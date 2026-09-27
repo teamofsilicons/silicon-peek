@@ -429,7 +429,10 @@ public struct MessageRequest: UIRequest, Equatable {
 public enum DismissGesture: String, Codable, Sendable, CaseIterable {
     case downArrow = "down_arrow"
     case downArrowDouble = "down_arrow_double"
+    /// One Esc (a show/speak: the visual left, speech plays on; an ask: dismissed with a second Esc).
     case esc
+    /// Two Escs within 0.4 s on a show/speak: the visual left and its audio stopped too (peek 0.1.2).
+    case escDouble = "esc_double"
 }
 
 /// `dismissed`: the Carbon closed a bubble.
@@ -545,14 +548,45 @@ public struct PresenceRequest: UIRequest, Equatable {
 
     public var available: Bool
     public var reason: PresenceReason
+    /// The Carbon paused all peeks in Peek.app (additive, peek 0.1.2; always sent). peekd still pushes while paused
+    /// (the hotkey must find a pending ask here) but reports sends as held and words `queue_full` accordingly.
+    public var paused: Bool
 
-    public init(available: Bool, reason: PresenceReason) {
+    public init(available: Bool, reason: PresenceReason, paused: Bool = false) {
         self.available = available
         self.reason = reason
+        self.paused = paused
     }
 
     /// The Carbon can see bubbles.
-    public static let available = PresenceRequest(available: true, reason: .ok)
+    public static let available = PresenceRequest(available: true, reason: .ok, paused: false)
+
+    /// The same screen state with `paused` replaced.
+    public func with(paused: Bool) -> PresenceRequest {
+        PresenceRequest(available: available, reason: reason, paused: paused)
+    }
+}
+
+/// `shown` (peek 0.1.2): Peek.app began presenting this send's bubble (its pre-warm started; it is on screen within
+/// 0.6 s). peekd then sets `shown_at`, starts the speech, arms its watchdog and sends `peek.send.shown` when asked to.
+/// Sent at most once per send per Peek.app process, never for summons. An older peekd answers `unknown_op`.
+///
+/// ```json
+/// {"op":"shown","send_id":"snd_…"}
+/// ```
+public struct ShownRequest: UIRequest, Equatable {
+    public static let op = "shown"
+    public typealias Reply = IPCAck
+
+    public var sendID: String
+
+    public init(sendID: String) {
+        self.sendID = sendID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case sendID = "send_id"
+    }
 }
 
 public enum DrawingFailureReason: String, Codable, Sendable, CaseIterable {
@@ -826,6 +860,8 @@ public enum PeekCancelReason: Sendable, Hashable, Codable, CustomStringConvertib
     case cancelledBySilicon
     case unregistered
     case expired
+    /// The Silicon's own `peek send --replace` took the bubble over; its `peek.show` follows (peek 0.1.2).
+    case replaced
     case other(String)
 
     public init(rawValue: String) {
@@ -833,6 +869,7 @@ public enum PeekCancelReason: Sendable, Hashable, Codable, CustomStringConvertib
         case "cancelled_by_silicon": self = .cancelledBySilicon
         case "unregistered": self = .unregistered
         case "expired": self = .expired
+        case "replaced": self = .replaced
         default: self = .other(rawValue)
         }
     }
@@ -842,6 +879,7 @@ public enum PeekCancelReason: Sendable, Hashable, Codable, CustomStringConvertib
         case .cancelledBySilicon: "cancelled_by_silicon"
         case .unregistered: "unregistered"
         case .expired: "expired"
+        case .replaced: "replaced"
         case .other(let value): value
         }
     }
@@ -935,6 +973,45 @@ public struct STTResultEvent: Codable, Sendable, Equatable {
     }
 }
 
+/// `queue.state` (peek 0.1.2): the number of the Silicon's sends waiting behind its current bubble changed while that
+/// bubble is pushed. Updates the "+N" badge next to the down-arrow; 0 hides it. Ignored unless `send_id` is the
+/// bubble on screen for that slot and context.
+///
+/// ```json
+/// {"v":1,"event":"queue.state","slot":3,"context":"production","send_id":"snd_…","waiting":2}
+/// ```
+public struct QueueStateEvent: Codable, Sendable, Equatable {
+    public static let name = "queue.state"
+
+    public var slot: SlotIndex
+    public var context: PeekContext
+    /// The current send the badge belongs to.
+    public var sendID: String
+    /// Waiting + due-waiting sends of this Silicon.
+    public var waiting: Int
+
+    public init(slot: SlotIndex, context: PeekContext = .production, sendID: String, waiting: Int) {
+        self.slot = slot
+        self.context = context
+        self.sendID = sendID
+        self.waiting = waiting
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case slot, context
+        case sendID = "send_id"
+        case waiting
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        slot = try c.decode(SlotIndex.self, forKey: .slot)
+        context = try c.decodeIfPresent(PeekContext.self, forKey: .context) ?? .production
+        sendID = try c.decode(String.self, forKey: .sendID)
+        waiting = max(0, try c.decode(Int.self, forKey: .waiting))
+    }
+}
+
 /// `restarting`: peekd is about to swap Peek.app for build `to_build`.
 public struct RestartingEvent: Codable, Sendable, Equatable {
     public static let name = "restarting"
@@ -956,6 +1033,8 @@ public enum DaemonEvent: Sendable, Equatable {
     case peekCancel(PeekCancelEvent)
     case sttResult(STTResultEvent)
     case restarting(RestartingEvent)
+    /// peek 0.1.2: the waiting count behind a Silicon's current bubble changed (the "+N" badge).
+    case queueState(QueueStateEvent)
     /// An event this build does not know (additive protocol change). Log and ignore.
     case unknown(name: String, fields: JSONValue)
     /// A known event whose fields do not decode. Log; never crash on it.
@@ -972,6 +1051,7 @@ public enum DaemonEvent: Sendable, Equatable {
         case .peekCancel: PeekCancelEvent.name
         case .sttResult: STTResultEvent.name
         case .restarting: RestartingEvent.name
+        case .queueState: QueueStateEvent.name
         case .unknown(let name, _), .malformed(let name, _): name
         }
     }
@@ -1002,6 +1082,7 @@ public enum DaemonEvent: Sendable, Equatable {
             case PeekCancelEvent.name: self = .peekCancel(try FrameCoding.decode(PeekCancelEvent.self, from: header))
             case STTResultEvent.name: self = .sttResult(try FrameCoding.decode(STTResultEvent.self, from: header))
             case RestartingEvent.name: self = .restarting(try FrameCoding.decode(RestartingEvent.self, from: header))
+            case QueueStateEvent.name: self = .queueState(try FrameCoding.decode(QueueStateEvent.self, from: header))
             default:
                 var fields = frame.fields
                 fields.removeValue(forKey: "v")
@@ -1026,6 +1107,7 @@ public enum DaemonEvent: Sendable, Equatable {
         case .peekCancel(let e): return try FrameCoding.event(name: name, payload: e)
         case .sttResult(let e): return try FrameCoding.event(name: name, payload: e)
         case .restarting(let e): return try FrameCoding.event(name: name, payload: e)
+        case .queueState(let e): return try FrameCoding.event(name: name, payload: e)
         case .unknown(let name, let fields):
             var all = fields.objectValue ?? [:]
             all["v"] = .int(IPCProtocol.envelopeVersion)

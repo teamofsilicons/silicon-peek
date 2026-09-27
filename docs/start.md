@@ -13,8 +13,8 @@ curl -fsSL https://peek.teamofsilicons.com/install.sh | sh
 What it does, in order:
 
 1. Installs Honeycomb if `honeycomb` is not on your `PATH` (and not at `~/.honeycomb/dir/system/bin/honeycomb`). Honeycomb 0.5.0 or newer is required.
-2. Runs `honeycomb install 'peek'`, which installs the `peek` CLI.
-3. Runs `peek app install`, which puts Peek.app in `~/Applications`, verifies its signature and starts it. Peek lives in the menu bar; it has no Dock icon.
+2. Runs `honeycomb install 'peek'`, which installs the `peek` CLI. On a Mac, Honeycomb then runs peek's install script, which puts Peek.app in `~/Applications` (only after verifying its Developer ID signature) and starts it. Peek lives in the menu bar; it has no Dock icon.
+3. Runs `peek app install`, which confirms that Peek.app is installed and running, and installs and starts it itself if the install script did not.
 4. Prints the next steps.
 
 It does **not** log anyone in. Requirements: macOS 26 or newer on Apple silicon or Intel. On Linux and Windows the script stops and tells you to run `honeycomb install 'peek'` for the CLI only; see [Platforms](platforms.md).
@@ -23,8 +23,8 @@ It does **not** log anyone in. Requirements: macOS 26 or newer on Apple silicon 
 
 1. Run the install command above. Peek appears in the menu bar.
 2. If macOS asks, allow Peek in **System Settings → General → Login Items & Extensions** so its background helper can run.
-3. When a Silicon's bubble slides in, just read or listen. It slides back on its own. Click the down-arrow to close it early; double-click to also stop the speech.
-4. To answer, click an option, or press **ctrl+cmd+N** (⌃⌘N; N is the Silicon's position, 1 to 8) and then **`\`** to speak or just start typing. Press **Esc** to cancel. The first time you speak, macOS asks for microphone access. You can change the modifier in Peek's Settings.
+3. When a Silicon's bubble slides in, just read or listen. It slides back on its own. Click the down-arrow to close it early; double-click to also stop the speech. Right after it appears (3 seconds), or while the pointer is over it, **Esc** closes it too: once closes it, twice also stops the speech, and on a question once folds it into a compact question you can answer later.
+4. To answer, click an option, or press **ctrl+cmd+N** (⌃⌘N; N is the Silicon's position, 1 to 8) and then **`\`** to speak or just start typing. Press **Esc** to throw away what you said or typed. The first time you speak, macOS asks for microphone access. You can change the modifier in Peek's Settings.
 
 Everything else is in [Peek for Carbons](carbon.md).
 
@@ -52,7 +52,7 @@ Four steps. The first is done for you if you run under Silicon Stemcell with `pe
      --ask '{"question":"Delete old builds?","type":"single_choice","options":["Delete","Keep"]}'
    ```
 
-`peek send` refuses to run until steps 2 and 3 are done, and the error names the exact command to run. The answer arrives later as a `peek.ask.answered` Ting event, which your flow routes to the ISI that asked. Read [Peek for Silicons](silicon.md) before you wire it into a flow, and [Ting events](ting.md) for the exact payloads.
+`peek send` refuses to run until steps 2 and 3 are done, and the error names the exact command to run. Your sends take turns on your position (at most five wait behind the one on screen), can expire (`--expires-in 15m`) and can be scheduled (`--at 09:55`); see [Speak and show](show.md#one-at-a-time). The answer arrives later as a `peek.ask.answered` Ting event, which your flow routes to the ISI that asked. Read [Peek for Silicons](silicon.md) before you wire it into a flow, and [Ting events](ting.md) for the exact payloads.
 
 ## What is mandatory
 

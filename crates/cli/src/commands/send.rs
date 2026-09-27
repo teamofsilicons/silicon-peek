@@ -1,38 +1,44 @@
-//! `peek send` (BLUEPRINT §1.9.3, §1.9.6, §7.4).
+//! `peek send` (BLUEPRINT §1.9.3, §1.9.6, §7.4; 0.1.2 contract §5).
 //!
 //! Everything is validated locally before peekd is contacted: flag
 //! combinations, `--speak`, the `--show`/`--ask` JSON (strict: duplicate or
-//! unknown keys refused), every limit, and every image, whose bytes the CLI
-//! reads (relative to the current directory) and sends as frame blobs so
-//! Peek.app never opens the Silicon's paths. With `--wait` the connection
-//! stays open for the `ask.result` event; on timeout or disconnect the
-//! answer falls back to Ting.
+//! unknown keys refused), every limit, deadlines and schedules (`--in`,
+//! `--at`, `--expires-in`, `--expires-at`, `--tz`), and every image, whose
+//! bytes the CLI reads (relative to the current directory) and sends as
+//! frame blobs so Peek.app never opens the Silicon's paths. With `--wait`
+//! the connection stays open for the `ask.result` event; on timeout or
+//! disconnect the answer falls back to Ting.
+//!
+//! New flags are refused with `app_update_pending` against a peekd that does
+//! not announce their feature (an older peekd would silently ignore them).
 
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use silicon_peek_client::{
     Error, ErrorCode, Result,
-    ipc::cli::{AskResult, AskState, SendOp, SendResult, Warning, warnings},
+    ipc::cli::{AskResult, AskState, SendOp, SendResult, Warning, features, warnings},
     runtime::daemon::{EventWait, REQUEST_TIMEOUT},
     schema::{
         ImageRef,
         ask::Ask,
         send::{
-            Notify, SendFlags, check_duration, check_expires_in, check_flags, check_isi,
-            check_speak, check_voice, check_wait, normalize_language,
+            Notify, SendFlags, check_duration, check_flags, check_isi, check_speak, check_voice,
+            check_wait, normalize_language, parse_expires_in, parse_schedule_in,
         },
         show::Show,
     },
+    timestamp::Timestamp,
 };
 
-use super::{mac_session, next};
+use super::{mac_session, next, require_features};
 use crate::{
     cli::SendArgs,
     context::Globals,
     input,
     output::Out,
     service::{self, require_mac},
+    when::{self, LocalZone, TzArg},
 };
 
 /// A validated send: the op and its image blobs.
@@ -46,6 +52,8 @@ pub struct Prepared {
     pub wait: Option<Duration>,
     /// Local notes merged into peekd's (e.g. `isi_ignored`).
     pub warnings: Vec<Warning>,
+    /// `notify` came from the home's config, not `--notify`.
+    pub notify_from_config: bool,
 }
 
 fn replace_images<'a>(
@@ -62,8 +70,26 @@ fn replace_images<'a>(
     Ok(())
 }
 
-/// Validates the arguments and reads the images (no peekd, no network).
+/// Validates the arguments and reads the images (no peekd, no network), at
+/// the current time and in the Mac's time zone.
 pub fn prepare(args: &SendArgs, default_notify: &[Notify]) -> Result<Prepared> {
+    prepare_at(
+        args,
+        default_notify,
+        Timestamp::now(),
+        &when::mac_local_zone,
+    )
+}
+
+/// [`prepare`] at `now`, with `local` giving the Mac's zone (read only when
+/// an `--at`/`--expires-at` value has neither an offset nor `--tz`).
+#[allow(clippy::too_many_lines)] // one validation pass, in the contract's order
+pub fn prepare_at(
+    args: &SendArgs,
+    default_notify: &[Notify],
+    now: Timestamp,
+    local: &dyn Fn() -> LocalZone,
+) -> Result<Prepared> {
     check_flags(SendFlags {
         speak: args.speak.is_some(),
         show: args.show.is_some(),
@@ -73,6 +99,11 @@ pub fn prepare(args: &SendArgs, default_notify: &[Notify]) -> Result<Prepared> {
         duration: args.duration.is_some(),
         expires_in: args.expires_in.is_some(),
         wait: args.wait.is_some(),
+        expires_at: args.expires_at.is_some(),
+        schedule_in: args.in_.is_some(),
+        schedule_at: args.at.is_some(),
+        tz: args.tz.is_some(),
+        replace: args.replace,
     })?;
     if let Some(speak) = &args.speak {
         check_speak(speak)?;
@@ -99,13 +130,11 @@ pub fn prepare(args: &SendArgs, default_notify: &[Notify]) -> Result<Prepared> {
         .duration
         .map(|s| check_duration(s).map(|d| d.as_secs() * 1000))
         .transpose()?;
-    if let Some(s) = args.expires_in {
-        check_expires_in(s)?;
-    }
     let wait = args.wait.map(|s| check_wait(Some(s))).transpose()?;
+    let notify_from_config = args.notify.is_none();
     let notify = match &args.notify {
         Some(list) => Notify::parse_list(list).map_err(|e| {
-            e.with_input_field("--notify", "--notify speech_finished,show_dismissed")
+            e.with_input_field("--notify", "--notify speech_finished,show_dismissed,shown")
         })?,
         None => default_notify.to_vec(),
     };
@@ -129,6 +158,56 @@ pub fn prepare(args: &SendArgs, default_notify: &[Notify]) -> Result<Prepared> {
         },
         _ => None,
     };
+    // Deadlines and schedules. The Mac's zone is read only when a value
+    // needs it.
+    let tz_arg: Option<TzArg> = args.tz.as_deref().map(when::parse_tz).transpose()?;
+    let needs_local = [args.at.as_deref(), args.expires_at.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(|raw| when::needs_local(raw, tz_arg.as_ref()));
+    let local_zone = if needs_local {
+        let z = local();
+        if z.fallback_utc {
+            warnings.push(Warning {
+                code: warnings::TIMEZONE_FALLBACK_UTC.to_owned(),
+                message: "the Mac's time zone could not be read (/etc/localtime), so --at/--expires-at without an offset were read as UTC".to_owned(),
+                details: None,
+            });
+        }
+        z
+    } else {
+        LocalZone {
+            zone: jiff::tz::TimeZone::UTC,
+            name: None,
+            fallback_utc: false,
+        }
+    };
+    let expires_in_s = args
+        .expires_in
+        .as_deref()
+        .map(|raw| parse_expires_in(raw).map(|d| d.as_secs()))
+        .transpose()?;
+    let mut tz = None;
+    let due_at = if let Some(raw) = &args.in_ {
+        Some(now.plus(parse_schedule_in(raw)?))
+    } else if let Some(raw) = &args.at {
+        let r = when::resolve("--at", raw, tz_arg.as_ref(), &local_zone, now)?;
+        tz = r.tz;
+        Some(r.at)
+    } else {
+        None
+    };
+    let expires_at = args
+        .expires_at
+        .as_deref()
+        .map(|raw| when::resolve("--expires-at", raw, tz_arg.as_ref(), &local_zone, now))
+        .transpose()?
+        .map(|r| {
+            if tz.is_none() {
+                tz = r.tz;
+            }
+            r.at
+        });
     let mut blobs = Vec::new();
     if let Some(show) = show.as_mut() {
         replace_images(show.images_mut(), &mut blobs)?;
@@ -145,17 +224,45 @@ pub fn prepare(args: &SendArgs, default_notify: &[Notify]) -> Result<Prepared> {
         lang,
         notify,
         duration_ms,
-        expires_in_s: args.expires_in,
+        expires_in_s,
         wait: wait.is_some(),
+        expires_at,
+        due_at,
+        tz,
+        replace: args.replace,
     };
-    // The same check peekd runs, so a mismatch is caught here first.
-    op.validate(&blobs)?;
+    // The same checks peekd runs (strict here: no slack for latency).
+    op.validate_at(&blobs, now, 0)?;
     Ok(Prepared {
         op,
         blobs,
         wait,
         warnings,
+        notify_from_config,
     })
+}
+
+/// The features a prepared send needs from peekd (contract §5.8). A `shown`
+/// from the config default is not listed: it is dropped instead.
+fn needed_features(p: &Prepared) -> Vec<(&'static str, &'static str)> {
+    let mut needed = Vec::new();
+    let op = &p.op;
+    if (op.expires_in_s.is_some() && op.ask.is_none()) || op.expires_at.is_some() {
+        needed.push((
+            features::EXPIRY_ALL,
+            "--expires-in/--expires-at on --speak and --show",
+        ));
+    }
+    if op.due_at.is_some() {
+        needed.push((features::SCHEDULE, "scheduled sends (--in/--at)"));
+    }
+    if op.replace {
+        needed.push((features::REPLACE, "--replace"));
+    }
+    if op.notify.contains(&Notify::Shown) && !p.notify_from_config {
+        needed.push((features::NOTIFY_SHOWN, "--notify shown"));
+    }
+    needed
 }
 
 pub async fn run(g: &Globals, out: Out, args: SendArgs) -> Result<()> {
@@ -171,28 +278,46 @@ pub async fn run(g: &Globals, out: Out, args: SendArgs) -> Result<()> {
         .and_then(|s| s.read_config().ok())
         .map(|c| c.notify)
         .unwrap_or_default();
-    let prepared = prepare(&args, &default_notify)?;
+    let mut prepared = prepare(&args, &default_notify)?;
     let (_session, auth) = mac_session(g).await?;
     let mut svc = service::ensure_service().await?;
+    require_features(&svc, &needed_features(&prepared))?;
+    if prepared.notify_from_config
+        && prepared.op.notify.contains(&Notify::Shown)
+        && !svc.hello.has_feature(features::NOTIFY_SHOWN)
+    {
+        prepared.op.notify.retain(|n| *n != Notify::Shown);
+        out.hint(format!(
+            "note: config notify \"shown\" is not supported by peekd {} yet; this send goes without it",
+            svc.hello.peekd_version
+        ));
+    }
     let started = Instant::now();
     let (mut result, _) = svc
         .call(&prepared.op, Some(&auth), prepared.blobs, REQUEST_TIMEOUT)
         .await?;
     result.warnings.splice(0..0, prepared.warnings);
     out.warnings(&result.warnings);
-    let Some(wait) = prepared.wait else {
-        out.result(&result, human_send);
-        let mut hints = Vec::new();
-        if let Some(ask) = &result.ask_id {
-            hints.push(format!("peek ask get {ask}"));
-            hints.push(
-                "answers arrive as Ting events peek.ask.answered (peek docs ting)".to_owned(),
-            );
-        } else {
-            hints.push("peek history".to_owned());
+    // The zone is read only when there is a time to show.
+    let zone = if result.due_at.is_some() || result.expires_at.is_some() {
+        display_zone(result.tz.as_deref())
+    } else {
+        LocalZone {
+            zone: jiff::tz::TimeZone::UTC,
+            name: None,
+            fallback_utc: false,
         }
-        let refs: Vec<&str> = hints.iter().map(String::as_str).collect();
-        next(out, &refs);
+    };
+    let now = Timestamp::now();
+    let Some(wait) = prepared.wait else {
+        out.result(&result, |v| human_send(v, &zone, now));
+        next(
+            out,
+            &send_hints(&result)
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        );
         return Ok(());
     };
     let ask_id = result.ask_id.clone().ok_or_else(|| {
@@ -208,6 +333,38 @@ pub async fn run(g: &Globals, out: Out, args: SendArgs) -> Result<()> {
         next(out, &[&format!("peek ask get {ask_id}"), "peek docs ting"]);
     }
     Ok(())
+}
+
+/// The zone results are shown in: the send's `tz`, else the Mac's zone.
+pub(crate) fn display_zone(tz: Option<&str>) -> LocalZone {
+    tz.and_then(|t| when::parse_tz(t).ok())
+        .map_or_else(when::mac_local_zone, |t| LocalZone {
+            zone: t.zone,
+            name: Some(t.name),
+            fallback_utc: false,
+        })
+}
+
+fn send_hints(result: &SendResult) -> Vec<String> {
+    use silicon_peek_client::ipc::cli::SendStatus;
+    let mut hints = Vec::new();
+    match (result.status, &result.schedule_id) {
+        (SendStatus::Scheduled, Some(sch)) => {
+            hints.push("peek schedule list".to_owned());
+            hints.push(format!("peek schedule cancel {sch}"));
+        }
+        (SendStatus::Queued, _) if result.queue_position.is_some() => {
+            hints.push("peek queue".to_owned());
+        }
+        _ => {}
+    }
+    if let Some(ask) = &result.ask_id {
+        hints.push(format!("peek ask get {ask}"));
+        hints.push("answers arrive as Ting events peek.ask.answered (peek docs ting)".to_owned());
+    } else if result.status == SendStatus::Showing {
+        hints.push("peek history".to_owned());
+    }
+    hints
 }
 
 async fn wait_for_answer(
@@ -253,13 +410,51 @@ fn final_value(r: &AskResult, sent: &SendResult) -> Value {
     v
 }
 
-fn human_send(v: &Value) -> String {
-    let mut lines = vec![format!(
-        "sent {} to position {} ({})",
-        v["send_id"].as_str().unwrap_or_default(),
-        v["slot"],
-        v["status"].as_str().unwrap_or_default()
-    )];
+fn ts(v: &Value) -> Option<Timestamp> {
+    v.as_str().and_then(|s| Timestamp::parse(s).ok())
+}
+
+/// The human `peek send` lines (contract §5.5).
+pub(crate) fn human_send(v: &Value, zone: &LocalZone, now: Timestamp) -> String {
+    let id = v["send_id"].as_str().unwrap_or_default();
+    let slot = &v["slot"];
+    let status = v["status"].as_str().unwrap_or_default();
+    let has_warning = |code: &str| {
+        v["warnings"]
+            .as_array()
+            .is_some_and(|w| w.iter().any(|w| w["code"] == code))
+    };
+    let first = match (status, v["queue_position"].as_u64()) {
+        ("scheduled", _) => {
+            let due = ts(&v["due_at"]).unwrap_or(now);
+            format!(
+                "scheduled {id} for {} ({}); schedule {}",
+                when::render_local(due, &zone.zone, zone.name.as_deref()),
+                when::render_relative(due, now),
+                v["schedule_id"].as_str().unwrap_or_default()
+            )
+        }
+        ("showing", _) => match v["replaced_send_id"].as_str() {
+            Some(old) => format!("sent {id} to position {slot} (showing; replaced {old})"),
+            None => format!("sent {id} to position {slot} (showing)"),
+        },
+        ("queued", Some(0)) => {
+            let why = if has_warning("carbon_away") {
+                "shown when the Carbon is back"
+            } else if has_warning("carbon_paused") {
+                "Peek is paused; shown when the Carbon resumes"
+            } else {
+                "shown when Peek.app starts"
+            };
+            format!("sent {id} to position {slot} (queued: {why})")
+        }
+        ("queued", Some(ahead)) => {
+            format!("sent {id} to position {slot} (queued: {ahead} ahead of it)")
+        }
+        // An older peekd reports no queue position.
+        (other, _) => format!("sent {id} to position {slot} ({other})"),
+    };
+    let mut lines = vec![first];
     if let Some(speech) = v.get("speech").filter(|s| !s.is_null()) {
         let model = speech["model"]
             .as_str()
@@ -273,6 +468,13 @@ fn human_send(v: &Value) -> String {
     }
     if let Some(ask) = v["ask_id"].as_str() {
         lines.push(format!("ask: {ask}"));
+    }
+    if let Some(exp) = ts(&v["expires_at"]) {
+        lines.push(format!(
+            "expires: {} ({})",
+            when::render_local(exp, &zone.zone, zone.name.as_deref()),
+            when::render_relative(exp, now)
+        ));
     }
     lines.join("\n")
 }
@@ -310,6 +512,7 @@ fn human_wait(v: &Value) -> String {
         "pending" => {
             format!("{id}: no answer in time; it will arrive as a Ting event (peek.ask.answered)")
         }
+        "replaced" => format!("{id}: replaced by a newer send from you (no answer)"),
         other => format!("{id}: {other}"),
     }
 }
@@ -327,6 +530,11 @@ mod tests {
             lang: None,
             duration: None,
             expires_in: None,
+            expires_at: None,
+            in_: None,
+            at: None,
+            tz: None,
+            replace: false,
             notify: None,
             wait: None,
         }
@@ -442,9 +650,9 @@ mod tests {
         a.wait = Some(601);
         assert_eq!(code(&a), Some(ErrorCode::InvalidInput));
         a.wait = Some(600);
-        a.expires_in = Some(9);
+        a.expires_in = Some("9".into());
         assert_eq!(code(&a), Some(ErrorCode::InvalidInput));
-        a.expires_in = Some(10);
+        a.expires_in = Some("10".into());
         let p = prepare(&a, &[Notify::SpeechFinished]);
         assert!(p.as_ref().is_ok_and(|p| p.op.wait
             && p.wait == Some(Duration::from_secs(600))
@@ -471,5 +679,281 @@ mod tests {
             Some(r#"{"elements":[{"type":"image","path":"./definitely-missing.png"}]}"#.into());
         assert_eq!(code(&a), Some(ErrorCode::ImageUnreadable));
         Ok(())
+    }
+
+    fn now() -> Timestamp {
+        Timestamp::parse("2026-09-27T06:12:00Z").unwrap_or(Timestamp::from_unix(0))
+    }
+
+    fn kolkata() -> LocalZone {
+        LocalZone {
+            zone: jiff::tz::db()
+                .get("Asia/Kolkata")
+                .unwrap_or(jiff::tz::TimeZone::UTC),
+            name: Some("Asia/Kolkata".to_owned()),
+            fallback_utc: false,
+        }
+    }
+
+    fn at_now(a: &SendArgs) -> Result<Prepared> {
+        prepare_at(a, &[], now(), &kolkata)
+    }
+
+    fn speak_args() -> SendArgs {
+        let mut a = args();
+        a.speak = Some("hi".into());
+        a
+    }
+
+    #[test]
+    fn deadlines_and_schedules() -> Result<()> {
+        let mut a = speak_args();
+        a.expires_in = Some("15m".into());
+        assert_eq!(at_now(&a)?.op.expires_in_s, Some(900), "any kind now");
+        let mut a = args();
+        a.ask = Some(r#"{"question":"q","type":"text"}"#.into());
+        a.expires_in = Some("60".into());
+        assert_eq!(
+            at_now(&a)?.op.expires_in_s,
+            Some(60),
+            "0.1.1's plain seconds"
+        );
+        let mut a = speak_args();
+        a.expires_at = Some("18:00".into());
+        let p = at_now(&a)?;
+        assert_eq!(
+            p.op.expires_at,
+            Timestamp::parse("2026-09-27T12:30:00Z").ok()
+        );
+        assert_eq!(p.op.tz.as_deref(), Some("Asia/Kolkata"));
+        let mut a = speak_args();
+        a.in_ = Some("2h".into());
+        let p = at_now(&a)?;
+        assert_eq!(p.op.due_at, Some(now().plus(Duration::from_secs(7200))));
+        assert_eq!(p.op.tz, None);
+        let mut a = speak_args();
+        a.at = Some("2026-09-27T18:00+05:30".into());
+        a.expires_at = Some("2026-09-27T18:30".into());
+        a.tz = Some("Europe/Berlin".into());
+        let p = at_now(&a)?;
+        assert_eq!(p.op.due_at, Timestamp::parse("2026-09-27T12:30:00Z").ok());
+        assert_eq!(
+            p.op.expires_at,
+            Timestamp::parse("2026-09-27T16:30:00Z").ok()
+        );
+        assert_eq!(
+            p.op.tz.as_deref(),
+            Some("Europe/Berlin"),
+            "the --expires-at zone is echoed"
+        );
+        a.replace = true;
+        assert!(at_now(&a)?.op.replace);
+        Ok(())
+    }
+
+    #[test]
+    fn deadline_errors_name_their_field() {
+        let err = |a: &SendArgs| at_now(a).err();
+        let field = |a: &SendArgs| {
+            err(a).and_then(|e| {
+                assert!(e.hint().is_some(), "every input error has a hint: {e}");
+                e.details()
+                    .and_then(|d| d.get("field"))
+                    .and_then(|f| f.as_str().map(str::to_owned))
+            })
+        };
+        let mut a = speak_args();
+        a.at = Some("2026-09-27T18:00".into());
+        a.expires_in = Some("10m".into());
+        assert_eq!(
+            err(&a).map(|e| e.code().clone()),
+            Some(ErrorCode::ConflictingFlags)
+        );
+        let mut a = speak_args();
+        a.tz = Some("Asia/Kolkata".into());
+        assert_eq!(
+            err(&a).map(|e| e.code().clone()),
+            Some(ErrorCode::ConflictingFlags)
+        );
+        let mut a = speak_args();
+        a.at = Some("09:00".into());
+        assert_eq!(field(&a).as_deref(), Some("--at"));
+        let mut a = speak_args();
+        a.at = Some("soon".into());
+        assert_eq!(field(&a).as_deref(), Some("--at"));
+        let mut a = speak_args();
+        a.in_ = Some("366d".into());
+        assert_eq!(field(&a).as_deref(), Some("--in"));
+        let mut a = speak_args();
+        a.expires_in = Some("5s".into());
+        assert_eq!(field(&a).as_deref(), Some("--expires-in"));
+        let mut a = speak_args();
+        a.expires_at = Some("2026-09-27T11:42:05".into());
+        assert_eq!(
+            field(&a).as_deref(),
+            Some("--expires-at"),
+            "less than 10 s ahead"
+        );
+        let mut a = speak_args();
+        a.tz = Some("Mars/Olympus".into());
+        a.at = Some("18:00".into());
+        assert_eq!(field(&a).as_deref(), Some("--tz"));
+        let mut a = speak_args();
+        a.in_ = Some("1h".into());
+        a.expires_at = Some("2026-09-27T12:00".into());
+        assert_eq!(
+            field(&a).as_deref(),
+            Some("--expires-at"),
+            "must be after the due time"
+        );
+        let mut a = args();
+        a.ask = Some(r#"{"question":"q","type":"text"}"#.into());
+        a.in_ = Some("1h".into());
+        a.wait = Some(60);
+        assert_eq!(
+            err(&a).map(|e| e.code().clone()),
+            Some(ErrorCode::ConflictingFlags)
+        );
+        let mut a = speak_args();
+        a.notify = Some("shown,nope".into());
+        assert_eq!(field(&a).as_deref(), Some("--notify"));
+    }
+
+    #[test]
+    fn the_mac_zone_is_read_only_when_needed() -> Result<()> {
+        let never = || -> LocalZone { panic!("the Mac's zone was read") };
+        let mut a = speak_args();
+        a.at = Some("2026-09-27T18:00Z".into());
+        prepare_at(&a, &[], now(), &never)?;
+        a.at = Some("18:00".into());
+        a.tz = Some("Asia/Kolkata".into());
+        prepare_at(&a, &[], now(), &never)?;
+        let mut a = speak_args();
+        a.in_ = Some("5m".into());
+        prepare_at(&a, &[], now(), &never)?;
+        // An unreadable zone falls back to UTC with a warning.
+        let utc = || LocalZone {
+            zone: jiff::tz::TimeZone::UTC,
+            name: None,
+            fallback_utc: true,
+        };
+        let mut a = speak_args();
+        a.at = Some("18:00".into());
+        let p = prepare_at(&a, &[], now(), &utc)?;
+        assert!(p.warnings.iter().any(|w| w.code == "timezone_fallback_utc"));
+        assert_eq!(p.op.due_at, Timestamp::parse("2026-09-27T18:00:00Z").ok());
+        Ok(())
+    }
+
+    #[test]
+    fn features_follow_the_flags() -> Result<()> {
+        let names = |p: &Prepared| {
+            needed_features(p)
+                .into_iter()
+                .map(|(f, _)| f)
+                .collect::<Vec<_>>()
+        };
+        let p = at_now(&speak_args())?;
+        assert!(names(&p).is_empty(), "a plain send needs nothing new");
+        let mut a = args();
+        a.ask = Some(r#"{"question":"q","type":"text"}"#.into());
+        a.expires_in = Some("60".into());
+        assert!(
+            names(&at_now(&a)?).is_empty(),
+            "--expires-in on an ask worked in 0.1.1"
+        );
+        let mut a = speak_args();
+        a.expires_in = Some("60".into());
+        a.in_ = None;
+        assert_eq!(names(&at_now(&a)?), vec![features::EXPIRY_ALL]);
+        let mut a = speak_args();
+        a.in_ = Some("1h".into());
+        a.replace = true;
+        a.notify = Some("shown".into());
+        assert_eq!(
+            names(&at_now(&a)?),
+            vec![
+                features::SCHEDULE,
+                features::REPLACE,
+                features::NOTIFY_SHOWN
+            ]
+        );
+        let p = prepare_at(&speak_args(), &[Notify::Shown], now(), &kolkata)?;
+        assert!(p.notify_from_config);
+        assert!(
+            names(&p).is_empty(),
+            "a config default is dropped, not refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn human_send_lines() {
+        let z = kolkata();
+        let base = |status: &str, extra: Value| {
+            let mut v = json!({"send_id": "snd_1", "ask_id": null, "slot": 3, "status": status,
+                "speech": null, "warnings": [], "queue_position": 0, "waiting": 0, "expires_at": null,
+                "schedule_id": null, "due_at": null, "tz": null, "replaced_send_id": null});
+            if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+                o.extend(e.clone());
+            }
+            human_send(&v, &z, now())
+        };
+        assert_eq!(
+            base("showing", json!({})),
+            "sent snd_1 to position 3 (showing)"
+        );
+        assert_eq!(
+            base("showing", json!({"replaced_send_id": "snd_0"})),
+            "sent snd_1 to position 3 (showing; replaced snd_0)"
+        );
+        assert_eq!(
+            base(
+                "queued",
+                json!({"warnings": [{"code": "carbon_away", "message": "m"}]})
+            ),
+            "sent snd_1 to position 3 (queued: shown when the Carbon is back)"
+        );
+        assert_eq!(
+            base(
+                "queued",
+                json!({"warnings": [{"code": "carbon_paused", "message": "m"}]})
+            ),
+            "sent snd_1 to position 3 (queued: Peek is paused; shown when the Carbon resumes)"
+        );
+        assert_eq!(
+            base("queued", json!({})),
+            "sent snd_1 to position 3 (queued: shown when Peek.app starts)"
+        );
+        assert_eq!(
+            base("queued", json!({"queue_position": 2, "waiting": 2})),
+            "sent snd_1 to position 3 (queued: 2 ahead of it)"
+        );
+        assert_eq!(
+            base(
+                "scheduled",
+                json!({"queue_position": null, "waiting": null,
+                "due_at": "2026-09-27T12:30:00Z", "schedule_id": "sch_1"})
+            ),
+            "scheduled snd_1 for 2026-09-27 18:00 IST (Asia/Kolkata) (in 6h 18m); schedule sch_1"
+        );
+        assert_eq!(
+            base(
+                "showing",
+                json!({"ask_id": "ask_1", "expires_at": "2026-09-27T06:22:00Z",
+                "speech": {"status": "pending", "model": "aura-2-thalia-en", "chars": 5}})
+            ),
+            "sent snd_1 to position 3 (showing)\nspeech: pending (5 characters, aura-2-thalia-en)\nask: ask_1\nexpires: 2026-09-27 11:52 IST (Asia/Kolkata) (in 10m)"
+        );
+        // An older peekd has no queue position.
+        let old = json!({"send_id": "snd_1", "ask_id": null, "slot": 3, "status": "queued", "warnings": []});
+        assert_eq!(
+            human_send(&old, &z, now()),
+            "sent snd_1 to position 3 (queued)"
+        );
+        assert_eq!(
+            human_wait(&json!({"ask_id": "ask_1", "state": "replaced"})),
+            "ask_1: replaced by a newer send from you (no answer)"
+        );
     }
 }

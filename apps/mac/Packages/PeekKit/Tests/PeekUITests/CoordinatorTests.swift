@@ -115,6 +115,8 @@ struct CoordinatorTests {
         await link.push(.peekShow(ask))
         #expect(await eventually { coordinator.visible["snd_1"] != nil })
         #expect(!coordinator.isIdleForUpdate)
+        // A voice answer can only come once the ask is up (after its pre-warm).
+        #expect(await eventually { coordinator.slotManager.machine(on: .bottom)?.stage == .visible })
 
         await link.push(.sttResult(STTResultEvent(askID: "ask_1", messageID: nil, outcome: .matched, value: "yes")))
         #expect(await eventually { coordinator.visible.isEmpty })
@@ -206,8 +208,58 @@ struct CoordinatorTests {
             if sent.count == 3 { break }
             try? await Task.sleep(for: .milliseconds(5))
         }
-        #expect(sent == [["available": false, "reason": "locked"], ["available": false, "reason": "asleep"],
-                         ["available": true, "reason": "ok"]])
+        #expect(sent == [["available": false, "reason": "locked", "paused": false],
+                         ["available": false, "reason": "asleep", "paused": false],
+                         ["available": true, "reason": "ok", "paused": false]])
+        await coordinator.stop()
+    }
+
+    @Test("pausing and resuming from the menu bar sends presence again with paused and the current screen state")
+    func presenceCarriesPause() async {
+        let link = FakeLink()
+        let coordinator = makeCoordinator(link)
+        await coordinator.start()
+        coordinator.presenceChanged(PresenceRequest(available: false, reason: .locked))
+        coordinator.paused = true
+        coordinator.paused = true  // unchanged: nothing more is sent
+        coordinator.presenceChanged(.available)
+        coordinator.paused = false
+        var sent: [JSONValue] = []
+        for _ in 0..<200 {
+            sent = await link.sent.filter { $0.op == "presence" }.map(\.fields)
+            if sent.count == 4 { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(sent == [["available": false, "reason": "locked", "paused": false],
+                         ["available": false, "reason": "locked", "paused": true],
+                         ["available": true, "reason": "ok", "paused": true],
+                         ["available": true, "reason": "ok", "paused": false]])
+        #expect(coordinator.carbonPresence == .available, "the screen state alone")
+        await coordinator.stop()
+    }
+
+    @Test("queue.state from peekd updates the +N badge of the matching bubble; shown reaches peekd once as it pre-warms")
+    func queueStateAndShown() async {
+        let link = FakeLink()
+        let coordinator = makeCoordinator(link)
+        await coordinator.start()
+        let dj = SlotState(index: .bottom, actorID: "si:dj", orgID: "tos", displayName: "DJ")
+        await link.push(.slotsState(SlotsStateEvent(slots: [dj])))
+        #expect(await eventually { coordinator.slots.count == 1 })
+        let show = PeekShowEvent(sendID: "snd_q", slot: .bottom, show: ShowPayload(elements: [.text("Build finished")]),
+                                 durationMs: 5000, queuedBehind: 2, expiresAt: "2026-09-27T12:40:00.000Z")
+        await link.push(.peekShow(show))
+        #expect(await eventually { coordinator.slotManager.chrome(on: .bottom)?.content.waiting == 2 })
+        await link.push(.queueState(QueueStateEvent(slot: .bottom, sendID: "snd_other", waiting: 5)))
+        await link.push(.queueState(QueueStateEvent(slot: .bottom, sendID: "snd_q", waiting: 3)))
+        #expect(await eventually { coordinator.slotManager.chrome(on: .bottom)?.content.waiting == 3 })
+        var shown: [JSONValue] = []
+        for _ in 0..<200 {
+            shown = await link.sent.filter { $0.op == "shown" }.map(\.fields)
+            if !shown.isEmpty { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(shown == [["send_id": "snd_q"]])
         await coordinator.stop()
     }
 

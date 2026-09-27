@@ -44,6 +44,9 @@ pub async fn run(g: &Globals, out: Out) -> Result<()> {
     if result.drawing.is_none() {
         hints.push("peek register drawing ./logo.js");
     }
+    if result.queue.waiting > 0 {
+        hints.push("peek queue");
+    }
     if result.deliveries.authority_required > 0 {
         hints.push(
             "peek login status --json (deliveries wait for a valid session or `peek ting enroll`)",

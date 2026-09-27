@@ -363,6 +363,10 @@ public protocol DrawingHosting: AnyObject {
     func isOverContent(unitPoint: CGPoint) -> Bool
     /// Runs visual.md A9 in a separate, temporary runtime (never touches this host's VM).
     func validate(_ script: DrawingScript, options: ValidationOptions) async -> ValidationReport
+    /// Resolves once the next frame has been committed to the visual layer (the bubble's pre-warm waits for it before
+    /// sliding in, peek 0.1.2). true at once when nothing is pending that a frame would change (the fallback visual,
+    /// no script); false when `timeout` passes first.
+    func awaitFrame(timeout: Duration) async -> Bool
 }
 
 /// Creates drawing hosts and validates scripts for peekd (implemented by PeekDrawing).
@@ -573,6 +577,11 @@ public protocol BackdropSampling: AnyObject {
     func backdrop(for key: SiliconKey) -> Backdrop
     /// Tone or colour changed: re-shade pills and wake the drawing.
     var onChange: (@MainActor (SiliconKey, Backdrop) -> Void)? { get set }
+    /// Keeps an idle sample for `key` (an occupied slot with nothing on screen) at a slow cadence, so the pill shade is
+    /// known before the next bubble arrives (peek 0.1.2); `nil` stops it. Tracking (``track(_:rectOnScreen:)``) wins.
+    func warm(_ key: SiliconKey, rectOnScreen: CGRect?)
+    /// Seconds since `key` was last sampled (a sample that changed nothing counts), or nil when it never was.
+    func sampleAge(for key: SiliconKey) -> Double?
 }
 
 /// Copies, decodes (≤ 512 px) and analyses show and option images (visual.md B7). Implemented by PeekInput.

@@ -45,7 +45,7 @@ pub fn actor_hash(org: &OrgId, actor: &ActorId) -> String {
 
 /// Keys allowed in an event's `context` object (§6.4). Anything else is
 /// dropped before an event is recorded.
-pub const CONTEXT_KEYS: [&str; 29] = [
+pub const CONTEXT_KEYS: [&str; 31] = [
     "slot",
     "mode",
     "appearance",
@@ -75,6 +75,8 @@ pub const CONTEXT_KEYS: [&str; 29] = [
     "matched",
     "dg_request_id",
     "key_source",
+    "queue_waiting",
+    "scheduled",
 ];
 
 /// Removes every non-allowlisted key from an event `context` object.

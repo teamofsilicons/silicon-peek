@@ -54,6 +54,11 @@ public final class DrawingHost: DrawingHosting {
     private var scriptFilename = "drawing.js"
     /// Frames completed since load (tests, diagnostics).
     private(set) var framesRendered = 0
+    /// ``awaitFrame(timeout:)`` callers waiting for the next committed frame, with the number of frames started
+    /// before they asked (a frame already in flight then may predate the events they delivered).
+    private var frameWaiters: [UUID: (after: Int, continuation: CheckedContinuation<Bool, Never>)] = [:]
+    /// Frames handed to the VM since the host was created.
+    private var framesStarted = 0
 
     /// Monotonic seconds; injectable for tests.
     var clock: () -> CFTimeInterval = { CACurrentMediaTime() } {
@@ -96,6 +101,7 @@ public final class DrawingHost: DrawingHosting {
     isolated deinit {
         worker?.shutdown()
         scheduler.detach()
+        for waiter in frameWaiters.values { waiter.continuation.resume(returning: false) }
     }
 
     // MARK: Loading
@@ -162,6 +168,37 @@ public final class DrawingHost: DrawingHosting {
         compositor.hideFallback()
         resetFrameState()
         status = .empty
+        resolveFrameWaiters(true)  // nothing is drawn any more: nothing to wait for
+    }
+
+    // MARK: Pre-warm
+
+    public func awaitFrame(timeout: Duration) async -> Bool {
+        // The fallback visual and an empty canvas are drawn synchronously; only a running script has frames to wait for.
+        guard case .ready = status, worker != nil else { return true }
+        let id = UUID()
+        let after = framesStarted
+        return await withCheckedContinuation { continuation in
+            frameWaiters[id] = (after, continuation)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: timeout)
+                self?.frameWaiters.removeValue(forKey: id)?.continuation.resume(returning: false)
+            }
+            wake()
+        }
+    }
+
+    /// Hands the frame just applied (number `frame`; nil = no more frames will come) to every ``awaitFrame(timeout:)``
+    /// caller that asked before it started. The implicit transaction is flushed first, so the layers are committed
+    /// when the callers run.
+    private func resolveFrameWaiters(_ value: Bool, frame: Int? = nil) {
+        let due = frameWaiters.filter { frame == nil || $0.value.after < frame! }
+        guard !due.isEmpty else { return }
+        CATransaction.flush()
+        for (id, waiter) in due {
+            frameWaiters.removeValue(forKey: id)
+            waiter.continuation.resume(returning: value)
+        }
     }
 
     private func stopWorker() {
@@ -260,19 +297,22 @@ public final class DrawingHost: DrawingHosting {
         let frameImages = resolveImages(in: snapshot)
         isFrameInFlight = true
         wakePending = false
+        framesStarted += 1
+        let frameNumber = framesStarted
         let frameGeneration = generation
         let keepAwakeForLevels = (snapshot.speech?.level ?? 0) > 0 || snapshot.mic.level > 0
         worker.frame(input: snapshot.jsonBytes(), images: frameImages, pixels: pixelSize) { [weak self] outcome in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    self?.finishFrame(outcome, generation: frameGeneration, levelsAwake: keepAwakeForLevels, at: now)
+                    self?.finishFrame(outcome, generation: frameGeneration, levelsAwake: keepAwakeForLevels, at: now,
+                                      number: frameNumber)
                 }
             }
         }
     }
 
     private func finishFrame(_ outcome: FrameOutcome, generation frameGeneration: Int, levelsAwake: Bool,
-                             at time: CFTimeInterval) {
+                             at time: CFTimeInterval, number frameNumber: Int) {
         guard frameGeneration == generation else { return }
         isFrameInFlight = false
         var keepAwake = true
@@ -283,6 +323,7 @@ public final class DrawingHost: DrawingHosting {
                 compositor.apply(rendered)
                 hasRenderedSinceLoad = true
                 framesRendered += 1
+                resolveFrameWaiters(true, frame: frameNumber)
                 for message in rendered.diagnostics { report(message) }
                 if rendered.droppedOps > 0, !reportedOpsCap {
                     reportedOpsCap = true
@@ -334,6 +375,7 @@ public final class DrawingHost: DrawingHosting {
         isFrameInFlight = false
         status = .fallback(failure)
         compositor.showFallback(initial: initial)
+        resolveFrameWaiters(true)
         let who = key.description, message = failure.message
         Self.logger.error("drawing \(who) switched to the fallback visual: \(message)")
         if shouldReport { onFailure?(failure) }

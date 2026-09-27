@@ -60,7 +60,7 @@ Every event is self-contained:
 
 ```jsonc
 {"schema_version":1,"app":"peek","service":"peek-backend|peek-cli|peek-daemon|peek-mac|peek-web",
- "source":"backend|cli|daemon|mac|web","version":"0.1.1","environment":"production|testing|development",
+ "source":"backend|cli|daemon|mac|web","version":"0.1.2","environment":"production|testing|development",
  "instance_id":"<uuidv7 per process>","trace_id":"<uuidv7 created by the CLI and carried in X-Peek-Trace-Id>",
  "step":"send.validate","event":"send.displayed","progress":1,"outcome":"ok|error|skipped|timeout",
  "duration_ms":412,"error_code":null,"isi":"deliberate",
@@ -70,7 +70,7 @@ Every event is self-contained:
 ```
 
 - **Actors are hashed.** `actor.hash` is the first 16 hex characters of `sha256("<org>:<actor>")`. Raw ids such as `si:dj` are never recorded.
-- **`context` accepts only these keys:** `slot`, `mode`, `appearance`, `speak_chars`, `show_elements`, `show_kinds`, `ask_type`, `options_count`, `drawing_bytes`, `drawing_sha256`, `answer_latency_ms`, `gesture`, `input`, `shortcut`, `ting_status`, `attempt`, `http_route` (a route template, never a concrete URL), `method`, `status`, `update_from`, `update_to`, `command`, `tts_model`, `tts_ttfb_ms`, `stt_ms`, `stt_language`, `matched`, `dg_request_id`, `key_source`.
+- **`context` accepts only these keys:** `slot`, `mode`, `appearance`, `speak_chars`, `show_elements`, `show_kinds`, `ask_type`, `options_count`, `drawing_bytes`, `drawing_sha256`, `answer_latency_ms`, `gesture`, `input`, `shortcut`, `ting_status`, `attempt`, `http_route` (a route template, never a concrete URL), `method`, `status`, `update_from`, `update_to`, `command`, `tts_model`, `tts_ttfb_ms`, `stt_ms`, `stt_language`, `matched`, `dg_request_id`, `key_source`, `queue_waiting` (how many of the Silicon's sends were waiting), `scheduled` (whether the send came from `--in`/`--at`).
 
 Events by source:
 
@@ -78,7 +78,7 @@ Events by source:
 |---|---|
 | backend | `http.completed` (route template, method, status, duration; not for telemetry or health routes), `auth.login`, `auth.refresh`, `auth.logout`, `ting.enroll`, `ting.send` (type, status, attempt, silent), `speech.token` (purpose, key source, `method` direct or proxy), `speech.proxy` (relayed speech: `tts_model`, `speak_chars`, `tts_ttfb_ms` or `stt_ms`, key source, `dg_request_id`; never the text or audio), `drawing.put`, `report.created`, `webhook.received` (event type), `participant.op` (action, state) |
 | cli | `command.finished` {command, outcome, error_code, exit_code, duration_ms}, once per invocation |
-| helper | `daemon.started`, `ipc.request` {op, outcome, duration_ms}, `send.displayed`, `send.queued`, `tts.request` {tts_model, speak_chars, tts_ttfb_ms, duration_ms, status, dg_request_id}, `stt.request` {duration_ms, stt_ms, stt_language, matched, status}, `delivery.attempt` {type, status, attempt, error_code}, `session.refresh` {outcome}, `app.update` {update_from, update_to, outcome}, `update.cli_watchdog` |
+| helper | `daemon.started`, `ipc.request` {op, outcome, duration_ms}, `send.displayed` and `send.queued` {slot, queue_waiting}, `send.shown` {slot}, `send.scheduled` {slot, scheduled}, `schedule.fired` {slot, status: the outcome}, `send.expired` {slot, status: shown or not_shown}, `send.cancelled` {slot, status: where it was}, `queue.cleared` {slot, queue_waiting}, `send.replaced` {slot}, `tts.request` {tts_model, speak_chars, tts_ttfb_ms, duration_ms, status, dg_request_id}, `stt.request` {duration_ms, stt_ms, stt_language, matched, status}, `delivery.attempt` {type, status, attempt, error_code}, `session.refresh` {outcome}, `app.update` {update_from, update_to, outcome}, `update.cli_watchdog` |
 | Peek.app, analytics | `app_launched`, `peek_visible` {slot, mode, visible_ms}, `render_error`, `fallback_visual` {reason}, `glass_mode` {live or frosted}, `display_changed`, `appearance_changed` |
 | Peek.app, events | `shortcut_used` {shortcut}, `mic_pressed`, `keyboard_pressed`, `answer_submitted` {ask_type, input, answer_latency_ms}, `dismissed` {gesture}, `settings_changed` {key}, `simulation_run` |
 | website | the SDK's automatic analytics (page views, clicks with only the element tag, role and an explicit marker, errors, timings), plus `install_command_copied`, `docs_search` {results} and `download_cta` |

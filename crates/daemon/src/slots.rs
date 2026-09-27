@@ -195,13 +195,13 @@ impl Shared {
         })
     }
 
-    /// `unregister`: releases the position, cancels pending asks and queued
-    /// sends, and deletes the drawing locally and on peek-server.
+    /// `unregister`: releases the position, cancels pending asks, queued and
+    /// scheduled sends, and deletes the drawing locally and on peek-server.
     ///
     /// # Errors
     /// Database failures.
     pub async fn unregister(self: &SharedRef, caller: &Caller) -> Result<UnregisterResult> {
-        let cancelled_asks = self
+        let cancelled = self
             .cancel_actor_bubbles(&caller.key, CancelReason::Unregistered)
             .await?;
         let k = caller.key.clone();
@@ -268,7 +268,9 @@ impl Shared {
         self.push_slots_state().await;
         Ok(UnregisterResult {
             released_slot: released,
-            cancelled_asks,
+            cancelled_asks: cancelled.asks,
+            cancelled_sends: cancelled.sends,
+            cancelled_scheduled: cancelled.scheduled,
         })
     }
 
@@ -344,6 +346,30 @@ impl Shared {
             }
             Err(e) => tracing::error!(error = %e, "building slots.state failed"),
         }
+    }
+
+    /// The `status` view of a Silicon's queue.
+    ///
+    /// # Errors
+    /// Database failures.
+    pub async fn queue_status(&self, key: &crate::state::ActorKey) -> Result<QueueStatus> {
+        let k = key.clone();
+        let scheduled = self
+            .db
+            .call(move |c| crate::queue::scheduled_count(c, &k))
+            .await?;
+        let core = self.core.lock().await;
+        let q = core.queues.get(key);
+        let waiting = q.map_or(0, crate::state::ActorQueue::waiting_count);
+        Ok(QueueStatus {
+            pending: waiting,
+            on_screen: q.and_then(|q| q.current.as_ref().map(|b| b.send_id.clone())),
+            waiting,
+            limit: u32::try_from(silicon_peek_client::schema::limits::QUEUE_MAX)
+                .unwrap_or(u32::MAX),
+            scheduled,
+            held: self.held_reason(q.and_then(|q| q.current.as_ref())),
+        })
     }
 
     /// `status`.
@@ -427,9 +453,7 @@ impl Shared {
                     .and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_owned)),
                 server_sync: Some(server_sync.to_owned()),
             }),
-            queue: QueueStatus {
-                pending: self.queued_count(&caller.key).await,
-            },
+            queue: self.queue_status(&caller.key).await?,
             pending_asks: u32::try_from(pending_asks).unwrap_or(u32::MAX),
             deliveries: DeliveriesStatus {
                 pending: u32::try_from(deliveries.0).unwrap_or(u32::MAX),
@@ -442,6 +466,7 @@ impl Shared {
                 CarbonStatus {
                     available: p.available,
                     reason: p.reason,
+                    paused: p.paused,
                 }
             }),
             warnings,

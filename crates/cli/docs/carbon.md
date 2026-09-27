@@ -8,7 +8,7 @@ This page is for the human at the Mac. Peek shows bubbles from your Silicons at 
 curl -fsSL https://peek.teamofsilicons.com/install.sh | sh
 ```
 
-You need macOS 26 or newer. The script installs Honeycomb if it is missing, the `peek` CLI, and Peek.app into `~/Applications`, then starts it. Peek has no Dock icon; look for it in the menu bar.
+You need macOS 26 or newer. The script installs Honeycomb if it is missing, then runs `honeycomb install 'peek'`, which installs the `peek` CLI and, on a Mac, puts Peek.app into `~/Applications` (after checking its Developer ID signature) and starts it. Peek has no Dock icon; look for it in the menu bar. If you already have Honeycomb, `honeycomb install 'peek'` alone does the same.
 
 The first time Peek starts, macOS may say a background item was added, or ask you to approve it. Open **System Settings → General → Login Items & Extensions** and allow Peek. Peek's helper (`peekd`) runs in the background so Silicons can reach you even when no bubble is open. If you do not approve it, Peek still works while the app is running, and shows a one-time notice.
 
@@ -38,6 +38,8 @@ A bubble slides in from the edge of the screen with a small bounce, the way macO
 - **The question arc**: when the Silicon asks something, the question curves above the answer controls.
 - **Mic and keyboard buttons**, next to the visual on the side facing the screen edge, when an answer or message is possible.
 - **A down-arrow** to close the bubble.
+- **A `+N` badge** beside the down-arrow when N more bubbles from the same Silicon are waiting their turn. It counts up and down as they arrive and leave.
+- **A `^` button** beside the down-arrow on a question you folded away with Esc; it opens the question again.
 
 Peek samples what is behind each bubble (your desktop picture by default) and picks white or black shading so the text stays readable on light and dark backgrounds.
 
@@ -51,7 +53,11 @@ Peek samples what is behind each bubble (your desktop picture by default) and pi
 
 When the Silicon speaks, with or without something to show, the bubble slides back 1.5 seconds after the speech ends. A show without speech stays for a few seconds, longer for more text. An ask stays until you answer or dismiss it. If the speech cannot be played (for example, its language has no voice), the words appear as a pill instead.
 
-While your Mac is locked or its display is asleep, Peek shows nothing and says nothing. Bubbles wait and appear, in order, when you are back; a question that ran out of time meanwhile is simply dropped, and its Silicon is told.
+A bubble is ready before it moves: Peek prepares the glass, the colours behind it and the Silicon's first drawing frame out of sight, then slides it in, so nothing changes colour or shading after it lands.
+
+**One at a time.** Each Silicon's bubbles take turns at its position. A new one never pushes away the one you are reading; it waits until that one is done (its time ran out, you answered or closed it), then slides in. A Silicon can have at most five waiting, and the `+N` badge shows how many. Silicons can also schedule a bubble for a set time; it appears then, just like any other.
+
+While your Mac is locked or its display is asleep, Peek shows nothing and says nothing. Bubbles wait and appear, in order, when you are back, and a bubble that was scheduled while the Mac slept appears once it wakes. Anything that ran out of time meanwhile is simply dropped, and its Silicon is told whether you ever saw it.
 
 ## Answer a question
 
@@ -83,18 +89,32 @@ You do not have to wait for a question. Press ⌃⌘N for a Silicon's position: 
 
 ## Dismiss and cancel
 
-| You do | What happens |
-|---|---|
-| Click the down-arrow once | The bubble slides away. Speech keeps playing. |
-| Double-click the down-arrow | The bubble slides away and the speech stops. |
-| Press Esc while speaking or typing an answer | Your input is cancelled and the bubble slides back. Nothing is uploaded. |
-| Dismiss a question (Esc or the down-arrow) | The Silicon is told you dismissed it (`peek.ask.dismissed`). |
+| You do | On a bubble that speaks or shows | On a question |
+|---|---|---|
+| Click the down-arrow | It slides away. Speech keeps playing. | It is dismissed and slides away; the Silicon is told. |
+| Double-click the down-arrow | It slides away and the speech stops. | It is dismissed and the speech stops; the Silicon is told. |
+| Press Esc | It slides away. Speech keeps playing. | It folds into a **compact question**: the question stays, the answer controls hide, and you can still answer it later. |
+| Press Esc twice quickly (within 0.4 s) | It slides away and the speech stops. | It is dismissed and the speech stops; the Silicon is told. |
+| Press Esc on a compact question | – | "Esc again to dismiss" appears for 2 seconds. Press Esc again to dismiss it; otherwise it stays compact. |
+| Click `^` on a compact question | – | The full question comes back. Clicking the question, the mic or keyboard button, or pressing ⌃⌘N does the same. |
+| Press Esc while speaking or typing an answer | – | What you said or typed is thrown away (nothing is uploaded) and the question folds into a compact question. |
 
-While a question is waiting, the same Silicon's later bubbles queue behind it, so questions never pile up on screen.
+The down-arrow always closes; it never just folds a question away. A dismissed question reaches its Silicon as `peek.ask.dismissed`; you never have to answer.
+
+### When Esc goes to a bubble
+
+Peek never watches your keyboard, so Esc reaches a bubble only at these moments (none of them needs Input Monitoring or Accessibility permission):
+
+- **For 3 seconds after a bubble appears.** Each bubble gets its own 3 seconds, including the next one from the queue. During that time the app you are using does not get the Esc.
+- **While the pointer is over a bubble.**
+- **While a bubble has the keyboard,** after ⌃⌘N or while you type an answer.
+- **Right after an Esc to that bubble,** for the 0.4 seconds in which a second Esc counts as a double, and while "Esc again to dismiss" shows.
+
+At any other time Esc belongs to the app you are using, as usual. When several bubbles are on screen, Esc goes to the one under the pointer, otherwise to the newest. An open long-text popup closes first. If another app already claims the bare Esc key everywhere, Peek cannot take it: use the down-arrow, and `peek doctor` lists the conflict under `hotkeys`.
 
 ## The menu bar and Settings
 
-The menu bar item lists the eight positions with their Silicons and shortcuts, and offers **Pause all peeks** (bubbles wait in the helper until you resume; nothing is lost), **Simulation…**, **Settings…** (⌘,) and **Quit Peek** (⌘Q).
+The menu bar item lists the eight positions with their Silicons and shortcuts, and offers **Pause all peeks** (bubbles wait in the helper until you resume; nothing is lost, and each Silicon can still line up at most five), **Simulation…**, **Settings…** (⌘,) and **Quit Peek** (⌘Q).
 
 Settings has five tabs:
 

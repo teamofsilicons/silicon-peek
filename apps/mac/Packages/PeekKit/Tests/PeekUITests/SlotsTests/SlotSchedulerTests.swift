@@ -30,13 +30,15 @@ struct SlotSchedulerTests {
         #expect(scheduler.decide(entry("a", prod), active: nil, gate: SlotGate(), audioPlaying: false) == .present)
     }
 
-    @Test("a new send from the same Silicon replaces a visible show")
-    func replacesShow() {
+    @Test("peek 0.1.2: a new send from the same Silicon queues behind its visible show; only an idle summon makes way")
+    func sameSiliconQueues() {
         let scheduler = SlotScheduler()
         #expect(scheduler.decide(entry("b", prod), active: active("a", prod), gate: SlotGate(), audioPlaying: false)
-            == .replaceActive)
+            == .enqueue)
         #expect(scheduler.decide(entry("b", prod), active: active("s", prod, summon: true), gate: SlotGate(),
                                  audioPlaying: false) == .replaceActive)
+        #expect(scheduler.decide(entry("b", prod), active: active("s", prod, input: true, summon: true), gate: SlotGate(),
+                                 audioPlaying: false) == .enqueue, "a summon the Carbon is typing into keeps its place")
     }
 
     @Test("sends queue behind a pending ask, behind typing or recording, and behind a leaving bubble")

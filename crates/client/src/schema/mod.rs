@@ -73,8 +73,21 @@ pub mod limits {
     pub const WAIT_DEFAULT_S: u64 = 120;
     /// Characters in an ISI.
     pub const ISI_MAX_CHARS: usize = 160;
-    /// Sends that may queue behind a pending ask in one slot.
+    /// Sends that may wait behind the current one in a Silicon's queue.
     pub const QUEUE_MAX: usize = 5;
+    /// Not-yet-due scheduled sends (`--in`/`--at`) per Silicon.
+    pub const SCHEDULED_MAX: usize = 500;
+    /// `--in` lower bound, seconds.
+    pub const SCHEDULE_IN_MIN_S: u64 = 1;
+    /// `--in` upper bound (and the `--at` horizon), seconds (365 days).
+    pub const SCHEDULE_IN_MAX_S: u64 = 365 * 24 * 3600;
+    /// peekd's tolerance, in milliseconds, for CLI→peekd latency on the
+    /// lower bounds of `due_at` and `expires_at`.
+    pub const SCHEDULE_SLACK_MS: i64 = 5_000;
+    /// Characters in an IANA time zone name (`--tz`).
+    pub const TZ_NAME_MAX_CHARS: usize = 64;
+    /// Characters in a `peek queue` / `peek schedule list` summary.
+    pub const SUMMARY_MAX_CHARS: usize = 60;
     /// Largest `history --limit`.
     pub const HISTORY_MAX_LIMIT: u32 = 200;
 }
