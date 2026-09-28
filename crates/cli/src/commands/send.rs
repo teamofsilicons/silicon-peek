@@ -272,16 +272,18 @@ pub async fn run(g: &Globals, out: Out, args: SendArgs) -> Result<()> {
         ("--ask", args.ask.as_deref() == Some("-")),
     ])?;
     // Validate before touching the session so input errors are deterministic.
-    let default_notify = crate::context::existing_store()
+    let config = crate::context::existing_store()
         .ok()
         .flatten()
         .and_then(|s| s.read_config().ok())
-        .map(|c| c.notify)
         .unwrap_or_default();
-    let mut prepared = prepare(&args, &default_notify)?;
+    let mut prepared = prepare(&args, &config.notify)?;
     let (_session, auth) = mac_session(g).await?;
     let mut svc = service::ensure_service().await?;
     require_features(&svc, &needed_features(&prepared))?;
+    prepared
+        .warnings
+        .extend(super::register::apply_defaults(&mut svc, &auth, &config).await?);
     if prepared.notify_from_config
         && prepared.op.notify.contains(&Notify::Shown)
         && !svc.hello.has_feature(features::NOTIFY_SHOWN)
@@ -291,6 +293,10 @@ pub async fn run(g: &Globals, out: Out, args: SendArgs) -> Result<()> {
             "note: config notify \"shown\" is not supported by peekd {} yet; this send goes without it",
             svc.hello.peekd_version
         ));
+    }
+    // Relative schedules start after setup (drawing validation can take 120 s).
+    if let Some(raw) = &args.in_ {
+        prepared.op.due_at = Some(Timestamp::now().plus(parse_schedule_in(raw)?));
     }
     let started = Instant::now();
     let (mut result, _) = svc

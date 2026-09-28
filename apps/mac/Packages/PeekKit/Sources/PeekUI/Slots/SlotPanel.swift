@@ -56,7 +56,8 @@ public class SlotPanel: NSPanel {
         backgroundColor = .clear
         hasShadow = false  // shadows are drawn per element
         level = .floating
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        // Join other apps' full-screen Spaces as an overlay, not just Peek's own full-screen windows.
+        collectionBehavior = [.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         isMovable = false
         isMovableByWindowBackground = false
         hidesOnDeactivate = false

@@ -16,7 +16,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// The root `after_help`, verbatim from BLUEPRINT §7.2.
 pub const ROOT_AFTER_HELP: &str = "\
-Start (Silicon):  peek iam --json · peek login <SLT> · peek register side <1-8> · peek register drawing ./logo.js
+Start (Silicon):  peek iam --json · peek login <SLT> · peek register side <1-8> (custom drawing optional)
 Then:             peek send --speak \"…\" --show '{…}'   |   peek send --speak \"…\" --ask '{…}'
 Answers arrive as Ting events of type peek.ask.answered (route them in your flow; see peek docs ting).
 State: $SILICON_HOME/.peek (else ~/.peek). Test mode: peek --test <env-uuid> <command>.
@@ -156,7 +156,7 @@ grant too; every home of this Silicon then needs `peek ting enroll`."
     #[command(
         long_about = "Configuration for this home, stored in $SILICON_HOME/.peek/config.json. \
 `peek config set '<json-object>'` is the Stemcell contract: a strict merge of known keys (telemetry, \
-voice, language, notify, api_url, delivery_max_age_hours); `null` resets a key. The result is printed \
+voice, language, notify, api_url, delivery_max_age_hours, position, drawing); `null` resets a key. The result is printed \
 and pushed to peekd.",
         subcommand_required = true,
         arg_required_else_help = true
@@ -184,9 +184,10 @@ revoked on purpose.",
 
     /// Claim a position on the screen, or register the bubble's drawing.
     #[command(
-        long_about = "Before a Silicon can send, it needs a position (`peek register side <1-8>`) \
-and a drawing (`peek register drawing ./logo.js`). Positions are 1 top, then clockwise to 8 top-left; \
-each Silicon holds exactly one. The drawing is a small JavaScript file that Peek.app validates and \
+        long_about = "Before a Silicon can send, it needs a position (`peek register side <1-8>` \
+or config `position`). Positions are 1 top, then clockwise to 8 top-left; each Silicon holds exactly \
+one. A custom drawing is optional (`peek register drawing ./logo.js` or config `drawing`); otherwise \
+Peek uses its built-in visual. The drawing is a small JavaScript file that Peek.app validates and \
 runs for the bubble.",
         subcommand_required = true,
         arg_required_else_help = true
@@ -201,7 +202,7 @@ runs for the bubble.",
     #[command(
         long_about = "Releases this Silicon's position and shortcut, deletes its drawing on this Mac \
 and on the backend, and cancels its pending asks, queued sends and scheduled sends. No Ting events are \
-sent. Register again with `peek register side <1-8>` and `peek register drawing <FILE.js>`."
+sent. Register again with `peek register side <1-8>` and optionally `peek register drawing <FILE.js>`."
     )]
     Unregister,
 
@@ -218,7 +219,8 @@ shown or finished in time (you get peek.send.expired or peek.ask.expired). --in 
 instead (see `peek schedule list`).\n\n\
 Answers to --ask arrive later as Ting events of type peek.ask.answered (see `peek docs ting`); inspect \
 them locally with `peek ask get <ASK_ID>`. With --wait the command stays open and prints the answer \
-itself (then no Ting event is sent for it). Needs a position and a drawing first (`peek register`)."
+itself (then no Ting event is sent for it). Uses configured position/drawing defaults when unregistered; \
+without a custom drawing, Peek uses its built-in visual."
     )]
     Send(Box<SendArgs>),
 
@@ -445,7 +447,9 @@ and details.valid_keys, and nothing is written. `null` resets a key to its defau
 also pushed to peekd (best effort).\n\n\
 Keys: telemetry (bool), voice (aura-2-<name>-<en|es|de|fr|nl|it|ja> or null), language (BCP 47 primary \
 subtag or null), notify (subset of [\"speech_finished\",\"show_dismissed\",\"shown\"]), api_url (https origin or \
-null), delivery_max_age_hours (1–168)."
+null), delivery_max_age_hours (1–168), position (1–8 or null), drawing (JavaScript file path or null). \
+Relative drawing paths are saved as absolute paths. Sends use position/drawing only when no explicit \
+registration exists."
     )]
     Set {
         /// One JSON object, for example '{"notify":["speech_finished"]}'.
@@ -456,7 +460,7 @@ null), delivery_max_age_hours (1–168)."
     Show,
     /// Print one key's value.
     Get {
-        /// The key (telemetry, voice, language, notify, api_url, delivery_max_age_hours).
+        /// The key (telemetry, voice, language, notify, api_url, delivery_max_age_hours, position, drawing).
         #[arg(value_name = "KEY")]
         key: String,
     },
@@ -520,9 +524,9 @@ ones. The Carbon reaches the bubble with ctrl+cmd+<position> (the modifier is co
 Peek → Settings; the JSON `hotkey` names the current one)."
     )]
     Side {
-        /// The position, 1–8.
+        /// The position, 1–8; omitted uses config `position`.
         #[arg(value_name = "1-8")]
-        index: u64,
+        index: Option<u64>,
     },
     /// Validate, store and activate the bubble's JavaScript drawing.
     #[command(
@@ -533,9 +537,9 @@ drawing stays active. Validation can start Peek.app, so it may take up to 120 s 
 drawing API is in `peek docs drawing`."
     )]
     Drawing {
-        /// The drawing file (.js), resolved against the current directory.
+        /// The drawing file (.js); omitted uses config `drawing`.
         #[arg(value_name = "FILE.js")]
-        file: PathBuf,
+        file: Option<PathBuf>,
         /// Validate only; keep the active drawing.
         #[arg(long)]
         check: bool,

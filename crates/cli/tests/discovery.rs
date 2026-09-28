@@ -86,7 +86,7 @@ async fn root_help_ends_with_the_blueprint_block() {
     let env = Env::new(DEAD_API);
     let run = env.run(&["--help"]).await;
     assert_eq!(run.code, 0);
-    let block = "Start (Silicon):  peek iam --json · peek login <SLT> · peek register side <1-8> · peek register drawing ./logo.js\n\
+    let block = "Start (Silicon):  peek iam --json · peek login <SLT> · peek register side <1-8> (custom drawing optional)\n\
 Then:             peek send --speak \"…\" --show '{…}'   |   peek send --speak \"…\" --ask '{…}'\n\
 Answers arrive as Ting events of type peek.ask.answered (route them in your flow; see peek docs ting).\n\
 State: $SILICON_HOME/.peek (else ~/.peek). Test mode: peek --test <env-uuid> <command>.\n\
@@ -114,7 +114,7 @@ async fn a_missing_argument_prints_the_leaf_help() {
     let env = Env::new(DEAD_API);
     let run = env.run(&["register", "side"]).await;
     assert_eq!(run.code, 2);
-    assert!(run.stderr.contains("required arguments were not provided"));
+    assert!(run.stderr.contains("no default position configured"));
     assert!(
         run.stderr.contains("Claims a position on the screen"),
         "{}",

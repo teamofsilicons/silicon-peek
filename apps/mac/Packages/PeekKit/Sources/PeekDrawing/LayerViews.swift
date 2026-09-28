@@ -52,11 +52,13 @@ struct GlassShapesView: View {
     var body: some View {
         if shapes.count == 1 {
             Color.clear.glassEffect(shapes[0].glass(frosted: frosted), in: shapes[0].shape)
+                .clipShape(shapes[0].shape)  // Keep the glass shadow from showing the canvas's square edge.
         } else {
             GlassEffectContainer(spacing: 0) {
                 ZStack {
                     ForEach(shapes.indices, id: \.self) { index in
                         Color.clear.glassEffect(shapes[index].glass(frosted: frosted), in: shapes[index].shape)
+                            .clipShape(shapes[index].shape)
                     }
                 }
             }
@@ -401,6 +403,7 @@ struct FallbackVisual: View {
             ZStack {
                 Color.clear
                     .glassEffect(.regular, in: Circle())
+                    .clipShape(Circle())
                     .frame(width: diameter, height: diameter)
                 Text(initial)
                     .font(.system(size: diameter * 0.46, weight: .semibold, design: .rounded))

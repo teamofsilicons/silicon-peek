@@ -2051,7 +2051,7 @@ dependencies = [
 
 [[package]]
 name = "silicon-peek"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2087,7 +2087,7 @@ dependencies = [
 
 [[package]]
 name = "silicon-peek-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "blake3",
  "clap",
@@ -2108,7 +2108,7 @@ dependencies = [
 
 [[package]]
 name = "silicon-peek-client"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "blake3",
  "bytes",
@@ -2132,7 +2132,7 @@ dependencies = [
 
 [[package]]
 name = "silicon-peek-daemon"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "hex",
  "libc",

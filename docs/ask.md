@@ -170,4 +170,4 @@ Agent tool calls often time out after about two minutes. Prefer Ting delivery in
 | `image_unreadable`, `image_unsupported`, `image_too_large` | 2 | an option image |
 | `queue_full` | 4 | five of your sends already wait behind the one on screen; `peek queue`, then `peek cancel <SEND_ID>` or `peek queue clear` (older peek versions call it `slot_busy`) |
 | `ask_not_found` | 4 | `peek ask get` or `cancel` with an unknown id |
-| `side_not_registered`, `drawing_not_registered` | 4 | run `peek register side` and `peek register drawing` first |
+| `side_not_registered` | 4 | run `peek register side <1-8>` or configure `position`; custom drawings are optional |

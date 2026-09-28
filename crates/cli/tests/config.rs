@@ -6,13 +6,15 @@ mod common;
 use common::{DEAD_API, Env};
 use serde_json::json;
 
-const VALID: [&str; 6] = [
+const VALID: [&str; 8] = [
     "telemetry",
     "voice",
     "language",
     "notify",
     "api_url",
     "delivery_max_age_hours",
+    "position",
+    "drawing",
 ];
 
 #[tokio::test]
@@ -60,7 +62,7 @@ async fn config_set_merges_and_prints_the_result() {
     assert_eq!(
         show,
         json!({"schema":1,"telemetry":true,"voice":"aura-2-thalia-en","language":"en",
-               "notify":["speech_finished","show_dismissed"],"api_url":null,"delivery_max_age_hours":24})
+               "notify":["speech_finished","show_dismissed"],"api_url":null,"delivery_max_age_hours":24,"position":null,"drawing":null})
     );
     let reset = env
         .run(&[
@@ -134,4 +136,46 @@ async fn config_home_moves_the_store() {
     assert_eq!(back.code, 0, "{}", back.stderr);
     assert!(env.store_dir().join("config.json").is_file());
     assert!(!env.store_dir().join("home").exists(), "pointer removed");
+}
+
+#[tokio::test]
+#[allow(clippy::expect_used)] // fixtures must be valid
+async fn visual_defaults_are_persistent_absolute_and_atomic() {
+    let env = Env::new(DEAD_API);
+    std::fs::write(env.home.join("logo.js"), "peek.onFrame = () => false;").expect("drawing");
+    let set = env
+        .run(&[
+            "config",
+            "set",
+            r#"{"position":3,"drawing":"./logo.js"}"#,
+            "--json",
+        ])
+        .await;
+    assert_eq!(set.code, 0, "{}", set.stderr);
+    assert_eq!(set.json()["position"], 3);
+    assert_eq!(
+        set.json()["drawing"],
+        env.home.join("logo.js").to_str().expect("path")
+    );
+    for patch in [
+        r#"{"position":9}"#,
+        r#"{"position":5,"drawing":"./missing.js"}"#,
+        r#"{"drawing":false}"#,
+    ] {
+        let bad = env.run(&["config", "set", patch, "--json"]).await;
+        assert_eq!(bad.code, 2, "{}", bad.stderr);
+        let shown = env.run(&["config", "show", "--json"]).await;
+        assert_eq!(shown.json(), set.json(), "invalid config is atomic");
+    }
+    let reset = env
+        .run(&[
+            "config",
+            "set",
+            r#"{"position":null,"drawing":null}"#,
+            "--json",
+        ])
+        .await;
+    assert_eq!(reset.code, 0, "{}", reset.stderr);
+    assert!(reset.json()["position"].is_null());
+    assert!(reset.json()["drawing"].is_null());
 }

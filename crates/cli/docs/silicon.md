@@ -7,13 +7,12 @@ This page is for Silicons and the people who write them. It covers what is manda
 | Must | Detail |
 |---|---|
 | Be logged in to peek | Stemcell does it when `peek` is in `silicon.apps`. By hand: `peek login <SLT>`. |
-| Hold exactly one position | `peek register side <1-8>`. Your ISIs share it. |
-| Have a registered drawing | `peek register drawing ./logo.js`. It is your face on the Carbon's screen. |
+| Hold exactly one position | `peek register side <1-8>`, or save `position` in config to claim it on first send. Your ISIs share it. |
 | Route peek events in your flow | Answers arrive as Ting events (`peek.ask.answered` and friends). Stemcell has no default flow: add a branch such as [Flow A](#flow-a-send-every-peek-event-to-one-isi), or events are dropped. Without Stemcell, register a webhook of your own ([below](#receive-answers-without-stemcell)). |
 | Keep asks self-contained | The Carbon sees only the bubble: at most 80 characters of question, and options that make sense on their own. |
 | Dedupe by ting `id` | Delivery is at least once. The answer also carries `ask_id`. |
 
-`peek send` never blocks on the Carbon. It prints the send and ask ids and exits in well under a second; the answer arrives later as a new message from your flow.
+`peek send` never blocks on the Carbon. It prints the send and ask ids and exits once queued (the first configured drawing may take longer to validate); the answer arrives later as a new message from your flow.
 
 Pass `--json` whenever a program reads the output. Then stdout holds exactly one JSON value on success; on failure stdout is empty and one error object goes to stderr. Without `--json`, peek prints readable text and puts hints on stderr.
 
@@ -82,13 +81,14 @@ The SLT is single use and lives two minutes. If the login response was lost (net
 
 `peek logout` ends this home's session but keeps your Ting grant, because other homes of the same Silicon (a Stemcell home and a hand-run one, say) share it. `peek logout --revoke-ting` removes the grant too; then every home of this Silicon needs `peek ting enroll` before answers flow again.
 
-## One-time setup: position and drawing
+## One-time setup: position and optional drawing
 
 ```sh
 peek register side 3 --json                 # {"slot":{"index":3,"side":"right"},"moved_from":null,"hotkey":"ctrl+cmd+3","warnings":[]}
-peek register drawing ./drawings/logo.js    # validated for 90 frames, then activated
+peek register drawing ./drawings/logo.js    # optional; validated for 90 frames, then activated
 ```
 
+- To save defaults instead, run `peek config set '{"position":3,"drawing":"./drawings/logo.js"}'`. Sends apply missing registrations from these defaults; existing registrations win. Omit `drawing` for the built-in visual.
 - If the position is taken, you get `side_taken` (exit 4) with the owner and the free positions: `{"details":{"owner":"si:dj","free":[1,4,6,7]}}`. Pick a free one. Running `register side` again with another number moves you there; your drawing keeps running.
 - The drawing path is resolved against your **current directory**. The CLI reads the bytes, so Peek.app never opens your files.
 - A drawing that fails validation is not activated and the previous one stays. Use `--check` to validate without replacing, `--preview out.png` to see the test frames. See [Drawing the visual](drawing.md).
@@ -163,7 +163,7 @@ Stemcell does not inject app docs into prompts. Copy this into your `tools.md` (
 `peek --help`
 peek pops a small bubble on your carbon's Mac screen (one of 8 positions, yours alone) to speak, show, or ask something quick.
 use it for one-off, no-history moments: "is this file safe to delete?", "now playing …", a nudge. use [dm] for anything that needs a thread.
-first time: `peek register side N` and `peek register drawing ./path.js`. `peek send` fails until both are set.
+first time: `peek config set '{"position":3}'` or `peek register side N`. Peek has a built-in visual; optionally set `drawing` to a JavaScript file path for your own logo.
 `peek send --speak "..." --show '{...}'` or `peek send --speak "..." --ask '{...}'` returns immediately. the answer arrives later as a peek.ask.answered message.
 your sends queue one at a time (max 5 waiting; `peek queue`, `peek cancel <id>`). add `--expires-in 15m` when a send goes stale, `--at 09:55` or `--in 2h` to schedule one.
 keep asks self-contained: the carbon sees nothing but the bubble. dedupe answers by ask_id.
@@ -309,7 +309,6 @@ peek doctor                   # every check, with the exact fix
 | Code | Exit | Meaning and fix |
 |---|---|---|
 | `side_not_registered` | 4 | "no position registered for si:cleanup; run `peek register side <1-8>` first (free: 1,4,6,7)" |
-| `drawing_not_registered` | 4 | "no drawing registered for si:cleanup; run `peek register drawing ./logo.js` first" |
 | `side_taken` | 4 | Another Silicon holds it; `details.free` lists the free ones. |
 | `queue_full` | 4 | Five of your sends already wait behind the one on screen. `peek queue`, then `peek cancel <SEND_ID>` or `peek queue clear`; or retry later. (`slot_busy` in older versions.) |
 | `schedule_full` | 4 | 500 sends are already scheduled. `peek schedule cancel <ID>` or `peek schedule clear`. |

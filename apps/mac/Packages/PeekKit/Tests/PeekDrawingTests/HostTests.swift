@@ -42,6 +42,21 @@ private func kinds(_ compositor: Compositor) -> [String] {
 @Suite("drawing host")
 @MainActor
 struct HostTests {
+    @Test("an unregistered visual uses the built-in initial until a custom drawing loads")
+    func defaultVisual() async throws {
+        let (host, visual) = makeHost()
+        host.attach(to: visual)
+        #expect(host.compositor.isShowingFallback)
+        #expect(host.isOverContent(unitPoint: CGPoint(x: 50, y: 50)))
+        #expect(!host.isOverContent(unitPoint: CGPoint(x: 0, y: 0)))
+        #expect(host.framesRendered == 0)
+
+        try await load(host, "peek.frame(ctx => { ctx.fillRect(0, 0, 100, 100); return false })")
+        #expect(!host.compositor.isShowingFallback)
+        #expect(await step(host, at: 1))
+        #expect(host.framesRendered == 1)
+    }
+
     @Test("a loaded drawing renders into glass and draw layer views and hit-tests them (B9)")
     func loadRenderHitTest() async throws {
         let (host, visual) = makeHost()

@@ -1,6 +1,6 @@
 # Start here
 
-Peek is a local, voice-first way for Carbons and Silicons to exchange quick messages on a Mac. A Silicon claims one of eight positions around the screen, registers a small JavaScript drawing for its bubble, and then uses the `peek` CLI to speak, show or ask. The Carbon answers by voice, keyboard or click, and the answer comes back to the Silicon as a Ting event.
+Peek is a local, voice-first way for Carbons and Silicons to exchange quick messages on a Mac. A Silicon claims one of eight positions around the screen, optionally registers a small JavaScript drawing for its bubble, and uses the `peek` CLI to speak, show or ask. The Carbon answers by voice, keyboard or click, and the answer comes back to the Silicon as a Ting event.
 
 Use peek when there is no need for history or a thread: a cleanup Silicon asking whether a file matters, a DJ Silicon showing the cover art of the song it just started, a reminder. Use `dm` for anything that needs a conversation.
 
@@ -42,7 +42,7 @@ Four steps. The first is done for you if you run under Silicon Stemcell with `pe
    ```sh
    peek register side 3
    ```
-3. **Register your drawing**, the JavaScript that animates your bubble's circle. See [Drawing the visual](drawing.md) for the API and ready-made examples.
+3. **Optionally register your drawing**, the JavaScript that animates your bubble's circle. See [Drawing the visual](drawing.md) for the API and ready-made examples.
    ```sh
    peek register drawing ./drawings/logo.js
    ```
@@ -52,14 +52,13 @@ Four steps. The first is done for you if you run under Silicon Stemcell with `pe
      --ask '{"question":"Delete old builds?","type":"single_choice","options":["Delete","Keep"]}'
    ```
 
-`peek send` refuses to run until steps 2 and 3 are done, and the error names the exact command to run. Your sends take turns on your position (at most five wait behind the one on screen), can expire (`--expires-in 15m`) and can be scheduled (`--at 09:55`); see [Speak and show](show.md#one-at-a-time). The answer arrives later as a `peek.ask.answered` Ting event, which your flow routes to the ISI that asked. Read [Peek for Silicons](silicon.md) before you wire it into a flow, and [Ting events](ting.md) for the exact payloads.
+`peek send` needs a position; without a custom drawing, it uses Peek's built-in visual. To save defaults instead of registering now, run `peek config set '{"position":3,"drawing":"./drawings/logo.js"}'` (omit `drawing` for the built-in visual). The CLI applies missing registrations on your next send. Your sends take turns on your position (at most five wait behind the one on screen), can expire (`--expires-in 15m`) and can be scheduled (`--at 09:55`); see [Speak and show](show.md#one-at-a-time). The answer arrives later as a `peek.ask.answered` Ting event, which your flow routes to the ISI that asked. Read [Peek for Silicons](silicon.md) before you wire it into a flow, and [Ting events](ting.md) for the exact payloads.
 
 ## What is mandatory
 
 | Rule | Why |
 |---|---|
 | One position per Silicon, 1 to 8. A taken position fails with `side_taken` and lists the free ones. | The Carbon learns "position 3 is the cleanup Silicon" and uses ctrl+cmd+3 to reach it. |
-| A registered drawing before any `peek send`. | The bubble's circle is the Silicon's face; peek never shows an anonymous bubble. |
 | At least one of `--speak`, `--show`, `--ask`; `--show` and `--ask` never together. | One bubble carries one intent. |
 | Asks must be self-contained: at most 80 characters, no context the Carbon cannot see. | The Carbon sees only the bubble, often mid-task. |
 | Answers are delivered through Ting, at least once. Dedupe by ting `id`. | The Silicon may be offline; Ting holds and retries delivery. |

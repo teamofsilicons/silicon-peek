@@ -4,7 +4,7 @@ peek runs as many pieces that update on their own schedules: a CLI copy in every
 
 ## One version number
 
-Every Cargo package, `honeycomb.yaml`, the app's `CFBundleShortVersionString` and the git tag share one version (`0.1.2`, tag `v0.1.2`). The app's build number is derived from it (`major × 1,000,000 + minor × 1,000 + patch`, so 0.1.2 is build 1002) and only ever increases. `peek --version`, `peek iam --json` (`version`) and `peek daemon status` (`version`, `ui.build`) report it.
+Every Cargo package, `honeycomb.yaml`, the app's `CFBundleShortVersionString` and the git tag share one version (`0.1.3`, tag `v0.1.3`). The app's build number is derived from it (`major × 1,000,000 + minor × 1,000 + patch`, so 0.1.3 is build 1003) and only ever increases. `peek --version`, `peek iam --json` (`version`) and `peek daemon status` (`version`, `ui.build`) report it.
 
 The package version describes a release. Compatibility is decided by the **contract versions** below, not by comparing package versions.
 
@@ -106,6 +106,15 @@ targets:
 Changes are checked against the consumers that depend on them: the Stemcell app contract (the exact `iam --json`, `login status` and `logout` behaviours), the Ting data schemas, the IPC frames of the previous protocol, and the documented CLI outputs. The docs build fails if any advertised `peek docs` topic is missing.
 
 ## Changelog
+
+### 0.1.3
+
+- Peek panels explicitly join other applications' full-screen Spaces without activating Peek.
+- `peek config set` accepts `position` (1–8) and `drawing` (JavaScript file path) as defaults. Configuration saves preferences; a send or explicit registration claims a position. Relative drawing paths are saved as absolute paths, and existing registrations take precedence.
+- `peek register side` and `peek register drawing` can apply their configured defaults without an argument.
+- Custom drawings are optional: Peek.app uses the built-in initial logo for immediate and scheduled sends. This requires the 0.1.3 app and helper; older helpers still require a custom drawing.
+- Drawing glass is clipped to its outline so its shadow no longer ends at the square canvas boundary.
+- Relative scheduled delays start after registration and drawing validation complete.
 
 ### 0.1.2
 

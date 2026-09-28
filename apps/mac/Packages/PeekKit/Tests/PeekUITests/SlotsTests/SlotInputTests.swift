@@ -164,4 +164,17 @@ struct SlotInputTests {
         let responds = NSWindow.instancesRespond(to: NSSelectorFromString("_hasActiveAppearance"))
         #expect(mode == (responds ? .live : .frosted))
     }
+
+    @Test("both glass modes can overlay another app's full-screen Space without activating Peek")
+    @MainActor
+    func fullScreenOverlay() {
+        _ = NSApplication.shared
+        for panel in [SlotPanel(contentRect: .zero), ActiveLookSlotPanel(contentRect: .zero)] {
+            #expect(panel.collectionBehavior.contains(.canJoinAllApplications))
+            #expect(panel.collectionBehavior.contains(.canJoinAllSpaces))
+            #expect(panel.styleMask.contains(.nonactivatingPanel))
+            #expect(!panel.canBecomeMain)
+            panel.close()
+        }
+    }
 }

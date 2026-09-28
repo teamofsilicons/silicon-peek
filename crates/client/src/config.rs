@@ -3,7 +3,7 @@
 //!
 //! ```json
 //! {"schema":1,"telemetry":true,"voice":null,"language":null,"notify":[],
-//!  "api_url":null,"delivery_max_age_hours":168}
+//!  "api_url":null,"delivery_max_age_hours":168,"position":null,"drawing":null}
 //! ```
 
 use std::collections::BTreeMap;
@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     error::{Error, ErrorCode, Result},
-    identity::ApiUrl,
+    identity::{ApiUrl, SlotIndex},
     json::{kind, parse_object},
     schema::send::{Notify, check_voice, normalize_language},
 };
@@ -25,13 +25,15 @@ pub const CONFIG_SCHEMA: u32 = 1;
 pub const DEFAULT_DELIVERY_MAX_AGE_HOURS: u32 = 168;
 
 /// Every key `config set` accepts, in documentation order.
-pub const CONFIG_KEYS: [&str; 6] = [
+pub const CONFIG_KEYS: [&str; 8] = [
     "telemetry",
     "voice",
     "language",
     "notify",
     "api_url",
     "delivery_max_age_hours",
+    "position",
+    "drawing",
 ];
 
 /// This home's configuration. Missing keys take their defaults, so a file
@@ -53,6 +55,10 @@ pub struct Config {
     pub api_url: Option<ApiUrl>,
     /// Outbox expiry for this Silicon's tings, 1–168 hours.
     pub delivery_max_age_hours: u32,
+    /// Position to claim on send when none is registered.
+    pub position: Option<SlotIndex>,
+    /// Default drawing file; the CLI stores an absolute path.
+    pub drawing: Option<String>,
     /// Keys written by a newer peek, preserved on rewrite.
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
@@ -68,6 +74,8 @@ impl Default for Config {
             notify: Vec::new(),
             api_url: None,
             delivery_max_age_hours: DEFAULT_DELIVERY_MAX_AGE_HOURS,
+            position: None,
+            drawing: None,
             extra: BTreeMap::new(),
         }
     }
@@ -211,6 +219,27 @@ impl Config {
                     _ => return Err(bad("an integer from 1 to 168")),
                 };
             }
+            "position" => {
+                self.position = match value {
+                    Value::Null => None,
+                    _ => Some(SlotIndex::new(
+                        value
+                            .as_u64()
+                            .ok_or_else(|| bad("an integer from 1 to 8 or null"))?,
+                    )?),
+                };
+            }
+            "drawing" => {
+                self.drawing = match value {
+                    Value::Null => None,
+                    Value::String(s)
+                        if !s.trim().is_empty() && !s.chars().any(char::is_control) =>
+                    {
+                        Some(s.clone())
+                    }
+                    _ => return Err(bad("a drawing file path or null")),
+                };
+            }
             other => return Err(unknown_key(other)),
         }
         Ok(())
@@ -249,6 +278,8 @@ impl Config {
             "notify": self.notify,
             "api_url": self.api_url,
             "delivery_max_age_hours": self.delivery_max_age_hours,
+            "position": self.position,
+            "drawing": self.drawing,
         })
     }
 
@@ -308,7 +339,7 @@ mod tests {
     fn default_matches_the_blueprint() {
         assert_eq!(
             Config::default().to_public_value(),
-            json!({"schema":1,"telemetry":true,"voice":null,"language":null,"notify":[],"api_url":null,"delivery_max_age_hours":168})
+            json!({"schema":1,"telemetry":true,"voice":null,"language":null,"notify":[],"api_url":null,"delivery_max_age_hours":168,"position":null,"drawing":null})
         );
     }
 
@@ -325,8 +356,11 @@ mod tests {
         assert!(e.is_some_and(|e| {
             *e.code() == ErrorCode::UnknownConfigKey
                 && e.exit_code().code() == 2
-                && e.details()
-                    .is_some_and(|d| d["valid_keys"].as_array().is_some_and(|a| a.len() == 6))
+                && e.details().is_some_and(|d| {
+                    d["valid_keys"]
+                        .as_array()
+                        .is_some_and(|a| a.len() == CONFIG_KEYS.len())
+                })
         }));
         assert!(Config::parse_patch("{}").is_ok());
     }
@@ -335,7 +369,7 @@ mod tests {
     fn merge_validates_every_key_and_null_resets() -> Result<()> {
         let mut c = Config::default();
         let patch = Config::parse_patch(
-            r#"{"telemetry":false,"voice":"aura-2-thalia-en","language":"EN","notify":["show_dismissed","speech_finished"],"api_url":"http://127.0.0.1:9/","delivery_max_age_hours":24}"#,
+            r#"{"telemetry":false,"voice":"aura-2-thalia-en","language":"EN","notify":["show_dismissed","speech_finished"],"api_url":"http://127.0.0.1:9/","delivery_max_age_hours":24,"position":3,"drawing":"/tmp/logo.js"}"#,
         )?;
         c.merge(&patch)?;
         assert!(!c.telemetry);
@@ -349,12 +383,16 @@ mod tests {
             Some("http://127.0.0.1:9")
         );
         assert_eq!(c.delivery_max_age_hours, 24);
+        assert_eq!(c.position.map(SlotIndex::get), Some(3));
+        assert_eq!(c.drawing.as_deref(), Some("/tmp/logo.js"));
         c.merge(&Config::parse_patch(
-            r#"{"telemetry":null,"voice":null,"notify":null,"delivery_max_age_hours":null}"#,
+            r#"{"telemetry":null,"voice":null,"notify":null,"delivery_max_age_hours":null,"position":null,"drawing":null}"#,
         )?)?;
         assert!(c.telemetry);
         assert!(c.voice.is_none());
         assert!(c.notify.is_empty());
+        assert!(c.position.is_none());
+        assert!(c.drawing.is_none());
         assert_eq!(c.delivery_max_age_hours, 168);
         Ok(())
     }
@@ -363,6 +401,12 @@ mod tests {
     fn invalid_values_leave_the_config_untouched() -> Result<()> {
         let mut c = Config::default();
         for bad in [
+            r#"{"position":0}"#,
+            r#"{"position":9}"#,
+            r#"{"position":1.5}"#,
+            r#"{"position":"3"}"#,
+            r#"{"drawing":""}"#,
+            r#"{"drawing":7}"#,
             r#"{"telemetry":"no"}"#,
             r#"{"voice":"thalia"}"#,
             r#"{"language":"english"}"#,

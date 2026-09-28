@@ -38,7 +38,7 @@ peek unregister                            # position, drawing and shortcut are 
 | `unregister` | Script destroyed; the stored copies (on the Mac and on the server) are deleted. |
 | Peek.app restarts | The script reloads from the top. State does **not** survive restarts. |
 
-`peek send` fails with `drawing_not_registered` until a drawing is registered.
+A custom drawing is optional: Peek uses its built-in visual when none is registered. Save defaults with `peek config set '{"position":5,"drawing":"./logo.js"}'`; later CLI sends apply them only when registration is missing. Relative config paths are saved as absolute paths. `peek register drawing` without a file explicitly applies the configured drawing.
 
 Useful flags:
 

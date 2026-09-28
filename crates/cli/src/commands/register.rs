@@ -8,8 +8,12 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 use silicon_peek_client::{
     Error, Result,
+    config::Config,
     identity::SlotIndex,
-    ipc::cli::{RegisterDrawing, RegisterSide, Unregister},
+    ipc::{
+        AuthBlock,
+        cli::{RegisterDrawing, RegisterSide, StatusOp, Unregister, Warning},
+    },
     runtime::daemon::{LONG_REQUEST_TIMEOUT, REQUEST_TIMEOUT},
 };
 
@@ -32,14 +36,91 @@ fn side_name(index: u64) -> String {
 
 pub async fn run(g: &Globals, out: Out, command: RegisterCommand) -> Result<()> {
     match command {
-        RegisterCommand::Side { index } => side(g, out, index).await,
+        RegisterCommand::Side { index } => {
+            let index = match index {
+                Some(index) => index,
+                None => u64::from(crate::context::store()?.read_config()?.position.ok_or_else(|| {
+                    Error::invalid_input("no default position configured")
+                        .with_details(json!({"missing_argument": "1-8"}))
+                        .with_hint("pass a position: peek register side 3; or set one: peek config set '{\"position\":3}'")
+                })?.get()),
+            };
+            side(g, out, index).await
+        }
         RegisterCommand::Drawing {
             file,
             check,
             preview,
             dump_frame,
-        } => drawing(g, out, file, check, preview, dump_frame).await,
+        } => {
+            let file = match file {
+                Some(file) => file,
+                None => PathBuf::from(crate::context::store()?.read_config()?.drawing.ok_or_else(|| {
+                    Error::invalid_input("no default drawing configured")
+                        .with_details(json!({"missing_argument": "FILE.js"}))
+                        .with_hint("pass a file: peek register drawing ./logo.js; or set one: peek config set '{\"drawing\":\"./logo.js\"}'")
+                })?),
+            };
+            drawing(g, out, file, check, preview, dump_frame).await
+        }
     }
+}
+
+/// Apply defaults once, preserving any explicit registration.
+pub async fn apply_defaults(
+    svc: &mut service::Service,
+    auth: &AuthBlock,
+    config: &Config,
+) -> Result<Vec<Warning>> {
+    if config.position.is_none() && config.drawing.is_none() {
+        return Ok(Vec::new());
+    }
+    let (status, _) = svc
+        .call(&StatusOp {}, Some(auth), Vec::new(), REQUEST_TIMEOUT)
+        .await?;
+    // ponytail: setup assumes registration is not changed concurrently;
+    // add conditional daemon registration if concurrent setup needs support.
+    let drawing = if status.drawing.is_none() {
+        config
+            .drawing
+            .as_deref()
+            .map(std::path::Path::new)
+            .map(input::read_drawing)
+            .transpose()?
+    } else {
+        None
+    };
+    let mut warnings = status.warnings;
+    if status.slot.is_none()
+        && let Some(index) = config.position
+    {
+        let (result, _) = svc
+            .call(
+                &RegisterSide { index },
+                Some(auth),
+                Vec::new(),
+                REQUEST_TIMEOUT,
+            )
+            .await?;
+        warnings.extend(result.warnings);
+    }
+    if let Some((filename, bytes)) = drawing {
+        let (result, _) = svc
+            .call(
+                &RegisterDrawing {
+                    filename,
+                    check_only: false,
+                    preview: false,
+                    dump_frame: None,
+                },
+                Some(auth),
+                vec![bytes],
+                LONG_REQUEST_TIMEOUT,
+            )
+            .await?;
+        warnings.extend(result.warnings);
+    }
+    Ok(warnings)
 }
 
 async fn side(g: &Globals, out: Out, index: u64) -> Result<()> {

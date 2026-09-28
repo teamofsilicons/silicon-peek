@@ -66,8 +66,17 @@ pub async fn run(g: &Globals, out: Out, command: ConfigCommand) -> Result<()> {
 }
 
 async fn merge(g: &Globals, out: Out, patch: &str) -> Result<()> {
+    let mut patch = Config::parse_patch(patch)?;
+    Config::default().merge(&patch)?;
+    if let Some(Value::String(path)) = patch.get_mut("drawing") {
+        crate::input::read_drawing(Path::new(path))?;
+        crate::input::resolve(Path::new(path))?
+            .to_str()
+            .ok_or_else(|| Error::invalid_input("config `drawing` path must be UTF-8"))?
+            .clone_into(path);
+    }
     let store = crate::context::store()?;
-    let config = store.merge_config(patch)?;
+    let config = store.merge_config(&Value::Object(patch).to_string())?;
     sync(g, &store, &config).await;
     out.value(&config.to_public_value(), kv);
     next(out, &["peek config show", "peek send --speak \"…\""]);

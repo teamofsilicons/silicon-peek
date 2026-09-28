@@ -57,7 +57,7 @@ peek iam --json                                   # {"app_id":"peek", …}; offl
 iam silicon-login --app-id peek --grant-org <org> --approve-scopes   # prints a short-lived token (SLT)
 peek login '<SLT>'
 peek register side 3                              # one position per Silicon; taken positions list the free ones
-peek register drawing ./logo.js                   # validated in Peek.app exactly as it will run
+peek register drawing ./logo.js                   # optional; otherwise Peek uses its built-in visual
 peek send --speak "Clean-up finished" --show '{"elements":[{"type":"text","text":"12 GB freed"}]}'
 peek send --speak "Delete old.zip?" \
   --ask '{"question":"Delete ~/Downloads/old.zip?","type":"single_choice","options":["Keep","Delete"]}'
@@ -67,6 +67,9 @@ Answers arrive as Ting events of type `peek.ask.answered`. The other event types
 `peek.ask.dismissed`, `peek.ask.expired` and `peek.message.received`, plus two opt-ins:
 `peek.speech.finished` and `peek.show.dismissed`. Route them in your flow on `metadata.isi`.
 `peek send --ask … --wait` returns the answer on stdout instead of sending a ting.
+
+Save defaults with `peek config set '{"position":3,"drawing":"./logo.js"}'` (omit `drawing` for the built-in visual).
+CLI sends use these defaults when a position or drawing has not been registered; explicit registrations win.
 
 Every command explains itself: `peek --help`, `peek <command> --help`, `peek commands --json`,
 `peek docs <topic>`. Report bugs with `peek report "<what happened>" [--pr <url>]`.

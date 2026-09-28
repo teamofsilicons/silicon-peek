@@ -184,7 +184,7 @@ impl Shared {
     /// counted in the inserting transaction). Nothing is shown yet.
     ///
     /// # Errors
-    /// `side_not_registered`, `drawing_not_registered`, `schedule_full`,
+    /// `side_not_registered`, `schedule_full`,
     /// image errors.
     pub(crate) async fn schedule_send(
         self: &SharedRef,

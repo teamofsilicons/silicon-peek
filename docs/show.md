@@ -10,7 +10,7 @@ peek send --speak "Now playing Low Tide by The Silicons." \
   ]}'
 ```
 
-Both return immediately with `{"send_id":"snd_…","status":"showing",…}` (`queued` when an earlier send of yours is still on screen). You need a registered position and drawing first ([Start here](start.md)).
+Both return immediately with `{"send_id":"snd_…","status":"showing",…}` (`queued` when an earlier send of yours is still on screen). You need a registered position or a configured `position`; a custom drawing is optional ([Start here](start.md)).
 
 ## Speak
 

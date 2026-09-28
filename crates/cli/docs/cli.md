@@ -20,8 +20,8 @@ peek
 ├── ting
 │   └── enroll                                     (re)register this Silicon as a Ting recipient for peek
 ├── register
-│   ├── side <1-8>                                 claim or move to a position (1 top, clockwise)
-│   └── drawing <FILE.js> [--check] [--preview <OUT.png>] [--dump-frame <N>]
+│   ├── side [1-8]                                 claim or move to a position (1 top, clockwise)
+│   └── drawing [FILE.js] [--check] [--preview <OUT.png>] [--dump-frame <N>]
 ├── unregister                                     release the position, delete the drawing, cancel queued and scheduled sends
 ├── send [--speak <TEXT>] [--show <JSON|@FILE|->] [--ask <JSON|@FILE|->]
 │        [--voice <aura-2-name-lang>] [--lang <bcp47>] [--duration <SECS>]
@@ -104,7 +104,7 @@ The CLI **never** reads `IAM_TEST_APP_SECRET` or `IAM_TEST_KEY` (those belong to
 | 1 | internal or unexpected | `internal_error`, `store_corrupt`, `unexpected_response`, `ting_key_conflict`, `ting_rejected` |
 | 2 | usage or invalid input | `invalid_input`, `invalid_json`, `conflicting_flags`, `nothing_to_send`, `text_too_long`, `caption_too_long`, `question_too_long`, `speak_too_long`, `too_many_elements`, `too_many_options`, `image_unreadable`, `image_too_large`, `image_unsupported`, `drawing_too_large`, `unknown_config_key`, `invalid_silicon_home`, `slt_is_public_id`, `idempotency_key_required`, `idempotency_conflict`, `frame_too_large`, `payload_too_large`, `telemetry_rejected` |
 | 3 | not authenticated | `not_logged_in`, `session_rejected`, `slt_rejected`, `login_attempt_expired`, `reconsent_required`, `testing_secret_invalid`, `testing_generation_changed`, `unauthenticated`, `home_token_mismatch`, `authority_required` |
-| 4 | refused, or a precondition is missing | `side_not_registered`, `drawing_not_registered`, `side_taken`, `drawing_invalid`, `queue_full`, `slot_busy` (the name older peek versions use for `queue_full`), `send_not_found`, `schedule_not_found`, `schedule_full`, `ask_not_found`, `platform_unsupported`, `cli_outdated`, `store_schema_newer`, `private_application_organization_required`, `recipient_not_registered`, `not_org_admin`, `unknown_op`, `daemon_running`, `daemon_identity_mismatch`, `drawing_not_found`, `environment_not_prepared`, `idempotency_response_expired`, `not_found`, `lifecycle_conflict`, `origin_not_allowed`, `telemetry_table_unavailable` |
+| 4 | refused, or a precondition is missing | `side_not_registered`, `side_taken`, `drawing_invalid`, `queue_full`, `slot_busy` (the name older peek versions use for `queue_full`), `send_not_found`, `schedule_not_found`, `schedule_full`, `ask_not_found`, `platform_unsupported`, `cli_outdated`, `store_schema_newer`, `private_application_organization_required`, `recipient_not_registered`, `not_org_admin`, `unknown_op`, `daemon_running`, `daemon_identity_mismatch`, `drawing_not_found`, `environment_not_prepared`, `idempotency_response_expired`, `not_found`, `lifecycle_conflict`, `origin_not_allowed`, `telemetry_table_unavailable` |
 | 5 | unavailable or transport | `backend_unavailable`, `iam_unavailable`, `iam_misconfigured`, `daemon_unavailable`, `peek_service_unavailable`, `no_gui_session`, `app_update_pending`, `speech_unavailable`, `ting_unavailable`, `ting_type_missing`, `idempotency_in_progress`, `rate_limited`, `protocol_error` |
 
 `telemetry_rejected`, `origin_not_allowed` and `telemetry_table_unavailable` come from the backend's telemetry gateway, and `lifecycle_conflict` from its testing-environment lifecycle endpoints; no `peek` command normally shows them. A code this build does not know (a newer backend or helper may add some) is passed through unchanged, and its exit code follows the HTTP status: 401 → 3; 403, 404, 409 → 4; 400, 413, 422 → 2; 408, 429, 5xx → 5; anything else → 1. `peek report --via gh` uses `gh_failed` when `gh` itself fails (exit 5, or 1 when the report could not even be handed to `gh`).
@@ -196,7 +196,7 @@ Configuration for this home, stored in `$SILICON_HOME/.peek/config.json`.
 
 ```sh
 peek config set '{"notify":["speech_finished"],"voice":"aura-2-thalia-en"}'
-peek config show --json      # {"schema":1,"telemetry":true,"voice":"aura-2-thalia-en","language":null,"notify":["speech_finished"],"api_url":null,"delivery_max_age_hours":168}
+peek config show --json      # {"schema":1,"telemetry":true,"voice":"aura-2-thalia-en","language":null,"notify":["speech_finished"],"api_url":null,"delivery_max_age_hours":168,"position":null,"drawing":null}
 peek config get voice --json # {"key":"voice","value":"aura-2-thalia-en"}
 peek config unset voice
 peek config telemetry off
@@ -212,6 +212,17 @@ peek config telemetry off
 | `notify` | array ⊆ `["speech_finished","show_dismissed","shown"]` | `[]` | default `--notify`. A helper older than 0.1.2 does not know `shown`; it is then left out, with a hint on stderr. |
 | `api_url` | https URL or null | null | same as `--api` |
 | `delivery_max_age_hours` | int 1..168 | 168 | how long this Silicon's undelivered events keep retrying |
+| `position` | int 1..8 or null | null | position to claim before a send when none is registered |
+| `drawing` | readable JavaScript file path or null | null (built-in visual) | drawing to register before a send when none is registered |
+
+```sh
+peek config set '{"position":3,"drawing":"./logo.js"}'
+peek send --speak "Hello"       # applies defaults if not registered yet
+peek register side            # explicitly applies the configured position
+peek register drawing         # explicitly validates and applies the configured drawing
+```
+
+`drawing` paths are resolved against the directory where `config set` runs and saved as absolute paths. The file must be nonempty UTF-8 and at most 256 KiB; its JavaScript is validated inside Peek.app when registered. Existing registered positions and drawings take precedence over defaults. Changing or unsetting a default leaves an existing registration in place; use `peek register side` or `peek register drawing` to apply a changed default. With no custom drawing, Peek uses its built-in visual. A configured position held by another Silicon returns `side_taken`; it never displaces its owner.
 
 `peek config home <DIR>` moves this home's store to `<DIR>/.peek` (the session, config, testing environments and daemon token) and leaves a pointer file named `home` in the default store. It prints `{"home","store","pointer","moved":[…],"previous_store"}`; `pointer` is `null` when you point back to `$SILICON_HOME`. If the target already holds a different store, nothing is changed (`invalid_input`).
 
@@ -230,13 +241,15 @@ peek register side 5 --json
 # {"slot":{"index":5,"side":"bottom"},"moved_from":null,"hotkey":"ctrl+cmd+5","warnings":[]}
 ```
 
+Omit the number to use config `position`; pass a number to override it.
+
 Positions: 1 `top`, 2 `top-right`, 3 `right`, 4 `bottom-right`, 5 `bottom`, 6 `bottom-left`, 7 `left`, 8 `top-left`. One per Silicon: registering another number moves you (`moved_from` names the old one) and your drawing keeps running. A position held by another Silicon fails with `side_taken` (exit 4) and `details:{"owner","free":[…]}`.
 
 `hotkey` is the Carbon's shortcut for the position: `ctrl+cmd+<position>` by default, or whatever modifier the Carbon chose in Peek.app Settings (for example `opt+cmd+5`).
 
 ## peek register drawing
 
-Validates, stores and activates your bubble's JavaScript drawing. The file is resolved against the current directory and must be at most 256 KiB.
+Validates, stores and activates your bubble's JavaScript drawing. Omit the file to use config `drawing`. The file is resolved against the current directory and must be at most 256 KiB.
 
 ```sh
 peek register drawing ./cassette.js
@@ -309,7 +322,7 @@ Rules, checked before anything is shown or stored:
 - A duration, date-time or time zone that does not parse, lies in the past or is out of range fails with `invalid_input` (exit 2); `details.field` names the flag ([Durations and date-times](#durations-and-date-times)).
 - `@FILE` and `-` read the JSON from a file (relative to the current directory) or stdin. Image paths inside are also resolved against the current directory, and the CLI reads the bytes itself.
 - Unknown JSON fields and duplicate keys are rejected (`invalid_input`, `invalid_json`), and so are two options with the same label (`invalid_input`). `details.field` names the field. Lengths count Unicode scalar values.
-- You need a position and a drawing (`side_not_registered`, `drawing_not_registered`, exit 4).
+- You need a position (`side_not_registered`, exit 4). Config `position` and `drawing` supply missing registrations before a CLI send; a custom drawing is optional.
 
 The flag combinations added in 0.1.2 and their messages (each also has a hint):
 
@@ -451,7 +464,7 @@ peek send --ask @standup.json --at "2026-09-28 09:00" --tz Europe/Berlin
 peek send --speak "Time to leave for the airport." --at 17:30 --replace
 ```
 
-- **Checked now, sent later.** `peek send` validates everything at once: the content, your position and drawing, and the voice (so `speak_language_unsupported` comes back now). Image bytes are copied when you schedule, so your files may change or disappear afterwards. The result has `status:"scheduled"`, `schedule_id`, `due_at`, and the ids the send keeps when it fires (`send_id`, and `ask_id` for an ask).
+- **Checked now, sent later.** `peek send` validates everything at once: the content, your position, any configured drawing, and the voice (so `speak_language_unsupported` comes back now). Image bytes are copied when you schedule, so your files may change or disappear afterwards. The result has `status:"scheduled"`, `schedule_id`, `due_at`, and the ids the send keeps when it fires (`send_id`, and `ask_id` for an ask).
 - **Limits.** `--in` is 1 s to 365 days; `--at` must be in the future and at most 365 days ahead. A Silicon can have 500 scheduled sends; one more fails with `schedule_full` (exit 4).
 - **Expiry.** A scheduled send takes `--expires-at` only, between 10 s and 7 days after its due time. `--expires-in` is refused, because its clock would start now.
 - **No `--wait`.** Nobody waits for a scheduled ask; its answer arrives as `peek.ask.answered`. Until it fires, a scheduled ask is listed by `peek schedule list`, not by `peek ask list`.
@@ -647,7 +660,7 @@ peek status --json
 #  "ui_running":true,"daemon":{"running":true,"version":"0.1.2","protocol":1},"app":{"build":1002,"ui_running":true}}
 ```
 
-- `slot` and `drawing` are `null` until you register them. `drawing.active` is `false` while the fallback visual shows. `drawing.server_sync` is the state of the drawing's backend copy (`synced`, `pending` or `authority_required`); `deliveries` counts Ting events only.
+- `slot` and `drawing` are `null` until you register them. With no custom drawing, `drawing` is `null` and the built-in visual shows. `drawing.active` is `false` after a custom drawing fails. `drawing.server_sync` is the state of the drawing's backend copy (`synced`, `pending` or `authority_required`); `deliveries` counts Ting events only.
 - `queue.on_screen` is your current send (on screen or held), `queue.waiting` the sends waiting behind it (`queue.limit` is 5, plus any scheduled sends that came due while the queue was full; `pending` is the same number under its 0.1.1 name), `queue.scheduled` your scheduled sends that are not due yet, and `queue.held` why nothing moves (`carbon_away`, `paused`, `app_not_running`) or `null`. When anything waits, a hint points to `peek queue`.
 - `carbon.available` is `false` while the Carbon's screen is locked (`reason:"locked"`), the display is asleep (`"asleep"`) or off (`"display_off"`). Sends then wait in `queue` and are shown when it turns `true` again. An older Peek.app that never reports presence counts as available. `carbon.paused` is `true` while the Carbon paused all peeks in Peek.app.
 - `deliveries.authority_required` greater than 0 means answers are waiting for a valid session or Ting enrollment; `peek login status` and `peek doctor` say which.

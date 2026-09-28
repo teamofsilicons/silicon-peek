@@ -331,8 +331,9 @@ pub fn notes(path: &str) -> String {
         ),
         "peek config" => (
             "Examples:\n  peek config set '{\"notify\":[\"speech_finished\"],\"voice\":\"aura-2-thalia-en\"}'\n  \
+             peek config set '{\"position\":3,\"drawing\":\"./logo.js\"}'\n  \
              peek config show --json\n  peek config get voice\n  peek config unset voice\n  peek config telemetry off\n\n\
-             Next:\n  peek send --speak \"…\"     uses the voice and notify defaults",
+             Next:\n  peek send --speak \"…\"     uses configured defaults",
             "cli",
         ),
         "peek config set" => (

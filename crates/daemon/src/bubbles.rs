@@ -629,16 +629,6 @@ pub fn side_not_registered(actor: &ActorId, free: &[u8]) -> Error {
     .with_details(json!({"free": free}))
 }
 
-/// `drawing_not_registered` with the exact §7.5 message.
-#[must_use]
-pub fn drawing_not_registered(actor: &ActorId) -> Error {
-    Error::new(
-        ErrorCode::DrawingNotRegistered,
-        format!("no drawing registered for {actor}; run `peek register drawing ./logo.js` first"),
-    )
-    .with_hint("peek register drawing ./logo.js   (see peek docs drawing)")
-}
-
 /// `queue_full` (contract §6.3): one send on screen and five waiting. The
 /// connection of a CLI older than 0.1.2 relabels it `slot_busy`.
 pub(crate) fn queue_full(
@@ -941,7 +931,7 @@ impl Shared {
     /// `wait`, the returned receiver gets the ask's final result.
     ///
     /// # Errors
-    /// The first failed rule (`side_not_registered`, `drawing_not_registered`,
+    /// The first failed rule (`side_not_registered`,
     /// `queue_full`, `schedule_full`, validation errors).
     pub async fn handle_send(
         self: &SharedRef,
@@ -1073,30 +1063,20 @@ impl Shared {
         })
     }
 
-    /// The Silicon must hold a position and a drawing (§7.5's exact errors).
+    /// The Silicon must hold a position. The UI supplies a built-in visual
+    /// when no custom drawing is registered.
     pub(crate) async fn send_preconditions(&self, key: &ActorKey) -> Result<SlotIndex> {
         let k2 = key.clone();
-        let (slot, has_drawing, free) = self
+        let (slot, free) = self
             .db
             .call(move |c| {
                 let slot = slot_of(c, &k2)?;
-                let drawing: Option<String> = c
-                    .query_row(
-                        "SELECT sha256 FROM drawings WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                        params![k2.context_str(), k2.org.as_str(), k2.actor.as_str()],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .sql()?;
-                Ok((slot, drawing.is_some(), free_slots(c, k2.context)?))
+                Ok((slot, free_slots(c, k2.context)?))
             })
             .await?;
         let Some(slot) = slot else {
             return Err(side_not_registered(&key.actor, &free));
         };
-        if !has_drawing {
-            return Err(drawing_not_registered(&key.actor));
-        }
         Ok(slot)
     }
 

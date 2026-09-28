@@ -895,3 +895,90 @@ async fn a_tampered_bundle_is_refused() {
     assert!(stderr.contains("the package is damaged"), "{stderr}");
     assert!(!env.apps.join("Peek.app").exists(), "nothing installed");
 }
+
+#[tokio::test]
+#[allow(clippy::expect_used)] // fixtures and the fake protocol must be valid
+async fn sends_use_visual_defaults_but_keep_explicit_registration() {
+    for registered in [false, true] {
+        let env = logged_in();
+        let bytes = b"peek.onFrame = () => false;";
+        write_file(&env.home, "logo.js", bytes);
+        env.store()
+            .merge_config(&json!({"position": 3, "drawing": env.home.join("logo.js")}).to_string())
+            .expect("config");
+        let drawing_done = std::sync::Mutex::new(silicon_peek_client::timestamp::Timestamp::now());
+        let d = daemon::start_v2(
+            &env.socket,
+            Arc::new(move |req| {
+                let result = match req.op.as_str() {
+                    "status" => json!({
+                        "slot": registered.then(|| json!({"index": 5, "side": "bottom"})),
+                        "drawing": registered.then(|| json!({"sha256": "existing", "bytes": 20, "active": true})),
+                        "queue": {"pending": 0}, "pending_asks": 0,
+                        "deliveries": {"pending": 0, "authority_required": 0, "last_error": null},
+                        "ui_running": true, "warnings": []
+                    }),
+                    "register.side" => {
+                        json!({"slot": {"index": req.fields["index"], "side": "right"}, "moved_from": null, "warnings": []})
+                    }
+                    "register.drawing" => {
+                        std::thread::sleep(std::time::Duration::from_millis(40));
+                        *drawing_done.lock().expect("clock") =
+                            silicon_peek_client::timestamp::Timestamp::now();
+                        json!({"sha256":"new","bytes":req.blobs[0].len(),
+                    "stats":{"frames":90,"p50_ms":0.1,"p95_ms":0.2,"max_ms":0.3,"ops_max":1,"glass_rebuilds":0},
+                    "warnings":[],"logs":[],"active":true,"slot":3,"server_sync":"pending"})
+                    }
+                    "send" => {
+                        let due = silicon_peek_client::timestamp::Timestamp::parse(
+                            req.fields["due_at"].as_str().expect("due_at"),
+                        )
+                        .expect("timestamp");
+                        assert!(
+                            due >= drawing_done
+                                .lock()
+                                .expect("clock")
+                                .plus(std::time::Duration::from_secs(1)),
+                            "--in starts after drawing validation"
+                        );
+                        json!({"send_id": SendId::generate().to_string(), "ask_id": null,
+                    "slot": if registered {5} else {3}, "status": "scheduled", "due_at": req.fields["due_at"], "speech": null, "warnings": []})
+                    }
+                    "config.sync" => json!({}),
+                    other => panic!("unexpected op {other}"),
+                };
+                vec![daemon::ok(req, result)]
+            }),
+        );
+        let run = env
+            .run(&[
+                "send",
+                "--show",
+                r#"{"elements":[{"type":"text","text":"Hello"}]}"#,
+                "--json",
+                "--in",
+                "1s",
+            ])
+            .await;
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        let seen = d.seen();
+        let ops: Vec<_> = seen
+            .iter()
+            .filter(|s| s.op != "config.sync")
+            .map(|s| s.op.as_str())
+            .collect();
+        if registered {
+            assert_eq!(ops, ["status", "send"]);
+            assert_eq!(run.json()["slot"], 5);
+        } else {
+            assert_eq!(ops, ["status", "register.side", "register.drawing", "send"]);
+            assert_eq!(seen[1].fields["index"], 3);
+            assert_eq!(seen[2].blobs, vec![bytes.to_vec()]);
+        }
+        let side = env.run(&["register", "side", "--json"]).await;
+        assert_eq!(side.code, 0, "{}", side.stderr);
+        assert_eq!(side.json()["slot"]["index"], 3);
+        let drawing = env.run(&["register", "drawing", "--json"]).await;
+        assert_eq!(drawing.code, 0, "{}", drawing.stderr);
+    }
+}

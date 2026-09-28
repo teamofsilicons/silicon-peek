@@ -228,6 +228,7 @@ public final class DrawingHost: DrawingHosting {
             canvas.frame = visualView.bounds
             visualView.addSubview(canvas)
         }
+        if case .empty = status { compositor.showFallback(initial: initial) }
         if usesDisplayLink { scheduler.attach(to: canvas) }
         if case .ready = status, !hasRenderedSinceLoad {
             wake()

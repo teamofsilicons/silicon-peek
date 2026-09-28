@@ -33,7 +33,6 @@ A check that has nothing to report (no pending login, no pending revocation) is 
 | Code | Exit | What it means | Fix |
 |---|---|---|---|
 | `side_not_registered` | 4 | This Silicon holds no position. | `peek register side <1-8>` (the error lists the free ones). |
-| `drawing_not_registered` | 4 | No drawing is registered. | `peek register drawing ./logo.js` ([Drawing the visual](drawing.md)). |
 | `side_taken` | 4 | Another Silicon holds that position. | Pick one from `details.free`. |
 | `drawing_invalid` | 4 | Validation failed; the previous drawing stays active. | Fix the line in the error; re-run with `--check`. |
 | `drawing_too_large` | 2 | The file is over 256 KiB. | Shrink it; drawings are code, not assets. |
@@ -102,7 +101,7 @@ A check that has nothing to report (no pending login, no pending revocation) is 
 | A question did not close on Esc, it got smaller | One Esc folds a question into a compact question that can still be answered | Press Esc twice quickly, or Esc again while "Esc again to dismiss" shows, or click the down-arrow. `^` opens it again. |
 | `peek send` carries a `ting_not_enrolled` warning | This Silicon has no Ting grant for peek (for example after `peek logout --revoke-ting` in any of its homes) | `peek ting enroll`. Answers that waited are delivered right away. |
 | `peek send` carries an `isi_ignored` warning | `$ISI` is over 160 characters or spans lines | Fix or unset `ISI`. The send itself went out, without `metadata.isi`. |
-| The drawing shows a plain circle with an initial | Your drawing threw 10 times in a row, overran 30 times in 5 s, or ran out of memory | The next `peek send`, `peek register side` or `peek status` result has a `drawing_fallback_active` warning with the stack, and `peek status` shows `drawing.active: false` with `drawing.last_error`; fix it and `peek register drawing` again. |
+| The drawing shows a plain circle with an initial | No custom drawing is registered, or your drawing threw 10 times in a row, overran 30 times in 5 s, or ran out of memory | This is the built-in visual when no custom drawing is set. After a runtime failure, the next `peek send`, `peek register side` or `peek status` result has a `drawing_fallback_active` warning with the stack, and `peek status` shows `drawing.active: false` with `drawing.last_error`; fix it and `peek register drawing` again. |
 | Glass looks frosted, not clear | Live Liquid Glass is unavailable on this system (`input.glass === 'frosted'`) | Nothing to fix; peek falls back on purpose. |
 | macOS asks to let Peek access Documents, Desktop or Downloads | A `SILICON_HOME` lives there | Move the home out of those folders, or allow Peek in Privacy & Security → Files and Folders. |
 | `silicon connect` fails while installing peek | Honeycomb older than 0.5.0, or Honeycomb could not reach its registry | Update Honeycomb (`silicon update`) and connect again. peek is public, so no Honeycomb login is needed. |

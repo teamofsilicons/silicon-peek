@@ -2065,3 +2065,53 @@ async fn a_failed_drawing_says_whether_a_previous_one_stays_active() {
     assert_eq!(flags(&e), (json!(true), json!(true)));
     assert!(!e.hint().unwrap().contains("previous drawing stays active"));
 }
+
+#[tokio::test]
+async fn builtin_visual_supports_immediate_and_scheduled_sends() {
+    use silicon_peek_client::{identity::SlotIndex, ipc::cli::RegisterSide, timestamp::Timestamp};
+    let h = Harness::start().await;
+    let ui = h.ui_build(1002).await;
+    let home = h.home("si:default-visual");
+    h.call(
+        &home,
+        &RegisterSide {
+            index: SlotIndex::new(3).unwrap(),
+        },
+        vec![],
+    )
+    .await
+    .unwrap();
+    let mut op = send_op();
+    op.show = Some(
+        Show::from_input(&json!({"elements":[{"type":"text","text":"Built-in visual"}]})).unwrap(),
+    );
+    let (sent, _) = h.call(&home, &op, vec![]).await.unwrap();
+    assert_eq!(sent.status, SendStatus::Showing);
+    assert_eq!(
+        ui.expect("peek.show").await.fields["send_id"],
+        sent.send_id.as_str()
+    );
+    ui.request(
+        &ShownDone {
+            send_id: sent.send_id,
+            visible_ms: 4000,
+            reason: silicon_peek_client::ipc::ui::ShownReason::Auto,
+        },
+        vec![],
+    )
+    .await
+    .unwrap();
+    op.due_at = Some(Timestamp::from_unix_ms(Timestamp::now().unix_ms() + 60_000));
+    let (scheduled, _) = h.call(&home, &op, vec![]).await.unwrap();
+    assert_eq!(scheduled.status, SendStatus::Scheduled);
+    h.handle().advance_wall_clock(Duration::from_secs(61));
+    assert_eq!(
+        ui.expect("peek.show").await.fields["send_id"],
+        scheduled.send_id.as_str()
+    );
+    let (status, _) = h.call(&home, &StatusOp {}, vec![]).await.unwrap();
+    assert!(
+        status.drawing.is_none(),
+        "the built-in visual needs no drawing record"
+    );
+}
