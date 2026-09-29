@@ -7,10 +7,10 @@ peek is open source: https://github.com/teamofsilicons/silicon-peek. This page e
 | Component | Language | Runs | Owns |
 |---|---|---|---|
 | **Peek.app** (`ai.tos.peek`) | Swift 6, SwiftUI + AppKit | one per macOS user, `~/Applications/Peek.app`, menu-bar only | the 8 position panels, the glass and drawing compositor, one QuickJS VM per drawing, audio playback and microphone capture, hotkeys, backdrop sampling, Settings, Simulation. **No tokens and no network**: everything goes through peekd. |
-| **peekd** (`Contents/Helpers/peekd`) | Rust | one per macOS user, a launchd agent registered by the app | positions, the send queues and scheduled sends, expiry, asks and history, the delivery outbox, Deepgram calls, per-home session refresh, the telemetry relay, Peek.app self-update, the stale-CLI watchdog |
+| **peekd** (`Contents/Helpers/peekd`) | Rust | one per macOS user, a launchd agent registered by the app | positions, the send queues and scheduled sends, expiry, asks and history, the delivery outbox, streamed Google TTS playback, OpenAI transcription requests, per-home session refresh, the telemetry relay, Peek.app self-update, the stale-CLI watchdog |
 | **peek CLI** (`peek`) | Rust | one copy per Silicon home (installed by Honeycomb), plus an optional Carbon copy | the IAM app contract (`iam`, `login`, `status`, `logout`, `config`), the per-home store `$SILICON_HOME/.peek/`, input validation, reading image and drawing bytes |
 | **silicon-peek-client** | Rust library | linked into the CLI, peekd and the server | a stateless HTTP client for the backend, all wire types (IPC, show and ask schemas and validators, delivery bodies, Ting data), error types. Feature `runtime` adds the store, session refresh, locks and the IPC client. |
-| **peek-server** | Rust (axum, SQLite) | `https://backend.peek.teamofsilicons.com` | the IAM app secret, SLT exchange, refresh and revoke, bearer introspection, Ting proofs and sends, Ting enrollment, the Deepgram key and org keys (short-lived tokens in direct mode, a streaming relay in proxy mode), drawing copies, bug reports, the IAM webhook, the Honeycomb lifecycle participant, the telemetry gateway |
+| **peek-server** | Rust (axum, SQLite) | `https://backend.peek.teamofsilicons.com` | the IAM app secret, SLT exchange, refresh and revoke, bearer introspection, Ting proofs and sends, Ting enrollment, the Google TTS key and SSE relay, the OpenAI transcription key and completed-recording relay, legacy org key storage, drawing copies, bug reports, the IAM webhook, the Honeycomb lifecycle participant, the telemetry gateway |
 | **Website and docs** | SolidJS + Vite | `https://peek.teamofsilicons.com` | the landing page, `/docs`, `/install.sh`, `/llms.txt` |
 
 ```text
@@ -24,22 +24,22 @@ peek is open source: https://github.com/teamofsilicons/silicon-peek. This page e
                      ▼                                         ▼
           /var/tmp/silicon-peek-<uid>/peekd.sock ◄──────► peekd (per macOS user)
                                                    ~/Library/Application Support/Peek/peekd.sqlite
-                           ┌───────────────────────────────┼──────────────────────────┐
-                           ▼ HTTPS, Bearer oat_ + X-Org-ID  ▼ direct mode only:        │
-                  peek-server (app secret)                 HTTPS, Bearer <JWT>         │
-          ┌───────┬────────┼──────────┬──────────┐         api.deepgram.com            │
-          ▼       ▼        ▼          ▼          ▼         /v1/speak  /v1/listen       │
-         IAM    Ting   Deepgram    Space      GitHub                                   │
-                 │     /v1/auth/grant, or the relay in proxy mode:                     │
-                 │     /api/v1/speech/speak → /v1/speak, /api/v1/speech/listen → /v1/listen
-                 ▼ WebSocket → ting-daemon → POST http://<handle>.<org>.localhost/events → your flow
+                           │ HTTPS, Bearer oat_ + X-Org-ID
+                           ▼
+                  peek-server (service keys)
+                   ├─ Google Gemini: /api/v1/speech/speak → /v1beta/interactions
+                   │    SSE streamed to peekd → incremental PCM to Peek.app
+                   ├─ OpenAI gpt-transcribe: /api/v1/speech/listen → /v1/audio/transcriptions
+                   │    completed WAV → final transcript
+                   ├─ IAM, Space Station, GitHub
+                   └─ Ting → ting-daemon → Silicon webhook → your flow
 ```
 
 Design choices that shape everything:
 
 - **The helper lives inside the app**, not in the Honeycomb package, so there is one stable path per macOS user. Honeycomb deletes package directories on every update, and every Silicon home has its own package copy.
 - **Client custody of tokens.** Each Silicon's IAM session lives in its own home; the backend stores none. See [IAM and sessions](iam.md).
-- **Speech is Deepgram, driven by peekd.** peekd asks the backend for a speech token first. In **direct** mode the backend mints a token that lives at most 60 seconds and peekd calls Deepgram itself; in **proxy** mode (a key that cannot mint tokens) peekd sends the request to the backend, which relays it to Deepgram and streams the answer back without storing or logging it. See [Speech tokens and the relay](#speech-tokens-and-the-relay).
+- **Google TTS and OpenAI transcription are driven by peekd.** Google audio events stream through Peek; the helper decodes base64 PCM chunks and sends them to the app for playback. Completed recordings go through the backend to OpenAI; only final transcripts return to the UI. Neither relay stores or logs content. See [Speech tokens and the relay](#speech-tokens-and-the-relay).
 - **No live transcript.** Speech-to-text runs once, after the Carbon stops recording.
 - **Validation runs in the app**, with the same QuickJS and renderer as the screen, so a drawing that validates behaves identically live.
 
@@ -74,7 +74,7 @@ cargo build -p silicon-peek-daemon           # target/debug/peekd (macOS only)
 cargo build -p silicon-peek                  # target/debug/peek-server
 ```
 
-Tests never need keys or the network. The backend, IAM, Ting and Deepgram are replaced by `wiremock` servers, stores live in temporary directories, and the helper's socket is overridden with `PEEK_DAEMON_SOCKET`. Never point a test at your real `~/.peek`, `~/.silicon-iam` or `~/Library/Application Support/Peek`. To run the real binaries by hand, use the [isolated run mode](#isolated-run-mode).
+Tests never need keys or the network. The backend, IAM, Ting, Google and OpenAI are replaced by `wiremock` servers, stores live in temporary directories, and the helper's socket is overridden with `PEEK_DAEMON_SOCKET`. Never point a test at your real `~/.peek`, `~/.silicon-iam` or `~/Library/Application Support/Peek`. To run the real binaries by hand, use the [isolated run mode](#isolated-run-mode).
 
 Peek.app (Xcode 26.4, macOS SDK 26.4, xcodegen; QuickJS-ng v0.17.0 is vendored with a pinned hash):
 
@@ -156,15 +156,17 @@ iso target/debug/peek register side 3
 
 Stop everything with `kill %1 %2 %3 %4` (or by pid) and delete `$R` when you are done.
 
-**Real speech in an isolated run.** By default `.env.example` points Deepgram at a local fake. To hear real speech, give peek-server a real key at runtime only, and keep test phrases short (every request costs money):
+**Real speech in an isolated run.** Set `PEEK_GEMINI_API_KEY` and `PEEK_OPENAI_API_KEY` in the server's process environment before starting it; keep test phrases short because requests are billed:
 
 ```sh
-PEEK_DEEPGRAM_BASE_URL=https://api.deepgram.com \
-PEEK_DEEPGRAM_API_KEY="$(cat ~/.peek-operator/deepgram-api-key)" \
+PEEK_GEMINI_BASE_URL=https://generativelanguage.googleapis.com \
+PEEK_OPENAI_BASE_URL=https://api.openai.com \
 cargo run -p silicon-peek --bin peek-server
 ```
 
-Never copy the key into `.env`, a fixture, a test or a log. A key that is not allowed to mint tokens (Deepgram answers 403 to `/v1/auth/grant`) makes peek-server answer in [proxy mode](#speech-tokens-and-the-relay), so the audio flows through your local peek-server.
+Only `PEEK_GEMINI_API_KEY` is needed for TTS; the OpenAI key enables microphone transcription. Test contexts use the separate `PEEK_GEMINI_TEST_API_KEY` and `PEEK_OPENAI_TEST_API_KEY`, never production-key fallback. Do not put keys into tracked files, fixtures or logs. Google TTS and OpenAI transcription always use Peek's authenticated relay; neither exposes provider credentials to clients.
+
+For `scripts/e2e/run-local.sh` or `scripts/e2e/e2e.py`, export `PEEK_GEMINI_API_KEY` for TTS and `PEEK_OPENAI_API_KEY` for transcription before starting. These scripts pass the keys only to the isolated server, without saving them in `env.sh`, `app.env`, logs or stack metadata; the isolated server does not load the repository's `.env`. `--no-stt` skips transcription while keeping configured Gemini TTS available.
 
 ## The local IPC protocol (version 1)
 
@@ -238,7 +240,7 @@ peekd checks that the home is a private directory owned by the user, that `<home
 
 `ask.result.ack` exists only in this spot, right after an `ask.result` on a `send --wait` connection. Anywhere else peekd answers `unknown_op`. The answer counts as delivered to the CLI only if a matching `ask.result.ack` arrives within 2 seconds of the event. The delivery then shows `status: "wait"` and no Ting event is sent. If the ack does not come (EOF, a timeout, any other frame, or a different `ask_id`), or the CLI closes the connection before the ask closes (its `--wait` timed out, or ^C), the answer goes out as a normal `peek.ask.answered` Ting event. An answer is therefore never lost, and at worst a script that crashed right after printing also gets the ting.
 
-**`config.sync` and telemetry.** `config.sync` mirrors `{"voice","language","notify","telemetry"}` into peekd. `telemetry` is the home's *effective* setting as the CLI sees it: `false` also when only the CLI's environment opts out (`PEEK_TELEMETRY`, `SPACE_STATION_TELEMETRY`, `SILICON_TELEMETRY`). The additive field `"env_opt_out":true` marks that case. Every CLI command that talked to peekd for its home under such an environment sends one more `config.sync` at the end. peekd then records nothing about the home and sends `X-Peek-Telemetry: off` on its backend calls for it. An environment opt-out ends when a CLI of that home hands peekd a `telemetry` batch again, since the CLI only does that when neither its config nor its environment opts out. A config opt-out never ends this way, and peekd always reads the home's `config.json` as well. `--no-telemetry` is per process and is not forwarded ([Telemetry](telemetry.md#the-helper-and-environment-opt-outs)).
+**`config.sync` and telemetry.** `config.sync` mirrors `{"voice","voice_instructions","language","notify","telemetry"}` into peekd. `telemetry` is the home's *effective* setting as the CLI sees it: `false` also when only the CLI's environment opts out (`PEEK_TELEMETRY`, `SPACE_STATION_TELEMETRY`, `SILICON_TELEMETRY`). The additive field `"env_opt_out":true` marks that case. Every CLI command that talked to peekd for its home under such an environment sends one more `config.sync` at the end. peekd then records nothing about the home and sends `X-Peek-Telemetry: off` on its backend calls for it. An environment opt-out ends when a CLI of that home hands peekd a `telemetry` batch again, since the CLI only does that when neither its config nor its environment opts out. A config opt-out never ends this way, and peekd always reads the home's `config.json` as well. `--no-telemetry` is per process and is not forwarded ([Telemetry](telemetry.md#the-helper-and-environment-opt-outs)).
 
 **UI traffic.** peekd sends the app `slots.state`, `peek.show`, `peek.cancel`, `queue.state`, `tts.begin`/`tts.chunk`/`tts.end`/`tts.error` (24 kHz mono s16le PCM), `stt.result` and `restarting` events, and the requests `drawing.validate`, `drawing.load`, `app.update.prepare`, `app.quit`, `app.uninstall` and `doctor`. The app sends `answer`, `voice.submit` (the WAV), `message`, `dismissed`, `shown`, `speech.done`, `shown.done`, `focus`, `drawing.error`, `telemetry`, `settings.changed`, `ui.status` and `presence`. peekd also checks that the peer process of a `ui` connection is `…/Peek.app/Contents/MacOS/Peek`.
 
@@ -269,7 +271,7 @@ peekd's database is at schema 2 since 0.1.2: `sends` gained `expires_at`, `queue
 
 | Method and path | Auth | Purpose |
 |---|---|---|
-| `GET /healthz`, `GET /readyz` | – | liveness (`{"status":"ok","service":"peek","version"}`); readiness of the databases, IAM, Ting and Deepgram configuration |
+| `GET /healthz`, `GET /readyz` | – | liveness (`{"status":"ok","service":"peek","version"}`); readiness of the databases, IAM, Ting, Google TTS and OpenAI transcription configuration |
 | `GET /api/v1/iam` | – (test key optional) | discovery: `app_id`, `api_version`, URLs, `testing_environment{id,name,generation}`, `compatibility` |
 | `POST /api/v1/auth/login` | – | `{"slt"}` → session |
 | `POST /api/v1/auth/refresh` | – | `{"refresh_token"}` → session |
@@ -277,11 +279,11 @@ peekd's database is at schema 2 since 0.1.2: `sends` gained `expires_at`, `queue
 | `GET /api/v1/auth/me` | Bearer | the introspected identity, display name, org role, scopes, Ting enrollment |
 | `POST /api/v1/ting/recipient` | Bearer | enroll as a Ting recipient |
 | `POST /api/v1/deliveries` | Bearer | deliver one event through Ting |
-| `POST /api/v1/speech/token` | Bearer | `{"purpose":"tts"\|"stt"}` → how to reach Deepgram: `mode` `direct` or `proxy` (below) |
-| `POST /api/v1/speech/speak` | Bearer | proxy mode: `{"text","model","sample_rate"}` → Deepgram's `linear16` audio, streamed |
-| `POST /api/v1/speech/listen` | Bearer | proxy mode: the recording (at most 4 MiB) → Deepgram's transcription JSON |
+| `POST /api/v1/speech/token` | Bearer | `{"purpose":"tts"\|"stt"}` → compatibility discovery: both purposes return `proxy` without credentials (below) |
+| `POST /api/v1/speech/speak` | Bearer | Google TTS: `{"text","model","voice_instructions"?,"language"?,"sample_rate"?}` → Gemini audio SSE, streamed |
+| `POST /api/v1/speech/listen` | Bearer | completed recording (at most 4 MiB) → final OpenAI transcript in Peek JSON |
 | `PUT`/`GET`/`DELETE /api/v1/drawings/current` | Bearer | the Silicon's drawing copy |
-| `GET`/`PUT`/`DELETE /api/v1/orgs/{org}/byo/deepgram` | Bearer (writes: org owner or admin) | the org's own Deepgram key |
+| `GET`/`PUT`/`DELETE /api/v1/orgs/{org}/byo/deepgram` | Bearer (writes: org owner or admin) | legacy org Deepgram key management; unused by current speech |
 | `POST /api/v1/reports` | optional Bearer | bug reports (10 per hour per IP) |
 | `POST /api/web/telemetry` | – (origin check, rate limit) | the telemetry gateway ([Telemetry](telemetry.md#the-gateway)) |
 | `POST /webhooks/iam` | HMAC | IAM membership events |
@@ -291,26 +293,25 @@ peekd's database is at schema 2 since 0.1.2: `sends` gained `expires_at`, `queue
 
 ### Speech tokens and the relay
 
-`POST /api/v1/speech/token` decides, per key, how peekd reaches Deepgram:
+**TTS:** `POST /api/v1/speech/speak` takes the Silicon's Bearer session and an `Idempotency-Key`. Send `text` (1–2000 characters), `model` (the Google voice name or custom ID, for example `Kore`; this legacy wire field names the voice, not the Gemini model), optional `voice_instructions` (1–2000 characters), optional `language`, and `sample_rate` (24000). Google voice identifiers allow at most 128 ASCII letters, digits, underscores and hyphens. Legacy Aura-2 voice IDs migrate to `Kore`.
 
-```jsonc
-// direct: the key can mint tokens (Deepgram POST /v1/auth/grant succeeded)
-{"mode":"direct","access_token":"<JWT>","expires_in":60,"base_url":"https://api.deepgram.com",
- "key_source":"peek"|"org","params":{"mip_opt_out":true,"tags":["peek","production"]}}
-// proxy: Deepgram answered 401 or 403 to the grant for this key (no access_token)
-{"mode":"proxy","base_url":"https://backend.peek.teamofsilicons.com/api/v1/speech","expires_in":600,
- "key_source":"peek"|"org","params":{"mip_opt_out":true,"tags":["peek","production"]}}
+The backend pins `gemini-3.8-flash-tts` and calls Google's `/v1beta/interactions` with `stream: true`, `store: false` and `response_format: {"type":"audio","mime_type":"audio/l16","sample_rate":24000}`. Delivery instructions and language hints become `speech_metadata.style`, and paired accent spans are split into separately styled text segments. The server forwards Google's SSE as it arrives without assembling or decoding the audio. peekd incrementally decodes audio deltas to 24 kHz mono signed 16-bit little-endian PCM, forwards them over IPC and checks the stream's completion event. It caches only a successfully completed result; changing the voice, instructions or language changes the cache key.
+
+`PEEK_GEMINI_API_KEY` serves production; `PEEK_GEMINI_TEST_API_KEY` serves test contexts. The key stays on the backend. `POST /api/v1/speech/token` with `purpose: "tts"` reports `mode: "proxy"`; it never returns a Google credential. Peek adds no TTS concurrency cap; Google's project quotas govern upstream capacity. Client cancellation drops the upstream stream.
+
+**STT:** `POST /api/v1/speech/listen` takes a completed recording as the raw body (`Content-Type: audio/wav`, at most 4 MiB; larger gives `413 payload_too_large`), the Silicon's Bearer session and an `Idempotency-Key`. The server calls OpenAI `/v1/audio/transcriptions` as multipart with `model: "gpt-transcribe"`, then returns a final, provider-neutral object:
+
+```json
+{"text":"Keep the second one.","request_id":"req_…","detected_language":"en"}
 ```
 
-- The backend remembers a "grant forbidden" verdict per key for 10 minutes, so it does not ask Deepgram for a token on every request; a proxy reply's `expires_in` is the time left on that verdict (at most 600 s). An org's own key (`peek org byo deepgram`) follows the same logic; there is still no fallback between keys. Test contexts use the test key.
-- In proxy mode `base_url` is `<PEEK_PUBLIC_ORIGIN>/api/v1/speech`, and peekd calls, with the same Bearer session:
-  - `POST …/speak` with `{"text","model","sample_rate"?}`: `text` 1–2000 characters, `model` an Aura-2 voice such as `aura-2-thalia-en`, `sample_rate` one of 8000, 16000, 24000 (the default), 32000 or 48000. The backend calls Deepgram `/v1/speak` (`encoding=linear16`, `container=none`) and streams the audio back unbuffered, passing Deepgram's `dg-request-id` and `dg-char-count` headers.
-  - `POST …/listen` with the raw recording as the body (`Content-Type: audio/wav`, at most 4 MiB; larger is `413 payload_too_large`). Only these query parameters are accepted and forwarded to Deepgram `/v1/listen`: `model` (default `nova-3`), `language`, `detect_language` (repeatable, at most 16), `keyterm` (repeatable, at most 100 of 1–100 characters), `numerals`, `smart_format`; anything else is `400 invalid_input` with `details.allowed`. The answer is Deepgram's JSON, with its `dg-request-id`.
-  - Both are ordinary Bearer POSTs, so they also need an `Idempotency-Key`; they are never replayed.
-- In both modes every Deepgram request carries `mip_opt_out=true`, `tag=peek` and a tag for the environment; in proxy mode the backend adds them itself.
-- Tokens and relayed calls share one rate budget: 120 per minute per Silicon and 1,200 per minute per org (`429 rate_limited` with `Retry-After`). The relay never logs or stores the audio, the text or the transcript.
-- peekd caches the token reply (and so the mode) per API URL, context, org, actor and purpose until it expires, and asks again after a Deepgram 401.
-- Speech failures are `503 speech_unavailable` with `details.reason`: `not_configured`, `org_key_invalid`, `org_out_of_credits`, `org_model_forbidden`, `peek_key_invalid`, `peek_out_of_credits`, `rate_limited` or `deepgram_unavailable`.
+`request_id` and `detected_language` are omitted when unavailable. Peek uses recorded-file transcription, not Realtime transcription or partial transcript events. The Mac applies its existing answer matching to the completed transcript.
+
+The accepted query parameters remain `model` (omitted or `gpt-transcribe`), `language`, `detect_language` (repeatable, at most 16), `keyterm` (repeatable, at most 100 of 1–100 characters), `numerals` and `smart_format`. Language hints are normalized to lowercase primary subtags and sent as OpenAI's `languages[]`; keyword hints become `keywords[]`. `numerals=true` supplies a digit-formatting prompt. `smart_format` is accepted for compatibility and is not forwarded. Other parameters or models are rejected. See the [OpenAI file-transcription guide](https://developers.openai.com/api/docs/guides/speech-to-text) for the upstream API.
+
+`PEEK_OPENAI_API_KEY` serves production and `PEEK_OPENAI_TEST_API_KEY` serves test contexts, with no fallback between them. `POST /api/v1/speech/token` with `purpose: "stt"` remains compatibility discovery: it returns `provider: "openai"`, `mode: "proxy"`, `key_source: "peek"` and the Peek speech routing URL, without an access token. There is no direct provider path or Deepgram fallback. Existing org Deepgram keys remain manageable but are never selected for TTS or transcription.
+
+Token and relay calls share the request rate budget: 120 per minute per Silicon and 1,200 per minute per org (`429 rate_limited` with `Retry-After`). Neither relay stores or logs transcripts, instructions or audio. Provider failures become `speech_unavailable`; see [Troubleshooting](troubleshooting.md).
 
 ## Build on top of peek
 

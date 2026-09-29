@@ -44,7 +44,7 @@ use silicon_peek_client::{
         ImageFormat, ImageHop, ImageRef,
         ask::{Answer, Ask},
         limits,
-        send::{Notify, check_voice, voice_language},
+        send::{Notify, check_voice, check_voice_instructions},
         show::Show,
     },
     timestamp::Timestamp,
@@ -82,15 +82,15 @@ pub fn now_ms() -> i64 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StoredSpeechStatus {
-    /// Planned; streaming from Deepgram when shown.
+    /// Planned; streaming from Gemini when shown.
     Pending,
     /// Served from the local TTS cache (kept once played).
     Cached,
     /// No speech.
     Skipped,
-    /// The detected language has no Aura-2 voice.
+    /// Legacy status for speech unsupported by an older provider.
     UnsupportedLanguage,
-    /// Streamed from Deepgram and played.
+    /// Streamed from Gemini and played.
     Played,
     /// TTS failed before any audio played.
     Failed,
@@ -179,6 +179,9 @@ pub struct StoredSpeech {
     /// The language.
     #[serde(default)]
     pub language: Option<String>,
+    /// Delivery instructions captured at enqueue time.
+    #[serde(default)]
+    pub voice_instructions: Option<String>,
 }
 
 /// What a bubble shows, stored in `sends.payload`.
@@ -1127,19 +1130,27 @@ impl Shared {
         // language), its `language` resolves ambiguous detection. The store's
         // config.json wins over the config.sync mirror.
         let stored = caller.store.read_config().ok();
-        let fallback = match stored.as_ref().and_then(|c| c.language.clone()) {
-            Some(l) => Some(l),
+        let fallback = match &stored {
+            Some(config) => config.language.clone(),
             None => self.home_language(&caller.home.home_path).await,
         };
-        let config_voice = match stored.as_ref().and_then(|c| c.voice.clone()) {
-            Some(v) => Some(v),
-            None => self.home_voice(&caller.home.home_path).await,
-        }
-        .filter(|v| {
-            op.lang
-                .as_deref()
-                .is_none_or(|l| voice_language(v) == Some(l))
-        });
+        let config_voice = match &stored {
+            Some(config) => config.voice.clone(),
+            None => {
+                self.home_speech_setting(&caller.home.home_path, "voice")
+                    .await
+            }
+        };
+        let voice_instructions = match &op.voice_instructions {
+            Some(value) => Some(value.clone()),
+            None => match &stored {
+                Some(config) => config.voice_instructions.clone(),
+                None => {
+                    self.home_speech_setting(&caller.home.home_path, "voice_instructions")
+                        .await
+                }
+            },
+        };
         let explicit = op.voice.clone().or(config_voice);
         let settings = self.settings.get();
         let plan = voice::plan(
@@ -1154,7 +1165,12 @@ impl Shared {
                 if self
                     .speech
                     .cache
-                    .lookup(&TtsCache::key(model, text))
+                    .lookup(&TtsCache::key(
+                        model,
+                        text,
+                        voice_instructions.as_deref(),
+                        plan.language.as_deref(),
+                    ))
                     .is_some()
                 {
                     SpeechStatus::Cached
@@ -1168,7 +1184,7 @@ impl Shared {
             warnings_out.push(Warning {
                 code: warnings::SPEAK_LANGUAGE_UNSUPPORTED.to_owned(),
                 message: format!(
-                    "Deepgram Aura-2 has no voice for {}; the text is shown as a pill instead of spoken (voices exist for en, es, de, fr, nl, it, ja)",
+                    "speech is unavailable for {}; the text is shown as a pill instead of spoken",
                     plan.language.as_deref().unwrap_or("this language")
                 ),
                 details: Some(json!({"language": plan.language})),
@@ -1185,6 +1201,7 @@ impl Shared {
                 status: status.into(),
                 model: plan.model,
                 language: plan.language,
+                voice_instructions,
             }),
             warnings_out,
         )
@@ -1349,7 +1366,7 @@ impl Shared {
     }
 
     /// The `voice` of a home's mirrored config (`config.sync`).
-    async fn home_voice(&self, home_path: &str) -> Option<String> {
+    async fn home_speech_setting(&self, home_path: &str, field: &'static str) -> Option<String> {
         let hp = home_path.to_owned();
         self.db
             .call(move |c| {
@@ -1362,8 +1379,14 @@ impl Shared {
                 Ok(cfg
                     .flatten()
                     .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-                    .and_then(|v| v.get("voice").and_then(Value::as_str).map(str::to_owned))
-                    .filter(|v| check_voice(v).is_ok()))
+                    .and_then(|v| v.get(field).and_then(Value::as_str).map(str::to_owned))
+                    .filter(|v| {
+                        if field == "voice" {
+                            check_voice(v).is_ok()
+                        } else {
+                            check_voice_instructions(v).is_ok()
+                        }
+                    }))
             })
             .await
             .ok()
@@ -1566,8 +1589,14 @@ impl Shared {
                 send_id: send.send_id.clone(),
                 key: key.clone(),
                 home: send.home.clone(),
-                model: model.clone(),
+                model: if model.starts_with("aura-") {
+                    "Kore".to_owned()
+                } else {
+                    model.clone()
+                },
                 text: text.clone(),
+                voice_instructions: speech.voice_instructions.clone(),
+                language: speech.language.clone(),
             });
         }
         if send.payload.ask.is_some() {

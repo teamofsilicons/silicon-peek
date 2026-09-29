@@ -49,7 +49,7 @@ const TOPICS: &[Topic] = &[
     Topic {
         name: "show",
         title: "Speak and show",
-        summary: "`peek send --speak \"…\"` speaks 1–2000 characters with Deepgram Aura-2. `--show '{\"elements\":[…]}'` shows 1–3 elements: text (≤160 characters) or image (png, jpeg, heic, webp, gif; ≤10 MiB; caption ≤50). Image paths are relative to the current directory; the CLI reads the bytes. Sends queue (1 on screen + 5 waiting; `peek queue`); --replace takes over; --expires-in/--expires-at drop a late send; --in/--at schedule it.",
+        summary: "`peek send --speak \"…\"` streams 1–2000 characters with Google Gemini TTS; --voice-instructions or config voice_instructions customizes accent, style and delivery. `--show '{\"elements\":[…]}'` shows 1–3 elements: text (≤160 characters) or image (png, jpeg, heic, webp, gif; ≤10 MiB; caption ≤50). Image paths are relative to the current directory; the CLI reads the bytes. Sends queue (1 on screen + 5 waiting; `peek queue`); --replace takes over; --expires-in/--expires-at drop a late send; --in/--at schedule it.",
     },
     Topic {
         name: "ask",
@@ -84,7 +84,7 @@ const TOPICS: &[Topic] = &[
     Topic {
         name: "privacy",
         title: "Privacy",
-        summary: "History, asks and answers stay on the Mac. Speech goes to Deepgram (always with mip_opt_out=true): straight from peekd with a token of at most 60 s, or, for a key that cannot mint tokens, through the backend's relay, which never stores or logs the audio, text or transcript. The backend keeps only the IAM app secret, drawings, delivery receipts and optional org Deepgram keys (sealed).",
+        summary: "History, asks and answers stay on the Mac. Text and voice instructions go through the backend to Google Gemini TTS; audio streams back without being stored by the backend. Completed microphone recordings go through the backend to OpenAI gpt-transcribe; Peek shows only the final transcript. Provider API keys stay on the backend; local speech audio is cached on the Mac.",
     },
     Topic {
         name: "platforms",

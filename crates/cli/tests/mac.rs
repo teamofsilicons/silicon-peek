@@ -166,7 +166,7 @@ async fn every_send_limit_is_refused_locally() {
                 "--speak".into(),
                 "hi".into(),
                 "--voice".into(),
-                "thalia".into(),
+                "not a voice".into(),
             ],
             "invalid_input",
             2,
@@ -302,6 +302,46 @@ async fn send_uses_the_config_notify_default() {
     assert_eq!(run.code, 0, "{}", run.stderr);
     let sends: Vec<_> = d.seen().into_iter().filter(|s| s.op == "send").collect();
     assert_eq!(sends[0].fields["notify"], json!(["show_dismissed"]));
+}
+
+#[tokio::test]
+async fn gemini_sends_merge_voice_defaults_and_preserve_markup() {
+    let env = logged_in();
+    let d = daemon::start_v2(&env.socket, send_ok(None));
+    let configured = env
+        .run(&[
+            "config",
+            "set",
+            r#"{"voice":"Kore","voice_instructions":"Warm, Indian accent.","language":"hi"}"#,
+        ])
+        .await;
+    assert_eq!(configured.code, 0, "{}", configured.stderr);
+    let text = "<indian accent>Anuv Jain</indian accent>";
+    for options in [
+        vec!["send", "--speak", text],
+        vec![
+            "send",
+            "--speak",
+            text,
+            "--voice",
+            "Puck",
+            "--voice-instructions",
+            "Whisper softly.",
+        ],
+    ] {
+        let sent = env.run(&options).await;
+        assert_eq!(sent.code, 0, "{}", sent.stderr);
+    }
+    let sends: Vec<_> = d.seen().into_iter().filter(|s| s.op == "send").collect();
+    assert_eq!(sends[0].fields["speak"], text);
+    assert_eq!(sends[0].fields["voice"], "Kore");
+    assert_eq!(
+        sends[0].fields["voice_instructions"],
+        "Warm, Indian accent."
+    );
+    assert_eq!(sends[0].fields["lang"], "hi");
+    assert_eq!(sends[1].fields["voice"], "Puck");
+    assert_eq!(sends[1].fields["voice_instructions"], "Whisper softly.");
 }
 
 #[tokio::test]

@@ -24,7 +24,7 @@ peek
 │   └── drawing [FILE.js] [--check] [--preview <OUT.png>] [--dump-frame <N>]
 ├── unregister                                     release the position, delete the drawing, cancel queued and scheduled sends
 ├── send [--speak <TEXT>] [--show <JSON|@FILE|->] [--ask <JSON|@FILE|->]
-│        [--voice <aura-2-name-lang>] [--lang <bcp47>] [--duration <SECS>]
+│        [--voice <GOOGLE_VOICE>] [--voice-instructions <TEXT>] [--lang <bcp47>] [--duration <SECS>]
 │        [--expires-in <DURATION> | --expires-at <DATETIME>] [--in <DURATION> | --at <DATETIME>] [--tz <IANA>]
 │        [--replace] [--notify speech_finished,show_dismissed,shown] [--wait[=<SECS>]]
 ├── queue                                          the send on screen and the ones waiting behind it (at most 5)
@@ -42,7 +42,7 @@ peek
 ├── history [--limit N] [--before <ID>]            local send history for this Silicon
 ├── status                                         position, drawing, queue, deliveries, app, daemon (one view)
 ├── org
-│   └── byo deepgram (set --key-file <PATH|-> [--base-url URL] | show | delete)   org admins only
+│   └── byo deepgram (set --key-file <PATH|-> [--base-url URL] | show | delete)   legacy key management; org admins only
 ├── app
 │   └── status | install | update | uninstall      Peek.app (install = ensure_app + launch)
 ├── daemon
@@ -195,9 +195,9 @@ Prints `{"authenticated":false,"remote_revocation":"confirmed"|"pending"}` and e
 Configuration for this home, stored in `$SILICON_HOME/.peek/config.json`.
 
 ```sh
-peek config set '{"notify":["speech_finished"],"voice":"aura-2-thalia-en"}'
-peek config show --json      # {"schema":1,"telemetry":true,"voice":"aura-2-thalia-en","language":null,"notify":["speech_finished"],"api_url":null,"delivery_max_age_hours":168,"position":null,"drawing":null}
-peek config get voice --json # {"key":"voice","value":"aura-2-thalia-en"}
+peek config set '{"notify":["speech_finished"],"voice":"Kore"}'
+peek config show --json      # {"schema":1,"telemetry":true,"voice":"Kore","voice_instructions":null,"language":null,"notify":["speech_finished"],"api_url":null,"delivery_max_age_hours":168,"position":null,"drawing":null}
+peek config get voice --json # {"key":"voice","value":"Kore"}
 peek config unset voice
 peek config telemetry off
 ```
@@ -207,8 +207,9 @@ peek config telemetry off
 | Key | Type / validation | Default | Effect |
 |---|---|---|---|
 | `telemetry` | bool | `true` | this home's telemetry |
-| `voice` | `^aura-2-[a-z]+-(en\|es\|de\|fr\|nl\|it\|ja)$` or null | null (per-language default) | default TTS voice |
-| `language` | BCP 47 primary subtag (2–3 letters) or null | null (detect) | TTS language when detection is ambiguous |
+| `voice` | Google voice name or ID, 1–128 ASCII letters, digits, `_` or `-`, or null | null (`Kore`) | default TTS voice; legacy Aura-2 IDs use `Kore` |
+| `voice_instructions` | string, 1–2000 characters, or null | null | delivery directions sent as Google style metadata, separate from the spoken text |
+| `language` | BCP 47 primary subtag (2–3 letters) or null | null (detect) | fallback TTS language hint when Peek detection is ambiguous |
 | `notify` | array ⊆ `["speech_finished","show_dismissed","shown"]` | `[]` | default `--notify`. A helper older than 0.1.2 does not know `shown`; it is then left out, with a hint on stderr. |
 | `api_url` | https URL or null | null | same as `--api` |
 | `delivery_max_age_hours` | int 1..168 | 168 | how long this Silicon's undelivered events keep retrying |
@@ -300,11 +301,12 @@ Speaks, shows or asks on the Carbon's screen. Returns immediately. The send join
 
 | Flag | Meaning |
 |---|---|
-| `--speak <TEXT>` | 1–2000 characters, spoken with Deepgram Aura-2. |
+| `--speak <TEXT>` | 1–2000 characters, streamed with Google Gemini 3.8 Flash TTS. |
 | `--show <JSON\|@FILE\|->` | 1–3 text or image elements. See [Speak and show](show.md). |
 | `--ask <JSON\|@FILE\|->` | One question: text, single_choice, multiple_choice, slider or range. See [Ask a question](ask.md). |
-| `--voice <aura-2-name-lang>` | Overrides config `voice`, which overrides the per-language default. Needs `--speak`. |
-| `--lang <bcp47>` | Forces the TTS language instead of detecting it. Any BCP 47 tag works; its primary subtag picks the language (`es-MX` speaks Spanish). Needs `--speak`. |
+| `--voice <GOOGLE_VOICE>` | Google voice name or custom ID. Overrides config `voice`, then the Carbon's per-language setting, then `Kore`. Needs `--speak`. |
+| `--voice-instructions <TEXT>` | 1–2000 characters of delivery directions, overriding config `voice_instructions`. Needs `--speak`. See [voice customization, accent spans and expression tags](show.md#customize-a-silicons-voice). |
+| `--lang <bcp47>` | Supplies a language hint to Gemini. Any BCP 47 tag works; its primary subtag is used (`es-MX` supplies `es`). Needs `--speak`. |
 | `--duration <SECS>` | 1–120. How long a show stays when there is no speech, or after the speech ends. Without it, a bubble with speech slides back 1.5 s after the speech ends; the text-length default applies only to a show without speech. Needs `--show` or `--speak`; not with `--ask`. |
 | `--expires-in <DURATION>` | Drop the send if it has not finished in time: `90s`, `15m`, `2h`, `1d`, `1h30m`, or plain seconds such as `600`. 10 s to 7 days, counted from when the helper receives the send. Any kind; see [Expiry](#expiry). |
 | `--expires-at <DATETIME>` | The same deadline as a date-time, 10 s to 7 days ahead: `2026-09-27T18:00`, `"2026-09-27 18:00"`, `18:00`, or with `Z` or `+05:30`. Not with `--expires-in`. |
@@ -343,7 +345,7 @@ With `--json` it prints:
  "queue_position":0|1|2|3|4|5|null,"waiting":2|null,"expires_at":"2026-09-27T12:45:00.000Z"|null,
  "schedule_id":"sch_0192…"|null,"due_at":"2026-09-27T12:30:00.000Z"|null,"tz":"Asia/Kolkata"|null,
  "replaced_send_id":"snd_0192…"|null,
- "speech":{"status":"pending"|"cached"|"skipped"|"unsupported_language","model":"aura-2-thalia-en","chars":42}|null,
+ "speech":{"status":"pending"|"cached"|"skipped"|"unsupported_language","model":"Kore","chars":42}|null,
  "warnings":[{"code":"carbon_away","message":"…"}]}
 ```
 
@@ -376,7 +378,7 @@ scheduled snd_0192… for 2026-09-27 18:00 IST (Asia/Kolkata) (in 5h 48m); sched
 | `carbon_paused` | The Carbon paused all peeks in Peek.app. The send waits in your queue and is shown when they resume. |
 | `ting_not_enrolled` | This Silicon is not a Ting recipient for peek, so answers cannot be delivered; they wait on the Mac. Run `peek ting enroll`. |
 | `isi_ignored` | `$ISI` was invalid and was dropped from this send (no `metadata.isi` in its events). |
-| `speak_language_unsupported` | The speech language has no voice (`details.language`); the text shows as a pill instead. |
+| `speak_language_unsupported` | Compatibility warning from older helpers using the former language list; update Peek.app. Current Gemini speech uses Google language detection. |
 | `timezone_fallback_utc` | The Mac's time zone could not be read, so an `--at` or `--expires-at` without an offset was read as UTC. Add an offset or `--tz`. |
 
 With `--wait`, the command prints the final answer instead. Whatever it prints replaces the Ting event for that ask, so each outcome reaches you through exactly one channel:
@@ -464,7 +466,7 @@ peek send --ask @standup.json --at "2026-09-28 09:00" --tz Europe/Berlin
 peek send --speak "Time to leave for the airport." --at 17:30 --replace
 ```
 
-- **Checked now, sent later.** `peek send` validates everything at once: the content, your position, any configured drawing, and the voice (so `speak_language_unsupported` comes back now). Image bytes are copied when you schedule, so your files may change or disappear afterwards. The result has `status:"scheduled"`, `schedule_id`, `due_at`, and the ids the send keeps when it fires (`send_id`, and `ask_id` for an ask).
+- **Checked now, sent later.** `peek send` validates everything at once: the content, your position, any configured drawing, and the voice and delivery instructions. Image bytes are copied when you schedule, so your files may change or disappear afterwards. The result has `status:"scheduled"`, `schedule_id`, `due_at`, and the ids the send keeps when it fires (`send_id`, and `ask_id` for an ask).
 - **Limits.** `--in` is 1 s to 365 days; `--at` must be in the future and at most 365 days ahead. A Silicon can have 500 scheduled sends; one more fails with `schedule_full` (exit 4).
 - **Expiry.** A scheduled send takes `--expires-at` only, between 10 s and 7 days after its due time. `--expires-in` is refused, because its clock would start now.
 - **No `--wait`.** Nobody waits for a scheduled ask; its answer arrives as `peek.ask.answered`. Until it fires, a scheduled ask is listed by `peek schedule list`, not by `peek ask list`.
@@ -668,20 +670,14 @@ peek status --json
 
 ## peek org byo deepgram
 
-Org admins can make peek use the org's own Deepgram key for every member's speech and transcription. The key is stored sealed on the backend and never returned.
+These commands manage previously saved Deepgram keys for compatibility. **Current speech uses Google TTS and OpenAI transcription; these keys and endpoints do not affect either provider.** Operators configure their server-side Google and OpenAI keys instead.
 
 ```sh
-peek --org tos org byo deepgram set --key-file - --base-url https://api.eu.deepgram.com < key.txt
-peek --org tos org byo deepgram show --json      # {"configured":true,"org_id":"tos","updated_at":"…Z","base_url":"https://api.eu.deepgram.com"}
-peek --org tos org byo deepgram delete           # {"configured":false,"org_id":"tos","updated_at":null,"base_url":null}
+peek --org tos org byo deepgram show --json
+peek --org tos org byo deepgram delete
 ```
 
-- `--base-url` must be an `https://` origin (host and optional port; no credentials, path or query; a trailing `/` is dropped) on a Deepgram host the backend allows. The backend operator sets the allowed hosts with `PEEK_BYO_DEEPGRAM_HOSTS` (comma-separated `host`, `*.domain` or `*`); the default is `*.deepgram.com`, so `https://api.eu.deepgram.com` works everywhere. `http://`, IP addresses and `localhost` are always refused, whatever the allowlist says. The CLI refuses a non-https URL, an IP address, `localhost`, credentials or a query before calling the backend (`invalid_input`); the backend refuses a host outside its allowlist with `invalid_input` and `details.reason: "base_url_not_allowed"`. Leave `--base-url` out to use `https://api.deepgram.com`.
-- The allowlist is checked again every time the key is used. If the operator narrows it later, a stored base URL outside it makes speech fail with `speech_unavailable` and `reason: "org_base_url_not_allowed"`. peek never quietly swaps in its own key; an admin sets the key again with an allowed `--base-url`.
-- The key must have Deepgram's Member role or higher; it is validated before it is saved.
-- Once set there is no silent fallback to peek's key: a key that stops working makes speech fail with `speech_unavailable` and a `reason` (`org_key_invalid`, `org_out_of_credits`, `org_model_forbidden`, `org_base_url_not_allowed`).
-- Non-admins get `not_org_admin` (exit 4).
-- These commands only call the backend, so they work on Linux and Windows too.
+Stored keys remain encrypted and are never returned. `set --key-file <PATH|-> [--base-url URL]` remains available for compatibility, validates the Deepgram key and its allowed HTTPS origin, and does not activate Deepgram speech. There is no reason to set a new Deepgram key for current Peek. All commands require an org owner/admin for writes; other members get `not_org_admin` (exit 4). They only call the backend, so inspection and deletion work on Linux and Windows too.
 
 ## peek app
 

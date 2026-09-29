@@ -13,7 +13,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{DRAWING, Harness, Home, Validate, eventually, pcm, query_one};
+use common::{DRAWING, Harness, Home, Validate, eventually, pcm, query_one, sse_audio};
 use serde_json::{Value, json};
 use silicon_peek_client::{
     ErrorCode,
@@ -45,6 +45,7 @@ fn send_op() -> SendOp {
         show: None,
         ask: None,
         voice: None,
+        voice_instructions: None,
         lang: None,
         notify: vec![],
         duration_ms: None,
@@ -78,23 +79,18 @@ async fn ready_home(h: &Harness, actor: &str, side: u64) -> (Home, common::FakeU
 #[tokio::test]
 async fn send_shows_the_bubble_and_streams_tts_to_the_ui() {
     let h = Harness::start().await;
-    let audio = pcm(150_001);
+    let audio = pcm(150_000);
     Mock::given(method("POST"))
-        .and(path("/v1/speak"))
-        .and(query_param("model", "aura-2-thalia-en"))
-        .and(query_param("encoding", "linear16"))
-        .and(query_param("container", "none"))
-        .and(query_param("sample_rate", "24000"))
-        .and(query_param("mip_opt_out", "true"))
-        .and(header("authorization", "Bearer jwt-test"))
+        .and(path("/api/v1/speech/speak"))
+        .and(header("authorization", "Bearer oat_sicleanup"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "audio/l16;rate=24000")
+                .insert_header("content-type", "text/event-stream")
                 .insert_header("dg-request-id", "dg-1")
-                .set_body_bytes(audio.clone()),
+                .set_body_raw(sse_audio(&audio), "text/event-stream"),
         )
         .expect(1)
-        .mount(&h.deepgram)
+        .mount(&h.server)
         .await;
     let (home, ui) = ready_home(&h, "si:cleanup", 3).await;
     // Sends without a side or drawing fail with the exact spec errors.
@@ -118,7 +114,7 @@ async fn send_shows_the_bubble_and_streams_tts_to_the_ui() {
     assert_eq!(r.slot.get(), 3);
     let speech = r.speech.unwrap();
     assert_eq!(speech.status, SpeechStatus::Pending);
-    assert_eq!(speech.model.as_deref(), Some("aura-2-thalia-en"));
+    assert_eq!(speech.model.as_deref(), Some("Kore"));
     assert_eq!(speech.chars, u32::try_from(text.chars().count()).unwrap());
 
     let show = ui.expect("peek.show").await;
@@ -185,7 +181,7 @@ async fn send_shows_the_bubble_and_streams_tts_to_the_ui() {
     .await
     .unwrap();
 
-    // The same text again is served from the TTS cache: no second Deepgram call.
+    // The same text again is served from the TTS cache: no second Gemini call.
     let mut op = send_op();
     op.speak = Some(text.into());
     let (r2, _) = h.call(&home, &op, vec![]).await.unwrap();
@@ -255,30 +251,24 @@ async fn send_shows_the_bubble_and_streams_tts_to_the_ui() {
 }
 
 #[tokio::test]
-async fn unsupported_languages_and_tts_failures_fall_back_to_the_pill() {
+async fn multilingual_speech_and_tts_failures_fall_back_to_the_pill() {
     let h = Harness::start().await;
     Mock::given(method("POST"))
-        .and(path("/v1/speak"))
-        .respond_with(ResponseTemplate::new(402).set_body_json(json!({"err_code":"ASR_PAYMENT_REQUIRED","err_msg":"Project does not have enough credits"})))
-        .expect(1)
-        .mount(&h.deepgram)
+        .and(path("/api/v1/speech/speak"))
+        .respond_with(ResponseTemplate::new(402).set_body_json(json!({"error":{"code":"speech_unavailable","message":"Speech quota exhausted","retryable":false}})))
+        .expect(2)
+        .mount(&h.server)
         .await;
     let (home, ui) = ready_home(&h, "si:cleanup", 1).await;
     let mut op = send_op();
     op.speak = Some("बिल्ड पूरा हो गया है और सभी परीक्षण सफल रहे हैं, अब हम आगे बढ़ सकते हैं।".into());
     let (r, _) = h.call(&home, &op, vec![]).await.unwrap();
-    assert_eq!(
-        r.speech.as_ref().unwrap().status,
-        SpeechStatus::UnsupportedLanguage
-    );
-    assert_eq!(r.warnings[0].code, "speak_language_unsupported");
+    assert_eq!(r.speech.as_ref().unwrap().status, SpeechStatus::Pending);
+    assert!(r.warnings.is_empty());
     let show = ui.expect("peek.show").await;
-    assert_eq!(show.fields["speak"]["status"], "unsupported_language");
-    assert!(
-        ui.try_expect("tts.begin", Duration::from_millis(300))
-            .await
-            .is_none()
-    );
+    assert_eq!(show.fields["speak"]["status"], "pending");
+    let failed = ui.expect("tts.error").await;
+    assert_eq!(failed.fields["send_id"], r.send_id.as_str());
     ui.request(
         &Dismissed {
             send_id: r.send_id.clone(),
@@ -289,7 +279,7 @@ async fn unsupported_languages_and_tts_failures_fall_back_to_the_pill() {
     .await
     .unwrap();
 
-    // A non-retryable Deepgram failure before any audio → tts.error, one call.
+    // A non-retryable Gemini failure before any audio → tts.error, one call.
     let mut op = send_op();
     op.speak = Some("The build finished and every test passed.".into());
     let (r, _) = h.call(&home, &op, vec![]).await.unwrap();
@@ -350,7 +340,7 @@ async fn unsupported_languages_and_tts_failures_fall_back_to_the_pill() {
 #[tokio::test]
 async fn a_stalled_token_mint_fails_within_the_first_audio_budget() {
     // peek-server accepts the mint but never answers in time: the §1.9.3
-    // budget (3 s in tests, 5 s in production) covers minting too, so the
+    // budget (3 s in tests, 20 s in production) covers minting too, so the
     // UI gets tts.error (and shows the text pill) promptly, not after the
     // 30 s request timeout.
     let h = Harness::start().await;
@@ -386,21 +376,23 @@ async fn a_stalled_token_mint_fails_within_the_first_audio_budget() {
 async fn tts_retries_before_audio_but_never_after() {
     let h = Harness::start().await;
     Mock::given(method("POST"))
-        .and(path("/v1/speak"))
-        .respond_with(ResponseTemplate::new(503).set_body_json(json!({"err_code":"BUSY"})))
+        .and(path("/api/v1/speech/speak"))
+        .respond_with(ResponseTemplate::new(503).set_body_json(
+            json!({"error":{"code":"speech_unavailable","message":"Busy","retryable":true}}),
+        ))
         .up_to_n_times(1)
         .expect(1)
-        .mount(&h.deepgram)
+        .mount(&h.server)
         .await;
     Mock::given(method("POST"))
-        .and(path("/v1/speak"))
+        .and(path("/api/v1/speech/speak"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "audio/l16;rate=24000")
-                .set_body_bytes(pcm(4000)),
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(sse_audio(&pcm(4000)), "text/event-stream"),
         )
         .expect(1)
-        .mount(&h.deepgram)
+        .mount(&h.server)
         .await;
     let (home, ui) = ready_home(&h, "si:cleanup", 1).await;
     let mut op = send_op();
@@ -921,19 +913,17 @@ async fn voice_answers_are_transcribed_once_and_matched() {
     let h = Harness::start().await;
     h.accept_deliveries().await;
     let listen = Mock::given(method("POST"))
-        .and(path("/v1/listen"))
-        .and(query_param("model", "nova-3"))
-        .and(query_param("smart_format", "true"))
+        .and(path("/api/v1/speech/listen"))
+        .and(query_param("model", "gpt-transcribe"))
         .and(query_param("keyterm", "Keep it"))
         .and(query_param("language", "en"))
         .and(header("content-type", "audio/wav"))
-        .and(header("authorization", "Bearer jwt-test"))
+        .and(header("authorization", "Bearer oat_sicleanup"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "metadata": {"request_id": "dg-stt-1"},
-            "results": {"channels": [{"alternatives": [{"transcript": " The second one. ", "confidence": 0.98}]}]}
+            "request_id": "stt-1", "detected_language": "en", "text": " The second one. "
         })))
         .expect(1)
-        .mount_as_scoped(&h.deepgram)
+        .mount_as_scoped(&h.server)
         .await;
     let (home, ui) = ready_home(&h, "si:cleanup", 7).await;
     let mut op = send_op();
@@ -966,11 +956,11 @@ async fn voice_answers_are_transcribed_once_and_matched() {
     assert_eq!(body["data"]["via"], "voice");
     assert_eq!(body["data"]["transcript"], "The second one.");
     assert_eq!(body["data"]["answer"]["option_id"], "delete");
-    let received = h.deepgram.received_requests().await.unwrap();
+    let received = h.server.received_requests().await.unwrap();
     assert_eq!(
         received
             .iter()
-            .find(|r| r.url.path() == "/v1/listen")
+            .find(|r| r.url.path() == "/api/v1/speech/listen")
             .unwrap()
             .body,
         wav
@@ -986,11 +976,11 @@ async fn voice_answers_are_transcribed_once_and_matched() {
 
     // Unmatched: the ask stays open and nothing is sent.
     Mock::given(method("POST"))
-        .and(path("/v1/listen"))
+        .and(path("/api/v1/speech/listen"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "results": {"channels": [{"alternatives": [{"transcript": "what about pizza"}]}]}
+            "text": "what about pizza"
         })))
-        .mount(&h.deepgram)
+        .mount(&h.server)
         .await;
     let (r, _) = h.call(&home, &op, vec![]).await.unwrap();
     let ask2 = r.ask_id.clone().unwrap();
@@ -1019,13 +1009,29 @@ async fn voice_answers_are_transcribed_once_and_matched() {
     assert_eq!(info.state, AskState::Pending);
 
     // Silence: nothing is uploaded, the outcome is `empty`.
-    let before = h.deepgram.received_requests().await.unwrap().len();
+    let before = h
+        .server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/api/v1/speech/listen")
+        .count();
     ui.request(&submit, vec![wav_bytes(&vec![0; 16_000], 16_000)])
         .await
         .unwrap();
     let res = ui.expect("stt.result").await;
     assert_eq!(res.fields["outcome"], "empty");
-    assert_eq!(h.deepgram.received_requests().await.unwrap().len(), before);
+    assert_eq!(
+        h.server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == "/api/v1/speech/listen")
+            .count(),
+        before
+    );
 
     // A broken WAV is refused up front.
     let e = ui
@@ -1080,13 +1086,13 @@ async fn voice_on_a_slider_uses_numerals_and_a_message_without_an_ask() {
     let h = Harness::start().await;
     h.accept_deliveries().await;
     Mock::given(method("POST"))
-        .and(path("/v1/listen"))
+        .and(path("/api/v1/speech/listen"))
         .and(query_param("numerals", "true"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "results": {"channels": [{"alternatives": [{"transcript": "Set it to 42%."}]}]}
+            "text": "Set it to 42%."
         })))
         .expect(1)
-        .mount(&h.deepgram)
+        .mount(&h.server)
         .await;
     let (home, ui) = ready_home(&h, "si:dj-bot", 8).await;
     let mut op = send_op();

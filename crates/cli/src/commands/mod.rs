@@ -230,7 +230,7 @@ pub fn require_features(
     Err(Error::new(
         ErrorCode::AppUpdatePending,
         format!(
-            "Peek.app on this Mac runs peekd {}, which does not support {} yet (it needs Peek 0.1.2 or newer); Peek.app updates itself when nothing is on screen",
+            "Peek.app on this Mac runs peekd {}, which does not support {} yet; Peek.app updates itself when nothing is on screen",
             svc.hello.peekd_version,
             whats.join(", ")
         ),

@@ -1,5 +1,5 @@
 //! Voice answers and voice messages (BLUEPRINT §1.9.5, §1.9.7): the WAV is
-//! transcribed once, after recording stopped, with Nova-3 pre-recorded.
+//! transcribed once after recording stops, using `OpenAI` through Peek.
 //! There is no live transcript anywhere (D9). The recording stays in
 //! `recordings/` until its answer is delivered or its row ends.
 
@@ -11,7 +11,7 @@ use std::{
 use serde_json::Value;
 use silicon_peek_client::{
     Error, ErrorCode, Result,
-    api::SpeechPurpose,
+    api::{SpeechPurpose, SpeechTranscript},
     identity::SlotIndex,
     ids::{AskId, MessageId},
     ipc::{
@@ -27,10 +27,10 @@ use silicon_peek_client::{
 
 use crate::{
     bubbles::{Resolution, load_ask, load_send},
-    deepgram::{DgError, DgKind, ListenParams, RetryBudget, SttLanguage, Transcript, keyterms},
     matching::{MatchOutcome, match_transcript},
     net::HomeRef,
     speech::{jitter, millis},
+    speech_request::{ListenParams, RetryBudget, RetryKind, SpeechError, SttLanguage, keyterms},
     state::{ActorKey, Shared, SharedRef},
     telemetry::Record,
 };
@@ -403,7 +403,7 @@ impl Shared {
             rec = rec.with("stt_language", l.clone());
         }
         if let Some(r) = &transcript.request_id {
-            rec = rec.with("dg_request_id", r.clone());
+            rec = rec.with("stt_request_id", r.clone());
         }
         let text = transcript.text.trim().to_owned();
         let matched = match &job.target {
@@ -499,39 +499,41 @@ impl Shared {
         }
     }
 
-    /// Nova-3 with the §1.9.5 retries: 2 retries (250 ms → 1 s), one JWT
-    /// re-mint on 401, one retry on 422, within the STT budget.
-    async fn transcribe(&self, job: &VoiceJob, params: &ListenParams) -> Result<Transcript> {
+    /// Completed-audio transcription, with retries and one Peek session
+    /// refresh on 401, all within the STT budget.
+    async fn transcribe(&self, job: &VoiceJob, params: &ListenParams) -> Result<SpeechTranscript> {
         let mut budget = RetryBudget::new(
             Instant::now() + self.cfg.timings.stt_budget,
             &self.cfg.timings.stt_retry,
         );
-        let mut force = false;
         let mut fresh_session = false;
+        let expired = || {
+            Error::new(
+                ErrorCode::SpeechUnavailable,
+                format!(
+                    "no transcription within the {} s budget",
+                    self.cfg.timings.stt_budget.as_secs()
+                ),
+            )
+            .with_retryable(true)
+        };
         loop {
             // Minting spends the same STT budget (a stalled backend fails
             // into "Couldn't transcribe" instead of after 30 s).
             let minted = tokio::time::timeout(
                 budget.remaining(),
-                self.speech_token(&job.home, &job.key, SpeechPurpose::Stt, force),
+                self.speech_token(&job.home, &job.key, SpeechPurpose::Stt, false),
             )
             .await;
             let Ok(minted) = minted else {
-                return Err(Error::new(
-                    ErrorCode::SpeechUnavailable,
-                    format!(
-                        "no transcription within the {} s budget",
-                        self.cfg.timings.stt_budget.as_secs()
-                    ),
-                )
-                .with_retryable(true));
+                return Err(expired());
             };
             let token = match minted {
                 Ok(t) => t,
                 Err(e) => match budget.next(if e.retryable() {
-                    DgKind::Retry
+                    RetryKind::Retry
                 } else {
-                    DgKind::Fatal
+                    RetryKind::Fatal
                 }) {
                     Some(d) => {
                         tokio::time::sleep(jitter(d)).await;
@@ -540,39 +542,51 @@ impl Shared {
                     None => return Err(e),
                 },
             };
-            let remaining = budget.remaining().max(Duration::from_secs(1));
-            match self
-                .listen_via(
+            let remaining = budget.remaining();
+            if remaining.is_zero() {
+                return Err(expired());
+            }
+            let attempted = tokio::time::timeout(
+                remaining,
+                self.listen_via(
                     &job.home,
                     &job.key,
                     &token,
                     params,
                     job.wav.clone(),
                     remaining,
-                    fresh_session,
-                )
-                .await
-            {
+                    std::mem::take(&mut fresh_session),
+                ),
+            )
+            .await;
+            let Ok(attempted) = attempted else {
+                return Err(expired());
+            };
+            match attempted {
                 Ok(t) => return Ok(t),
-                Err(DgError {
-                    kind: DgKind::Reauth,
+                Err(SpeechError {
+                    kind: RetryKind::Reauth,
                     error,
                     ..
                 }) => {
                     if !budget.reauth() {
                         return Err(error);
                     }
-                    match token.mode {
-                        silicon_peek_client::api::SpeechMode::Direct => force = true,
-                        silicon_peek_client::api::SpeechMode::Proxy => fresh_session = true,
-                    }
+                    fresh_session = true;
                 }
-                Err(DgError {
+                Err(SpeechError {
                     kind,
                     error,
                     retry_after,
                 }) => match budget.next(kind) {
-                    Some(d) => tokio::time::sleep(retry_after.unwrap_or_else(|| jitter(d))).await,
+                    Some(d) => {
+                        tokio::time::sleep(
+                            retry_after
+                                .unwrap_or_else(|| jitter(d))
+                                .min(budget.remaining()),
+                        )
+                        .await;
+                    }
                     None => return Err(error),
                 },
             }

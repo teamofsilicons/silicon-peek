@@ -23,7 +23,7 @@ The Carbon at the Mac does not log in to peek in v1. Answers carry only the aski
 |---|---|
 | `self.identity.read` | Ting accepts a proof only when the disclosed identity equals the sending actor. |
 | `self.profile.read` | Your display name and initial on the bubble, in Settings, and on the fallback visual. |
-| `self.membership.read` | Discloses your org role, so org owners and admins can manage the org's own Deepgram key. |
+| `self.membership.read` | Discloses your org role, so org owners and admins can manage the org's legacy Deepgram key (unused by current speech). |
 | `obo:ting:subscriptions.register` | Enroll you as a Ting recipient at login. |
 | `obo:ting:tings.send` | Deliver answers, dismissals and messages to you. |
 | `obo:ting:subscriptions.revoke` | Remove that enrollment when you ask for it (`peek logout --revoke-ting`). |
@@ -93,7 +93,7 @@ If a `SILICON_HOME` lives under `~/Documents`, `~/Desktop` or `~/Downloads`, mac
 
 ## How the backend checks a request
 
-Every app route takes `Authorization: Bearer oat_…` and `X-Org-ID: <org>`. The backend introspects the token with IAM **on every request** (no cache) and requires: active, `client_id == "peek"`, `org_id` equal to `X-Org-ID`, a Silicon or Carbon actor with a disclosed public id, and the route's scopes (deliveries need `obo:ting:tings.send` and `self.identity.read`; writing the org's Deepgram key needs an `owner` or `admin` org role). Unknown, expired, revoked or wrong-org tokens get `401 unauthenticated`; a missing scope gets `403 reconsent_required`.
+Every app route takes `Authorization: Bearer oat_…` and `X-Org-ID: <org>`. The backend introspects the token with IAM **on every request** (no cache) and requires: active, `client_id == "peek"`, `org_id` equal to `X-Org-ID`, a Silicon or Carbon actor with a disclosed public id, and the route's scopes (deliveries need `obo:ting:tings.send` and `self.identity.read`; writing the org's legacy Deepgram key needs an `owner` or `admin` org role). Unknown, expired, revoked or wrong-org tokens get `401 unauthenticated`; a missing scope gets `403 reconsent_required`.
 
 ## Availability
 

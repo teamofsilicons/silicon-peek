@@ -1,31 +1,29 @@
 # Privacy
 
-peek is a local app. Bubbles, history, recordings and caches stay on the Mac. What leaves the Mac, leaves for one reason each: speech goes to Deepgram to be spoken or transcribed (directly, or relayed by the peek backend), answers go through the peek backend to Ting so the asking Silicon receives them, and a copy of each drawing is kept on the backend so a Silicon's face follows it to a new Mac. This page lists every flow.
+peek is a local app. Bubbles, history, recordings and caches stay on the Mac. What leaves the Mac, leaves for one reason each: speak text and voice instructions go through the Peek backend to Google to be spoken, while completed voice recordings go through the Peek backend to OpenAI to be transcribed, answers go through the peek backend to Ting so the asking Silicon receives them, and a copy of each drawing is kept on the backend so a Silicon's face follows it to a new Mac. This page lists every flow.
 
 ## What leaves the Mac
 
 | Data | Goes to | When | Why |
 |---|---|---|---|
-| The Carbon's **voice** | Deepgram (`api.deepgram.com`, or the org's own Deepgram endpoint), directly or relayed by the peek backend (see below) | only after the Carbon records a voice answer or message (mic button or `\`) and stops | to turn it into text; the transcript becomes the answer |
-| A Silicon's **`--speak` text** | Deepgram, directly or relayed by the peek backend | when the bubble speaks (unless it is in the local speech cache) | to synthesize the voice |
+| The Carbon's **voice** | OpenAI (`api.openai.com`), through the Peek backend | only after the Carbon records a voice answer or message (mic button or `\`) and stops | to turn it into text; the transcript becomes the answer |
+| A Silicon's **`--speak` text, voice ID and voice instructions** | Google Gemini (`generativelanguage.googleapis.com`), relayed by the Peek backend | when the bubble speaks (unless it is in the local speech cache) | to synthesize the voice |
 | **Answers, dismissals and messages** (question, answer or message text, option labels, transcript for voice answers, timestamps, position) | the peek backend, then Ting, then the asking Silicon | when the Carbon answers, dismisses or writes | this is the point of an ask |
 | The **drawing** (the Silicon's JavaScript file) | the peek backend | on `peek register drawing` | restore the Silicon's visual on another Mac |
 | **Telemetry** without content | the peek backend, then Space Station | continuously, unless opted out | diagnostics; see [Telemetry](telemetry.md) |
 
 What never leaves the Mac: show elements (text, images, captions), option images, your send history, the recordings once transcribed, the wallpaper or screen samples, and the Carbon's typing before Return.
 
-## Voice and Deepgram
+## Speech providers
 
 - **Recording happens only while the Carbon answers.** The microphone is opened when the Carbon presses the mic button or `\`, and closed when they stop or press Esc. macOS shows its microphone indicator while it is open.
 - **Nothing is uploaded until the Carbon stops.** peek does not stream audio while the Carbon talks. A cancelled recording (Esc) or a silent one (never above −50 dBFS) is never uploaded.
-- **Upload once, transcribe once.** The recording (16 kHz mono WAV, at most 120 s) is sent once to Deepgram's pre-recorded transcription (Nova-3). There is no live transcript anywhere, not even inside peek.
-- **Two ways to reach Deepgram.** Before it speaks or transcribes, the helper (peekd) asks the peek backend for a speech token (and reuses the answer until it expires). The answer says which way to go:
-  - **Direct mode.** The backend mints a Deepgram token that lives at most 60 seconds, and peekd calls Deepgram itself. The backend sees that a token was requested, never the audio or the text.
-  - **Relay (proxy) mode.** Used when the Deepgram key cannot mint tokens (Deepgram answers 401 or 403 to the grant). peekd then sends the speak text, or the finished recording, to the peek backend over HTTPS with the Silicon's own session, and the backend forwards it to Deepgram with its key and streams the answer straight back. **The backend never stores or logs the audio, the text or the transcript**; it records only request metadata (the route, status, duration and Deepgram's request id), and it applies per-Silicon and per-org rate limits.
-  - The same rules apply to an org's own key: whichever key serves the request decides the mode.
-- **Model training opt-out.** Every Deepgram request carries Deepgram's model-improvement opt-out (`mip_opt_out=true`), in both modes, so Deepgram keeps the audio and text only as long as needed to process the request. It is not a setting: the backend always adds it, and requests are tagged `peek` plus the environment. Deepgram's own policies govern its processing: https://deepgram.com/privacy.
-- **Your org's own Deepgram key.** An org admin can make every request for that org use the org's Deepgram account, and a regional endpoint such as `api.eu.deepgram.com` for data residency (`peek org byo deepgram set`). peek never falls back to its own key silently.
-- **Local files.** The WAV is kept at `~/Library/Application Support/Peek/recordings/` only until the answer is delivered (or its delivery expires), then deleted. Synthesized speech is cached in `cache/tts/` (at most 200 MB, 30 days) so repeated phrases are not sent again.
+- **Transcribe after recording.** The completed recording (16 kHz mono WAV, at most 120 s) goes to OpenAI's `gpt-transcribe` through Peek's authenticated backend. Transcription failures may retry. There is no live transcript: Peek displays only the final result. Option labels and language preferences may accompany the recording as recognition hints.
+- **Google TTS always streams through Peek.** The backend sends the transcript, voice and delivery instructions to Gemini 3.8 Flash TTS, then forwards audio events as they arrive. The Mac decodes and plays the PCM stream. Google processing is governed by the [Gemini API terms](https://ai.google.dev/gemini-api/terms), including the terms applicable to the configured project and service tier.
+- **Provider keys stay on the server.** Clients receive no Google or OpenAI API key. Both providers are reached through Peek's backend, which never stores or logs the audio, speech text, instructions or transcript. Only request metadata is recorded.
+- **OpenAI data handling.** OpenAI says API content is not used to train models unless the customer opts in. Its endpoint table lists no abuse-monitoring or application-state retention for `/v1/audio/transcriptions`. See [OpenAI's data controls](https://developers.openai.com/api/docs/guides/your-data), checked September 29, 2026, for current conditions and project controls. This is separate from Google's policy and is not a Peek setting.
+- **Legacy Deepgram keys.** Previously saved org keys remain encrypted for compatibility and can be inspected or deleted with `peek org byo deepgram`. They do not control Google TTS or OpenAI transcription; speech is never sent to Deepgram.
+- **Local files.** The WAV is kept at `~/Library/Application Support/Peek/recordings/` only until the answer is delivered (or its delivery expires), then deleted. Synthesized speech is cached in `cache/tts/` (at most 200 MB, 30 days) so repeated phrases with the same voice, instructions and language are not sent again.
 
 The transcript is sent to the Silicon directly; the Carbon does not review it first. Answer by keyboard or click if you would rather not use your voice.
 
@@ -54,11 +52,11 @@ The backend (`https://backend.peek.teamofsilicons.com`) keeps:
 | `drawings` | each Silicon's current drawing (JavaScript, at most 256 KiB) |
 | `ting_enrollments` | which Silicons are enrolled as Ting recipients, and their subscription id |
 | `deliveries` | delivery receipts: event id, type, Ting key, Ting id, status, timestamps. **Not** the event data. |
-| `byo_keys` | an org's own Deepgram key, encrypted (AES-256-GCM), never returned |
+| `byo_keys` | a legacy org Deepgram key, encrypted (AES-256-GCM), never returned or used for speech |
 | `reports` | bug reports sent with `peek report` |
 | `idempotency`, `webhook_events`, testing-environment bindings | bookkeeping so retries are safe |
 
-It stores **no IAM tokens** (each Silicon keeps its own), **no audio**, **no speak text**, **no transcripts** and **no show content**. Answer and message text passes through it on the way to Ting and is not kept; in relay mode, audio and speak text pass through it on the way to Deepgram and are not kept or logged either. Test environments live in a separate database. Backups are encrypted and expire after 7 days.
+It stores **no IAM tokens** (each Silicon keeps its own), **no audio**, **no speak text or voice instructions**, **no transcripts** and **no show content**. Answer and message text passes through it on the way to Ting and is not kept; TTS content and audio pass through it on the way to or from Google, and completed recordings pass through it to OpenAI, without being kept or logged. Test environments live in a separate database. Backups are encrypted and expire after 7 days.
 
 Deletion: `peek unregister` deletes the Silicon's drawing on the Mac and on the backend. `peek logout` revokes its session and its Ting enrollment. When IAM reports that a Silicon was removed from an org, the backend deletes its drawing and enrollment.
 

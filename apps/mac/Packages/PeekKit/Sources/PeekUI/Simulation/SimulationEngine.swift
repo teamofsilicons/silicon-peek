@@ -34,7 +34,7 @@ public struct SimulationLogEntry: Identifiable, Equatable, Sendable {
 ///    which the presenter hands to its speech player, driving `speech.level/progress/done`.
 ///
 /// Everything the bubble sends back (answers, dismissals, `speech.done`, voice recordings, …)
-/// lands in ``log``. Nothing reaches peekd, IAM, Ting or Deepgram.
+/// lands in ``log``. Nothing reaches peekd, IAM, Ting, Google or OpenAI.
 @MainActor
 @Observable
 public final class SimulationEngine {
@@ -507,12 +507,12 @@ enum SimulationRequestDescriber {
             let bytes = record.blobSizes.reduce(0, +)
             return Description(
                 text: "voice.submit: \(SimulationEngine.seconds(duration)) WAV (\(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))) "
-                    + "discarded. Simulation never sends audio to Deepgram; it answered with stt.result \"failed\".")
+                    + "discarded. Simulation never sends audio to OpenAI; it answered with stt.result \"failed\".")
         case MessageRequest.op:
             let text = f["text"]?.stringValue ?? ""
             return Description(text: "message \"\(text)\" → a Silicon would receive peek.message.received (Simulation sends none)")
         case FocusRequest.op:
-            return Description(text: "focus: peekd would pre-warm the Silicon's session and the Deepgram token")
+            return Description(text: "focus: peekd would pre-warm the Silicon's Peek session")
         case DrawingErrorRequest.op:
             let reason = f["reason"]?.stringValue ?? "?"
             let message = f["message"]?.stringValue ?? ""

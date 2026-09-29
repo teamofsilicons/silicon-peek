@@ -23,7 +23,7 @@ use crate::{
         ByoDeepgramRequest, ByoStatus, DeliveryResponse, Drawing, DrawingStored, Health,
         IamDiscovery, LoginRequest, LogoutRequest, Me, Ready, RefreshRequest, ReportRequest,
         ReportResponse, SessionResponse, SpeechPurpose, SpeechSpeakRequest, SpeechToken,
-        SpeechTokenRequest, TelemetryBatch, TingRecipient, headers, routes,
+        SpeechTokenRequest, SpeechTranscript, TelemetryBatch, TingRecipient, headers, routes,
     },
     error::{Error, ErrorCode, ErrorObject, Origin, Result},
     identity::{ApiUrl, OrgId, TestingSecret},
@@ -408,9 +408,8 @@ impl Client {
         self.json(routes::DELIVERIES, r).await
     }
 
-    /// `POST /api/v1/speech/token`: a Deepgram JWT (≤ 60 s) in
-    /// [`SpeechMode::Direct`](crate::api::SpeechMode), or the proxy verdict
-    /// when peek-server's key cannot mint JWTs.
+    /// `POST /api/v1/speech/token`: a credential-free proxy verdict for
+    /// Gemini TTS or `OpenAI` transcription.
     ///
     /// # Errors
     /// `speech_unavailable` (with `details.reason`), server or transport errors.
@@ -424,10 +423,9 @@ impl Client {
         self.json(routes::SPEECH_TOKEN, r).await
     }
 
-    /// `POST /api/v1/speech/speak` (speech proxy): peek-server calls Deepgram
-    /// Aura-2 and streams its linear16 audio back unbuffered. Returns the
-    /// response once the status is 200 (with `dg-request-id` /
-    /// `dg-char-count` passed through); the caller drains the body. `timeout`
+    /// `POST /api/v1/speech/speak` (speech proxy): peek-server calls Gemini
+    /// TTS and streams 24 kHz linear16 audio back as it arrives. Returns the
+    /// response once the status is 200; the caller drains the body. `timeout`
     /// bounds the whole exchange, body included.
     ///
     /// # Errors
@@ -460,9 +458,8 @@ impl Client {
     }
 
     /// `POST /api/v1/speech/listen` (speech proxy): uploads recorded audio
-    /// (≤ 4 MiB) with the allow-listed Deepgram query parameters
-    /// ([`LISTEN_PARAMS`](crate::api::LISTEN_PARAMS)) and returns Deepgram's
-    /// JSON result bytes and its `dg-request-id`.
+    /// (≤ 4 MiB) with transcription hints ([`LISTEN_PARAMS`](crate::api::LISTEN_PARAMS))
+    /// and returns a provider-neutral transcript. `OpenAI` credentials stay on the server.
     ///
     /// # Errors
     /// `speech_unavailable`, `invalid_input` for a refused parameter,
@@ -474,7 +471,7 @@ impl Client {
         content_type: &str,
         key: &IdempotencyKey,
         timeout: Duration,
-    ) -> Result<(Vec<u8>, Option<String>)> {
+    ) -> Result<SpeechTranscript> {
         let r = self
             .request(Method::POST, routes::SPEECH_LISTEN, true)
             .query(query)
@@ -483,13 +480,7 @@ impl Client {
             .timeout(timeout)
             .body(audio);
         let r = self.bearer(r)?;
-        let (status, response_headers, bytes) = self.send(routes::SPEECH_LISTEN, r).await?;
-        self.check(routes::SPEECH_LISTEN, status, &response_headers, &bytes)?;
-        let request_id = response_headers
-            .get(headers::DG_REQUEST_ID)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
-        Ok((bytes, request_id))
+        self.json(routes::SPEECH_LISTEN, r).await
     }
 
     /// `PUT /api/v1/drawings/current` with the raw script.
@@ -781,9 +772,8 @@ fn retry_after(headers: &HeaderMap) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
-/// Decodes a non-2xx response into an [`Error`] (exposed for peekd, which
-/// talks to Deepgram with its own requests but reuses this mapping for
-/// peek-server responses it proxies).
+/// Decodes a non-2xx response into an [`Error`] (also used by peekd
+/// for responses proxied through peek-server).
 #[must_use]
 pub fn decode_error(
     api: &ApiUrl,

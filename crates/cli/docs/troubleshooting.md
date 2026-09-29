@@ -55,7 +55,7 @@ A check that has nothing to report (no pending login, no pending revocation) is 
 | `slt_is_public_id` | 2 | A public id such as `si:x` was passed as the SLT in production. | Use a real SLT; public ids work only in testing environments. |
 | `reconsent_required` | 3 | The session lacks a scope peek needs. | Log in again with `--approve-scopes`. |
 | `recipient_not_registered` | 4 | You are not a Ting recipient for peek, so answers cannot be delivered. | `peek ting enroll`; waiting answers are retried right away. |
-| `not_org_admin` | 4 | Managing the org's Deepgram key needs owner or admin. | Ask an org admin. |
+| `not_org_admin` | 4 | Managing the org's legacy Deepgram key needs owner or admin. | Ask an org admin. |
 | `ask_not_found` | 4 | No such ask for this Silicon on this Mac. | `peek ask list`. |
 | `platform_unsupported` | 4 | This command needs a Mac. | Run on macOS 26+, or use `dm` ([Platforms](platforms.md)). |
 | `cli_outdated` | 4 | This CLI is older than the helper's protocol. | `honeycomb update 'peek'`. |
@@ -66,10 +66,10 @@ A check that has nothing to report (no pending login, no pending revocation) is 
 | `app_update_pending` | 5 | A newer app is being installed for this CLI, or Peek.app on the Mac is older than 0.1.2 and does not support an option you used yet (`--in`, `--at`, `--replace`, `--expires-at`, `--expires-in` on a speak or show, `--notify shown`, `peek queue`, `peek cancel`, `peek schedule`; `details.missing_features` names them). | Retry in a few seconds; the swap waits until the screen is idle. `peek app update` applies the bundled build now. Sends without the new options keep working meanwhile. |
 | `backend_unavailable`, `iam_unavailable` | 5 | The backend or IAM could not be reached. | Retry with backoff. `login status` prints nothing on stdout in this case, by design. |
 | `iam_misconfigured` | 5 | The backend cannot authenticate to IAM. | An operator problem; retry later or `peek report`. |
-| `speech_unavailable` | 5 | Speech could not be set up; `details.reason` says why: `not_configured`, `org_key_invalid`, `org_out_of_credits`, `org_model_forbidden`, `org_base_url_not_allowed`, `peek_key_invalid`, `peek_out_of_credits`, `rate_limited` or `deepgram_unavailable`. The bubble shows the text as a pill instead. | For `org_*` reasons, the org admin fixes the key (`peek org byo deepgram show`; for `org_base_url_not_allowed`, set it again with a `--base-url` the backend allows). `peek_*` reasons are an operator problem: `peek report`. The others retry on their own. |
+| `speech_unavailable` | 5 | `details.provider` identifies the provider. Google TTS reasons include `not_configured`, `gemini_rejected`, `gemini_unavailable`; OpenAI transcription reasons include `not_configured`, `openai_rejected`, `openai_unavailable`. `gemini_status` or `openai_status` gives the upstream HTTP status when available. | For authorization or model access failures, the operator checks the corresponding API key and project. Bad voice, instructions, audio or request parameters can instead give `invalid_input`. Retry transient failures with backoff; legacy org Deepgram settings do not affect these providers. |
 | `ting_unavailable` | 5 | Ting is unreachable. | Nothing: deliveries retry automatically. |
 | `ting_type_missing` | 5 | A peek event type is not registered in this context (an operator step). | Nothing: the helper retries every 15 minutes; tell the operator. |
-| `rate_limited` | 5 | Too many requests (for example speech requests for one Silicon or one org). | Wait for `Retry-After`, then retry. |
+| `rate_limited` | 5 | Too many requests, or all 25 simultaneous Google TTS streams are busy. | Wait for `Retry-After`, then retry. |
 | `unauthenticated` | 3 | The backend did not accept the session's access token. | peek refreshes once by itself; if it persists, log in again. |
 | `authority_required` | 3 | A delivery needs a fresh login, re-consent or Ting enrollment. | `peek login status --json` says which. |
 | `environment_not_prepared` | 4 | The testing environment was not imported for peek. | See [Testing environments](testing.md#provision-an-environment-operators). |
@@ -84,7 +84,7 @@ A check that has nothing to report (no pending login, no pending revocation) is 
 | `peek send` succeeds but no bubble appears | Peek.app is not running, all peeks are paused, or a test bubble waits behind a production one at the same position | Menu bar → turn off **Pause all peeks**; Settings → Testing → **Show test peeks** for test bubbles; `peek app status`; `peek doctor`. |
 | The first `peek` command on a Mac is slow | It installs and starts Peek.app | Expected once. |
 | macOS says a background item was added, or peek works only while the app is open | The helper needs approval | System Settings → General → Login Items & Extensions → allow Peek. |
-| No speech, but the text shows as a pill | The language is not one of en, es, de, fr, nl, it, ja (`speak_language_unsupported`), or speech is unavailable (`speech_unavailable`, `speech_failed` in history) | Check the send result's `warnings`; set `--lang` if detection was wrong. |
+| No speech, but the text shows as a pill | Google speech is unavailable (`speech_unavailable`, `speech_failed` in history), or an older helper rejected the language (`speak_language_unsupported`) | Check history warnings and the voice ID; for `speak_language_unsupported`, update Peek.app. |
 | The mic button does nothing, or the recording is silent | Microphone permission was denied | System Settings → Privacy & Security → Microphone → enable Peek. |
 | "Didn't match an option — tap one or type" | The transcript matched no option | Say the label, "the first one", or click. Short, distinct labels match best. |
 | "Couldn't transcribe — type instead" | Transcription failed after retries | Type or click. The helper's `peekd.log` ([Logs](#logs)) has a `transcription failed` line with the error message and code; `peek status` does not report speech. A `speech_unavailable` code is explained under [Error codes](#error-codes). |

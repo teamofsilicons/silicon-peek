@@ -36,6 +36,7 @@ fn ask_op() -> SendOp {
             .unwrap(),
         ),
         voice: None,
+        voice_instructions: None,
         lang: None,
         notify: vec![],
         duration_ms: None,

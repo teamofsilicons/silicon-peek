@@ -3,9 +3,9 @@ members = [".", "crates/client", "crates/cli", "crates/daemon"]
 resolver = "3"
 
 # One version for everything: honeycomb.yaml `version`, Peek.app's
-# CFBundleShortVersionString and the git tag `v0.1.3` must all agree.
+# CFBundleShortVersionString and the git tag `v0.1.4` must all agree.
 [workspace.package]
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"
@@ -16,7 +16,7 @@ authors = ["Team of Silicons"]
 # Pinned per BLUEPRINT §1.4. Members opt into extra features locally, e.g.
 # `tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }`.
 [workspace.dependencies]
-silicon-peek-client = { path = "crates/client", version = "=0.1.3" }
+silicon-peek-client = { path = "crates/client", version = "=0.1.4" }
 silicon-iam-client = "=4.0.0"
 space-station = "=0.1.1"
 
@@ -85,7 +85,7 @@ unwrap_used = "deny"
 
 [package]
 name = "silicon-peek"
-description = "peek-server: the backend for Peek (IAM app secret, Ting delivery, Deepgram token minting, drawings, reports)"
+description = "peek-server: the backend for Peek (IAM app secret, Ting delivery, speech relay, drawings, reports)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -116,7 +116,7 @@ blake3.workspace = true
 bytes.workspace = true
 dotenvy.workspace = true
 hex.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["multipart"] }
 rusqlite.workspace = true
 rustls.workspace = true
 serde.workspace = true

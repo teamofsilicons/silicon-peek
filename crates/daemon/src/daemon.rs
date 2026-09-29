@@ -138,7 +138,7 @@ pub async fn start(cfg: DaemonConfig) -> Result<DaemonHandle> {
     let (shutdown, _) = watch::channel(false);
     let shared = Arc::new(Shared {
         telemetry: Telemetry::new(&cfg.bundle_id),
-        speech: Speech::new(paths.tts_dir())?,
+        speech: Speech::new(paths.tts_dir()),
         net: Net::new()?,
         settings,
         db,

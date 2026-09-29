@@ -73,10 +73,10 @@ peek send --ask '{"question":"Which hours can I run the backup?","type":"range",
 | Keyboard | Press ctrl+cmd+N (your position; the Carbon may have chosen another modifier), then type into the curved field right under the question; Return sends. For choices, the arrow keys, Space and Return also work, and a typed label, number or ordinal is matched on the Mac. Or click the keyboard button. | `keyboard` |
 | Voice | Click the mic button, or press ctrl+cmd+N and then `\`. Stop with a click, `\` or Return. | `voice` |
 
-Voice answers are recorded on the Mac, then transcribed **once**, after the Carbon stops, by Deepgram Nova-3. There is no live transcript: your drawing sees only the microphone level while the Carbon talks.
+Voice answers are recorded on the Mac, then transcribed after the Carbon stops, by OpenAI `gpt-transcribe` through Peek's backend. There is no live transcript: your drawing sees only the microphone level while the Carbon talks.
 
 - **Text asks.** The bubble slides away as soon as the Carbon stops. The transcript is the answer, delivered in the background.
-- **Choice, slider and range asks.** The bubble shows the `transcribing` phase (up to 8 s) while peek matches what was said. It normalizes the transcript and tries exact and fuzzy label matches, ordinals ("the second one"), numerals ("forty two" → 42), and, for multiple choice, "and"-lists ("sales and hiring"). Your option labels are sent to Deepgram as key terms to improve recognition; slider and range asks turn numerals on.
+- **Choice, slider and range asks.** The bubble shows the `transcribing` phase (up to 8 s) while peek matches what was said. It normalizes the transcript and tries exact and fuzzy label matches, ordinals ("the second one"), numerals ("forty two" → 42), and, for multiple choice, "and"-lists ("sales and hiring"). Your option labels are sent as keyword hints when suitable for OpenAI's keyword format. Hints can help recognition but do not guarantee an exact transcript; slider and range answers still use Peek's local number matching.
   - **Matched:** that is the answer, and the bubble slides out.
   - **Unmatched or empty:** the bubble stays open with "Didn't match an option — tap one or type". Nothing is sent.
 - **Slow transcription.** After 8 seconds without a result the question comes back with "Still transcribing — tap an option or type"; a late match still answers it.

@@ -1,7 +1,7 @@
 import Foundation
 
 /// The 44-byte canonical RIFF/WAVE header for linear PCM (notes/speech §4.3: "prepend a 44-byte RIFF/WAVE
-/// header (PCM, 1 channel, 16000 Hz, 16-bit)"). peekd uploads the result to Deepgram as `audio/wav`.
+/// header (PCM, 1 channel, 16000 Hz, 16-bit)"). peekd uploads the result through Peek to OpenAI as `audio/wav`.
 public enum WAVFile {
     public static let headerSize = 44
 

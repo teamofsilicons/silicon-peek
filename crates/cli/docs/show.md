@@ -16,34 +16,73 @@ Both return immediately with `{"send_id":"snd_…","status":"showing",…}` (`qu
 
 | Rule | Value |
 |---|---|
-| Length | 1–2000 characters (Unicode scalar values). Longer fails with `speak_too_long`, exit 2. 2000 is Deepgram Aura's per-request limit. |
-| Engine | Deepgram Aura-2, streamed as 24 kHz mono PCM, either directly from Deepgram or relayed by the peek backend ([Privacy](privacy.md)). Playback starts after about 100 ms of audio has arrived. |
-| Languages | English, Spanish, German, French, Dutch, Italian, Japanese. |
-| Language choice | `--lang` (any BCP 47 tag; its primary subtag is used, so `es-MX` means Spanish), else detection from the text, else config `language` when detection is ambiguous. |
-| Voice choice | `--voice`, else config `voice`, else the default for the language (below). |
+| Length | 1–2000 characters (Unicode scalar values), including inline tags. Longer fails with `speak_too_long`, exit 2. |
+| Engine | Google Gemini 3.8 Flash TTS (`gemini-3.8-flash-tts`), streamed through the Peek backend to the Mac as 24 kHz mono PCM ([Privacy](privacy.md)). Playback begins while Google is still generating audio. |
+| Language | `--lang` supplies a language hint, otherwise Peek uses reliable detection and then config `language` as a fallback. Without a hint, Google detects the transcript's language. |
+| Voice | `--voice`, then config `voice`, then the Carbon's per-language setting, then `Kore`. Use a Google prebuilt voice name or a custom voice ID available to Peek's Google project. |
+| Delivery | `--voice-instructions`, then config `voice_instructions`, 1–2000 characters. Natural-language directions control delivery without being read aloud. |
 
-Default voices:
+### Customize a Silicon's voice
 
-| Language | Voice |
-|---|---|
-| en | `aura-2-thalia-en` |
-| es | `aura-2-celeste-es` (`aura-2-selena-es` when the text mixes English and Spanish) |
-| de | `aura-2-viktoria-de` |
-| fr | `aura-2-agathe-fr` |
-| nl | `aura-2-rhea-nl` |
-| it | `aura-2-livia-it` |
-| ja | `aura-2-izanami-ja` |
+A Silicon can save the Carbon's preferences from the CLI, then adjust individual messages:
 
-Any Aura-2 voice name of the form `aura-2-<name>-<lang>` works with `--voice`, as long as its language is one of the seven.
+```sh
+# Persist this Silicon's voice and delivery defaults.
+peek config set '{"voice":"Kore","voice_instructions":"Warm, conversational delivery; relaxed pace and gentle emphasis."}'
+
+# Override those instructions for this message only.
+peek send --speak 'The build passed. <short pause> All tests are green! <chuckle>' \
+  --voice Puck --voice-instructions 'Sound delighted; keep the pace brisk.'
+
+# Clear saved instructions.
+peek config unset voice_instructions
+```
+
+Choose `--voice` for the speaker; use `--voice-instructions` for the performance. Directions can describe emotion, pacing, pitch, emphasis, volume, or a delivery such as whispering. Keep them concise. Peek sends them separately as Google's `speech_metadata.style`; ordinary directions written into `--speak` may be spoken as words.
+
+For a persistent regional accent or a distinctive persona, select a suitable regional voice or a custom `voice_...` ID. Google documents [voice design](https://ai.google.dev/gemini-api/docs/voice-design) separately; Peek accepts an existing ID and does not create voices. The voice must be accessible to the Google project used by the Peek server. Google's [voice options and prompting guide](https://ai.google.dev/gemini-api/docs/speech-generation#voice-options) explain voice selection.
+
+### Accent spans
+
+For a local pronunciation hint, write `<indian accent>Anuv Jain</indian accent>`:
+
+```sh
+peek send --speak 'Now playing <indian accent>Anuv Jain</indian accent>.'
+```
+
+This paired accent syntax is **Peek's shorthand**. Peek removes the wrapper from the spoken text and applies its accent instruction to that span through Google's style metadata. It is not a native Google tag or a guarantee of an exact accent. Voice, language and phrasing affect the result; use a regional or custom voice when a consistent accent matters. Keep spans paired and do not nest them.
+
+### Vocal expressions and pauses
+
+Put a vocal event directly where it should happen in `--speak`. These are Google's recommended tag spellings, reproduced verbatim from the **Vocal bursts and non-speech sounds** table in [Google's TTS documentation](https://ai.google.dev/gemini-api/docs/speech-generation#vocal-bursts-and-non-speech-sounds), last updated September 24, 2026, checked September 29, 2026. That material is by Google and licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); table formatting is adapted here, tag spellings are unchanged.
+
+| | | | |
+|---|---|---|---|
+| `<argh>` | `<breath>` | `<heavy breath>` | `<exhales>` |
+| `<cackle>` | `<cheer>` | `<chuckle>` / `<chuckles>` | `<cough>` |
+| `<cry>` | `<gasp>` | `<giggle>` | `<groan>` |
+| `<growl>` | `<grunt>` | `<grr>` | `<hiss>` |
+| `<laugh>` / `<laughter>` | `<moan>` | `<pant>` | `<pff>` / `<phew>` |
+| `<scream>` | `<shout>` | `<shriek>` | `<sigh>` / `<sighs>` |
+| `<sneeze>` | `<snicker>` | `<snort>` | `<sob>` |
+| `<throat-clearing>` | `<tsk>` | `<whimper>` | `<whispers>` / `<whispering>` |
+| `<yawn>` | `<short pause>` | `<long pause>` | |
+
+Use the English tag spellings even with a non-English transcript. For whispering throughout a message, put that direction in `--voice-instructions`. Pauses belong inline; punctuation and ellipses also shape rhythm. Capitalizing a word can emphasize it. These are performance cues, so listen and adjust rather than expecting a fixed duration or identical delivery every time. Google describes multi-speaker overlap separately; Peek currently uses one voice per send.
+
+```sh
+peek send --speak '<sigh> That took a while... <short pause> but it is DONE.' \
+  --voice-instructions 'Begin tired, then brighten at the good news.'
+```
 
 What `speech.status` in the send result means:
 
 | Status | Meaning |
 |---|---|
 | `pending` | Speech is being fetched and will play. |
-| `cached` | The same voice and text were spoken recently; it plays from the local cache without a network call. |
+| `cached` | The same voice, instructions, language and text were spoken recently; playback uses the local cache without a network call. |
 | `skipped` | There was nothing to speak. |
-| `unsupported_language` | The text is not in one of the seven languages. Nothing is spoken; the text is shown as a pill instead, and the result carries the warning `speak_language_unsupported`. peek never reads a language with a voice that cannot speak it. |
+| `unsupported_language` | A compatibility status from older helpers; current Gemini speech does not use the old seven-language gate. |
 
 If speech cannot be fetched (after two quick retries, all before anything has played), the send still succeeds: the text is shown as a pill when there is no `--show`, and your history records the warning `speech_failed`, or `speech_unavailable` when the backend has no usable speech key ([Troubleshooting](troubleshooting.md) lists the reasons). Speech is never retried once playback has started, so the Carbon never hears a sentence twice.
 
@@ -188,4 +227,4 @@ peek send --speak "Next up, Low Tide." --show '{"elements":[
 ## Next
 
 - [Ask a question](ask.md) when you need an answer back.
-- [Privacy](privacy.md): speak text is sent to Deepgram to be spoken; show content never leaves the Mac.
+- [Privacy](privacy.md): speak text and voice instructions are sent through Peek to Google to be spoken; show content never leaves the Mac.

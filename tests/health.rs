@@ -43,7 +43,7 @@ async fn readyz_reports_every_dependency() {
     assert_eq!(r.status, 200);
     assert_eq!(
         r.json(),
-        json!({"status": "ready", "checks": {"db": "ok", "iam_config": "ok", "ting_config": "ok", "deepgram": "configured"}})
+        json!({"status": "ready", "checks": {"db": "ok", "iam_config": "ok", "ting_config": "ok", "deepgram": "configured", "gemini": "configured", "openai": "configured"}})
     );
 }
 

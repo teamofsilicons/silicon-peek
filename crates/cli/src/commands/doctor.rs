@@ -233,30 +233,35 @@ async fn backend_check(client: &Client) -> Check {
                     .unwrap_or("check the network and --api / PEEK_API_URL"),
             ),
         ),
-        Ok(Ok(ready)) if ready.status == "ready" && ready.checks.deepgram == "configured" => {
+        Ok(Ok(ready))
+            if ready.status == "ready"
+                && ready.checks.gemini == "configured"
+                && ready.checks.openai == "configured" =>
+        {
             check("backend", Status::Ok, format!("{api} is ready"), None)
         }
         Ok(Ok(ready)) if ready.status == "ready" => check(
             "backend",
             Status::Warn,
             format!(
-                "{} is ready, but its Deepgram key is {}: speech will fail",
-                api, ready.checks.deepgram
+                "{} is ready; speech configuration: Gemini TTS {}, OpenAI STT {}",
+                api, ready.checks.gemini, ready.checks.openai
             ),
             Some(
-                "operators: set PEEK_DEEPGRAM_API_KEY; org admins: peek org byo deepgram set --key-file -",
+                "operators: configure PEEK_GEMINI_API_KEY for speech and PEEK_OPENAI_API_KEY for transcription",
             ),
         ),
         Ok(Ok(ready)) => check(
             "backend",
             Status::Fail,
             format!(
-                "{} is not ready (db {}, iam {}, ting {}, deepgram {})",
+                "{} is not ready (db {}, iam {}, ting {}, gemini {}, openai {})",
                 api,
                 ready.checks.db,
                 ready.checks.iam_config,
                 ready.checks.ting_config,
-                ready.checks.deepgram
+                ready.checks.gemini,
+                ready.checks.openai
             ),
             Some("an operator issue; retry later, or report it with peek report"),
         ),
@@ -776,6 +781,36 @@ pub async fn run(g: &Globals, out: Out) -> silicon_peek_client::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn backend_checks_current_speech_providers() -> silicon_peek_client::Result<()> {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+        let server = MockServer::start().await;
+        let client = Client::builder(&ApiUrl::parse(&server.uri())?).build()?;
+        for (openai, expected) in [("configured", Status::Ok), ("missing", Status::Warn)] {
+            server.reset().await;
+            Mock::given(path("/readyz"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "status": "ready", "checks": {
+                        "db": "ok", "iam_config": "ok", "ting_config": "ok",
+                        "gemini": "configured", "openai": openai, "deepgram": "missing"
+                    }
+                })))
+                .mount(&server)
+                .await;
+            let result = backend_check(&client).await;
+            assert_eq!(result.status, expected);
+            if expected == Status::Warn {
+                assert!(
+                    result
+                        .fix
+                        .as_deref()
+                        .is_some_and(|s| s.contains("PEEK_OPENAI_API_KEY"))
+                );
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn versions_are_read_from_text_or_json() {

@@ -141,7 +141,7 @@ public struct SimulationScenario: Equatable, Sendable {
         _ = try makeEvent(assets: .placeholder, sendID: "snd_validate", askID: "ask_validate")
     }
 
-    /// Aura-2's per-request limit, which `peek send --speak` enforces (BLUEPRINT §0.1 item 8).
+    /// Peek's per-send speech limit, which `peek send --speak` enforces (BLUEPRINT §0.1 item 8).
     public static let maxSpeakScalars = 2000
 
     /// A fresh `snd_…` / `ask_…` id in the D25 shape (prefix + 32 hex).
@@ -163,7 +163,7 @@ public enum SimulationScenarioError: Error, Equatable, Sendable, CustomStringCon
         case .emptySpeech:
             "Speak is on but the text is empty. Type something to say, or turn Speak off."
         case .speechTooLong(let count):
-            "The speak text has \(count) characters; Deepgram Aura-2 speaks at most \(SimulationScenario.maxSpeakScalars) per send."
+            "The speak text has \(count) characters; Peek speaks at most \(SimulationScenario.maxSpeakScalars) per send."
         case .invalidPayload(let error):
             "The sample payload is invalid (\(error.code)): \(error.message)"
         }

@@ -1010,28 +1010,19 @@ public struct SlotMove: Sendable, Equatable {
 
 // MARK: - Voices
 
-/// Default Aura-2 voice per language (§8.7), used when neither `--voice` nor config `voice` is set.
+/// Common language preferences shown in Settings; Gemini voices are multilingual.
 public enum DefaultVoices {
-    public static let byLanguage: [String: String] = [
-        "en": "aura-2-thalia-en",
-        "es": "aura-2-celeste-es",
-        "de": "aura-2-viktoria-de",
-        "fr": "aura-2-agathe-fr",
-        "nl": "aura-2-rhea-nl",
-        "it": "aura-2-livia-it",
-        "ja": "aura-2-izanami-ja",
-    ]
+    public static let supportedLanguages = ["en", "es", "de", "fr", "nl", "it", "ja", "hi", "pt", "zh", "ko", "ru", "ar"]
+    public static let byLanguage = Dictionary(uniqueKeysWithValues: supportedLanguages.map { ($0, "Kore") })
 
-    public static let supportedLanguages = ["en", "es", "de", "fr", "nl", "it", "ja"]
-
-    /// `^aura-2-[a-z]+-(en|es|de|fr|nl|it|ja)$` (§7.3 `voice`).
+    /// Google prebuilt names and custom voice IDs; the provider checks availability.
     public static func isValidVoice(_ voice: String) -> Bool {
-        let parts = voice.split(separator: "-", omittingEmptySubsequences: false)
-        guard parts.count == 4, parts[0] == "aura", parts[1] == "2" else { return false }
-        guard !parts[2].isEmpty, parts[2].utf8.allSatisfy({ (UInt8(ascii: "a")...UInt8(ascii: "z")).contains($0) }) else {
-            return false
+        (1...128).contains(voice.utf8.count) && voice.utf8.allSatisfy {
+            (UInt8(ascii: "a")...UInt8(ascii: "z")).contains($0)
+                || (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains($0)
+                || (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0)
+                || $0 == UInt8(ascii: "_") || $0 == UInt8(ascii: "-")
         }
-        return supportedLanguages.contains(String(parts[3]))
     }
 }
 

@@ -113,7 +113,7 @@ public enum BubbleOutbound: Sendable, Equatable {
     case shownDone(ShownDoneReason, visibleMs: Int)
     case message(String)
     case voice(MicRecordingResult)
-    /// Pre-warm the session and the Deepgram token (`focus`).
+    /// Pre-warm the Peek session (`focus`).
     case focus
     /// The bubble began presenting (its pre-warm started): peekd sets `shown_at` and starts the speech (peek 0.1.2).
     case shown

@@ -12,7 +12,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{DaemonCli, Harness, Home, eventually, pcm, query_one};
+use common::{DaemonCli, Harness, Home, eventually, pcm, query_one, sse_audio};
 use serde_json::{Value, json};
 use silicon_peek_client::{
     ErrorCode,
@@ -41,6 +41,7 @@ fn send_op() -> SendOp {
         show: None,
         ask: None,
         voice: None,
+        voice_instructions: None,
         lang: None,
         notify: vec![],
         duration_ms: None,
@@ -559,13 +560,13 @@ async fn a_waiting_show_expires_unseen_and_the_silicon_is_told() {
 async fn an_on_screen_speak_expires_after_shown() {
     let h = Harness::start().await;
     Mock::given(method("POST"))
-        .and(path("/v1/speak"))
+        .and(path("/api/v1/speech/speak"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "audio/l16;rate=24000")
-                .set_body_bytes(pcm(48_000)),
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(sse_audio(&pcm(48_000)), "text/event-stream"),
         )
-        .mount(&h.deepgram)
+        .mount(&h.server)
         .await;
     let (home, ui) = ready(&h, "si:expspk", 3, 1002).await;
     let mut op = speak("A long announcement that outlives its deadline.");
@@ -661,13 +662,13 @@ async fn expiry_keeps_running_while_the_carbon_is_away() {
 async fn a_1002_app_reports_shown_before_speech_and_notifications() {
     let h = Harness::start().await;
     Mock::given(method("POST"))
-        .and(path("/v1/speak"))
+        .and(path("/api/v1/speech/speak"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "audio/l16;rate=24000")
-                .set_body_bytes(pcm(24_000)),
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(sse_audio(&pcm(24_000)), "text/event-stream"),
         )
-        .mount(&h.deepgram)
+        .mount(&h.server)
         .await;
     let (home, ui) = ready(&h, "si:shown", 2, 1002).await;
     let mut op = speak("Build finished");

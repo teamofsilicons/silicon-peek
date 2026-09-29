@@ -280,7 +280,7 @@ error_codes! {
     NoGuiSession = "no_gui_session" => Unavailable, false;
     /// A Peek.app update is pending before peekd can serve this CLI.
     AppUpdatePending = "app_update_pending" => Unavailable, true;
-    /// Deepgram speech is unavailable (no key, invalid BYO key, or outage).
+    /// Speech is unavailable (no provider key, quota or provider outage).
     SpeechUnavailable = "speech_unavailable" => Unavailable, true;
     /// Ting could not be reached or is overloaded.
     TingUnavailable = "ting_unavailable" => Unavailable, true;

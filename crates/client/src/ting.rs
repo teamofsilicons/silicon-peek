@@ -166,7 +166,7 @@ impl TingType {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnswerVia {
-    /// Spoken, then transcribed once by Deepgram.
+    /// Spoken, then transcribed once by `OpenAI`.
     Voice,
     /// Typed.
     Keyboard,

@@ -318,7 +318,12 @@ impl Shared {
             let cached = self
                 .speech
                 .cache
-                .lookup(&TtsCache::key(model, text))
+                .lookup(&TtsCache::key(
+                    model,
+                    text,
+                    speech.voice_instructions.as_deref(),
+                    speech.language.as_deref(),
+                ))
                 .is_some();
             speech.status = if cached {
                 StoredSpeechStatus::Cached

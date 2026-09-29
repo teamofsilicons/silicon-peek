@@ -1,6 +1,6 @@
 [package]
 name = "silicon-peek-daemon"
-description = "peekd: the per-user Peek daemon (slots, queue, Deepgram, delivery outbox)"
+description = "peekd: the per-user Peek daemon (slots, queue, speech, delivery outbox)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,6 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 silicon-peek-client = { workspace = true, features = ["runtime"] }
+base64.workspace = true
 hex.workspace = true
 libc.workspace = true
 reqwest.workspace = true

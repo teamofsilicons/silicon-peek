@@ -56,8 +56,9 @@ si auth setup peek       # forces a fresh login if peek reports logged out
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `telemetry` | bool | `true` | this home's telemetry ([Telemetry](telemetry.md)) |
-| `voice` | `aura-2-<name>-<en\|es\|de\|fr\|nl\|it\|ja>` or null | null | your default speaking voice |
-| `language` | BCP 47 primary subtag or null | null (detect) | the speech language when detection is ambiguous |
+| `voice` | Google voice name or custom ID, or null | null (`Kore`) | your default speaking voice |
+| `voice_instructions` | string, 1–2000 characters, or null | null | delivery directions; accents, emotion, pace, pitch and tone |
+| `language` | BCP 47 primary subtag or null | null (detect) | fallback language hint when Peek detection is ambiguous |
 | `notify` | subset of `["speech_finished","show_dismissed","shown"]` | `[]` | opt-in events for every send |
 | `api_url` | https URL or null | null | the peek backend (same as `--api`) |
 | `delivery_max_age_hours` | int 1..168 | 168 | how long undelivered answers keep retrying |
@@ -109,12 +110,22 @@ peek send --speak "Found 3 GB of old builds." \
   --ask '{"question":"Delete old builds?","type":"single_choice","options":["Delete","Keep"]}'
 ```
 
+Speech uses Google Gemini 3.8 Flash TTS and starts playing as audio arrives. Customize it for your Carbon from the CLI:
+
+```sh
+peek config set '{"voice":"Kore","voice_instructions":"Gentle, conversational delivery with a relaxed pace."}'
+peek send --speak 'Now playing <indian accent>Anuv Jain</indian accent>. <short pause> Enjoy.'
+peek send --speak 'The build passed! <chuckle>' --voice-instructions 'Sound delighted.'
+```
+
+Peek translates paired accent spans into Google's style metadata; delivery is best effort. For a consistent regional accent, use a suitable regional or custom voice. The [voice guide](show.md#customize-a-silicons-voice) includes persistent defaults, per-send overrides and Google's full recommended expression-tag list.
+
 Output with `--json`:
 
 ```json
 {"send_id":"snd_0192…","ask_id":"ask_0192…","slot":3,"status":"showing","queue_position":0,"waiting":0,
  "expires_at":null,"schedule_id":null,"due_at":null,"tz":null,"replaced_send_id":null,
- "speech":{"status":"pending","model":"aura-2-thalia-en","chars":25},"warnings":[]}
+ "speech":{"status":"pending","model":"Kore","chars":25},"warnings":[]}
 ```
 
 `status` is `queued` when an earlier send of yours is still on screen (`queue_position` says how many are ahead), or when the Carbon is away or paused Peek. Keep the `ask_id`: it is in the answer, and `peek ask get <ASK_ID>` shows the local state at any time.
@@ -127,7 +138,7 @@ Warnings in the result tell you what the Carbon will or will not get. The send i
 | `carbon_paused` | The Carbon paused all peeks. The send waits in your queue and is shown when they resume. | Nothing; do not resend. |
 | `ting_not_enrolled` | You are not a Ting recipient for peek (the grant was revoked, or enrollment failed), so answers cannot reach you. They wait on the Mac. | `peek ting enroll`; waiting answers are then retried right away. |
 | `isi_ignored` | `$ISI` was invalid (over 160 characters, or more than one line), so it was dropped from this send and its events carry no `metadata.isi`. | Fix `ISI`, or unset it. |
-| `speak_language_unsupported` | The speech language has no voice; the text shows as a pill instead. | Speak one of en, es, de, fr, nl, it, ja, or pass `--lang`. |
+| `speak_language_unsupported` | An older helper rejected the language. | Update Peek.app; current Gemini speech no longer uses the former seven-language list. |
 | `timezone_fallback_utc` | The Mac's time zone could not be read, so an `--at` or `--expires-at` without an offset was read as UTC. | Give the time with an offset (`18:00+05:30`) or pass `--tz`. |
 
 The JSON schemas, limits and defaults are in [Speak and show](show.md) and [Ask a question](ask.md).
@@ -166,6 +177,7 @@ use it for one-off, no-history moments: "is this file safe to delete?", "now pla
 first time: `peek config set '{"position":3}'` or `peek register side N`. Peek has a built-in visual; optionally set `drawing` to a JavaScript file path for your own logo.
 `peek send --speak "..." --show '{...}'` or `peek send --speak "..." --ask '{...}'` returns immediately. the answer arrives later as a peek.ask.answered message.
 your sends queue one at a time (max 5 waiting; `peek queue`, `peek cancel <id>`). add `--expires-in 15m` when a send goes stale, `--at 09:55` or `--in 2h` to schedule one.
+set a voice with `peek config set '{"voice":"Kore","voice_instructions":"Warm, relaxed delivery."}'`; override one send with `--voice-instructions`. `peek docs show` lists vocal tags and Peek accent spans such as `<indian accent>Anuv Jain</indian accent>`.
 keep asks self-contained: the carbon sees nothing but the bubble. dedupe answers by ask_id.
 ```
 

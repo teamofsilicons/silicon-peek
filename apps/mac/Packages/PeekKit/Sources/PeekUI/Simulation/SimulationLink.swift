@@ -15,7 +15,7 @@ public struct SimulationRequestRecord: Sendable, Equatable {
 /// ``records`` for the Simulation log, and acknowledged. Events (`tts.*`, `stt.result`) and
 /// peekd→UI requests (`drawing.load`) are injected by ``SimulationEngine`` exactly as peekd
 /// would send them, so the presenter runs its production code paths. Voice answers are answered
-/// with an `stt.result` of `failed`: Simulation never sends audio to Deepgram.
+/// with an `stt.result` of `failed`: Simulation never sends audio to OpenAI.
 public actor SimulationLink: DaemonLinking {
     public static let peekdVersion = "simulation"
     public static let noTranscriptionCode = "simulation_no_transcription"
@@ -143,7 +143,7 @@ public actor SimulationLink: DaemonLinking {
             askID: askID, messageID: askID == nil ? "cmsg_simulation_\(UUID().uuidString.lowercased())" : nil, outcome: .failed,
             error: IPCErrorBody(
                 code: noTranscriptionCode,
-                message: "Simulation never sends audio to Deepgram, so voice answers are not transcribed.",
+                message: "Simulation never sends audio to OpenAI, so voice answers are not transcribed.",
                 hint: "Tap an option or type your answer instead.", retryable: false))
     }
 

@@ -161,13 +161,15 @@ struct ModelsTests {
                                                         from: .right, to: .bottom)])
     }
 
-    @Test("voices follow ^aura-2-[a-z]+-(en|es|de|fr|nl|it|ja)$")
+    @Test("Google voices accept custom IDs and reject malformed input")
     func voices() {
-        #expect(DefaultVoices.isValidVoice("aura-2-thalia-en"))
-        #expect(!DefaultVoices.isValidVoice("aura-2-Thalia-en"))
-        #expect(!DefaultVoices.isValidVoice("aura-2-thalia-pt"))
-        #expect(!DefaultVoices.isValidVoice("aura-1-thalia-en"))
-        #expect(DefaultVoices.byLanguage.values.allSatisfy(DefaultVoices.isValidVoice))
+        for voice in ["Kore", "Puck", "voice_custom-123", "aura-2-thalia-en"] {
+            #expect(DefaultVoices.isValidVoice(voice))
+        }
+        for voice in ["", "bad voice", "Kore/../../secret", "é", String(repeating: "a", count: 129)] {
+            #expect(!DefaultVoices.isValidVoice(voice))
+        }
+        #expect(DefaultVoices.byLanguage.values.allSatisfy { $0 == "Kore" })
     }
 
     @Test("launch arguments: --after-update, --launched-by, AppKit pairs skipped")

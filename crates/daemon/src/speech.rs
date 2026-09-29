@@ -1,16 +1,7 @@
-//! Text to speech (BLUEPRINT §1.9.3, §8.7): the speech-token cache, the TTS
-//! cache (`cache/tts/<sha256>.pcm`, LRU 200 MB / 30 days) and the streaming
-//! task that drains Deepgram at network speed and forwards `tts.begin` /
-//! `tts.chunk` / `tts.end` to Peek.app. Retries happen only before the first
-//! audio byte; once audio has reached the UI, a failure ends the stream early
-//! instead of repeating speech.
-//!
-//! The token decides how Deepgram is reached. `direct`: peekd calls
-//! Deepgram with the minted JWT. `proxy` (peek-server's key cannot mint
-//! JWTs): peekd calls peek-server's `/api/v1/speech/speak|listen` with the
-//! Silicon's own session — only when the proxy `base_url` is that home's
-//! backend, so a session never goes anywhere else. The token (and so the
-//! mode) is cached until it expires.
+//! Stream Gemini TTS through Peek to the Mac's PCM player and local audio cache.
+//! The backend only relays SSE; this daemon decodes audio incrementally.
+//! `OpenAI` STT also uses Peek's authenticated relay; provider keys remain on the server.
+//! Retries stop after the first played audio byte, and incomplete streams are never cached.
 
 use std::{
     collections::HashMap,
@@ -22,7 +13,10 @@ use std::{
 use serde_json::json;
 use silicon_peek_client::{
     Error, ErrorCode, Result,
-    api::{SpeechMode, SpeechPurpose, SpeechSpeakRequest, SpeechToken, headers, routes},
+    api::{
+        SpeechMode, SpeechProvider, SpeechPurpose, SpeechSpeakRequest, SpeechToken,
+        SpeechTranscript, headers, routes,
+    },
     http::Client,
     identity::ApiUrl,
     ids::{IdempotencyKey, SendId},
@@ -36,12 +30,11 @@ use silicon_peek_client::{
 use tokio::{io::AsyncWriteExt as _, task::AbortHandle};
 
 use crate::{
-    deepgram::{
-        Deepgram, DgError, DgKind, ListenParams, RetryBudget, Transcript, classify_proxy_error,
-        is_linear16, listen_query, parse_transcript,
-    },
     net::HomeRef,
     paths::sha256_hex,
+    speech_request::{
+        ListenParams, RetryBudget, RetryKind, SpeechError, classify_proxy_error, listen_query,
+    },
     state::{ActorKey, Shared, SharedRef},
     telemetry::Record,
     voice::estimated_frames,
@@ -93,12 +86,12 @@ pub fn check_proxy_base(base_url: &str, api: &ApiUrl) -> Result<()> {
 
 /// A session problem as a speech failure: retryable ones retry within the
 /// budget, the rest end the attempt.
-fn session_failure(e: Error) -> DgError {
-    DgError {
+fn session_failure(e: Error) -> SpeechError {
+    SpeechError {
         kind: if e.retryable() {
-            DgKind::Retry
+            RetryKind::Retry
         } else {
-            DgKind::Fatal
+            RetryKind::Fatal
         },
         error: e,
         retry_after: None,
@@ -132,11 +125,25 @@ impl TtsCache {
         }
     }
 
-    /// `sha256(model|params|text)`.
+    /// Hash every audio-affecting input; instructions must not reuse another voice performance.
     #[must_use]
-    pub fn key(model: &str, text: &str) -> String {
+    pub fn key(
+        model: &str,
+        text: &str,
+        instructions: Option<&str>,
+        language: Option<&str>,
+    ) -> String {
         sha256_hex(
-            format!("{model}|encoding=linear16&container=none&sample_rate=24000|{text}").as_bytes(),
+            json!([
+                "gemini-3.8-flash-tts",
+                model,
+                text,
+                instructions,
+                language,
+                24000
+            ])
+            .to_string()
+            .as_bytes(),
         )
     }
 
@@ -239,11 +246,9 @@ struct CachedToken {
     valid_until: Instant,
 }
 
-/// Deepgram access, the JWT cache, TTS tasks and the TTS cache.
+/// Speech provider access, token cache, TTS tasks and local audio cache.
 #[derive(Debug)]
 pub struct Speech {
-    /// The Deepgram client.
-    pub deepgram: Deepgram,
     tokens: Mutex<HashMap<TokenKey, CachedToken>>,
     tasks: Mutex<HashMap<SendId, AbortHandle>>,
     /// The TTS cache.
@@ -252,16 +257,13 @@ pub struct Speech {
 
 impl Speech {
     /// A speech engine caching TTS audio in `cache_dir`.
-    ///
-    /// # Errors
-    /// As [`Deepgram::new`].
-    pub fn new(cache_dir: PathBuf) -> Result<Self> {
-        Ok(Self {
-            deepgram: Deepgram::new()?,
+    #[must_use]
+    pub fn new(cache_dir: PathBuf) -> Self {
+        Self {
             tokens: Mutex::new(HashMap::new()),
             tasks: Mutex::new(HashMap::new()),
             cache: TtsCache::new(cache_dir),
-        })
+        }
     }
 
     /// Stops the TTS stream of a send ("peekd drops the HTTP body").
@@ -315,14 +317,18 @@ pub struct TtsJob {
     pub key: ActorKey,
     /// Its home.
     pub home: HomeRef,
-    /// The Aura-2 voice.
+    /// The Google voice.
     pub model: String,
     /// The text.
     pub text: String,
+    /// Delivery instructions, resolved when the send is queued.
+    pub voice_instructions: Option<String>,
+    /// Optional language hint.
+    pub language: Option<String>,
 }
 
 impl Shared {
-    /// A Deepgram JWT for `purpose` from cache, else `fresh_session` →
+    /// Speech access for `purpose` from cache, else `fresh_session` →
     /// `POST /api/v1/speech/token` (§5.2). `force` drops the cached one.
     ///
     /// # Errors
@@ -431,32 +437,34 @@ impl Shared {
         Ok(client)
     }
 
-    /// Starts `/v1/speak` in the token's mode; returns the response once its
-    /// status and content type say the body is raw 24 kHz s16le audio.
+    /// Open an authenticated Gemini SSE relay from this home's Peek server.
     async fn speak_via(
         &self,
         job: &TtsJob,
         token: &SpeechToken,
         first_byte: Duration,
         fresh_session: bool,
-    ) -> std::result::Result<(reqwest::Response, Option<String>), DgError> {
-        if token.mode == SpeechMode::Direct {
-            return self
-                .speech
-                .deepgram
-                .speak(token, &job.model, &job.text, first_byte)
-                .await;
+    ) -> std::result::Result<(reqwest::Response, Option<String>), SpeechError> {
+        if token.provider != SpeechProvider::Gemini || token.mode != SpeechMode::Proxy {
+            return Err(SpeechError {
+                kind: RetryKind::Fatal,
+                error: Error::new(
+                    ErrorCode::SpeechUnavailable,
+                    "this backend does not support Gemini TTS; update peek-server",
+                ),
+                retry_after: None,
+            });
         }
-        check_proxy_base(&token.base_url, &job.home.api_url).map_err(|e| DgError {
-            kind: DgKind::Fatal,
+        check_proxy_base(&token.base_url, &job.home.api_url).map_err(|e| SpeechError {
+            kind: RetryKind::Fatal,
             error: e,
             retry_after: None,
         })?;
         // The session (possibly a refresh) and the proxied call share one
         // first-byte deadline.
         let deadline = tokio::time::Instant::now() + first_byte;
-        let no_first_byte = || DgError {
-            kind: DgKind::Retry,
+        let no_first_byte = || SpeechError {
+            kind: RetryKind::Retry,
             error: Error::new(
                 ErrorCode::SpeechUnavailable,
                 format!(
@@ -480,6 +488,8 @@ impl Shared {
             text: job.text.clone(),
             model: job.model.clone(),
             sample_rate: Some(24_000),
+            voice_instructions: job.voice_instructions.clone(),
+            language: job.language.clone(),
         };
         let key = IdempotencyKey::generate();
         let call = client.speech_speak(&request, &key, PROXY_SPEAK_TIMEOUT);
@@ -495,12 +505,14 @@ impl Shared {
                 .map(str::to_owned)
         };
         let ctype = header(reqwest::header::CONTENT_TYPE.as_str()).unwrap_or_default();
-        if !is_linear16(&ctype) {
-            return Err(DgError {
-                kind: DgKind::Fatal,
+        if ctype.split(';').next().map(str::trim) != Some("text/event-stream") {
+            return Err(SpeechError {
+                kind: RetryKind::Fatal,
                 error: Error::new(
                     ErrorCode::SpeechUnavailable,
-                    format!("the speech proxy returned `{ctype}` instead of raw linear16 audio"),
+                    format!(
+                        "the speech proxy returned `{ctype}` instead of a Gemini audio event stream"
+                    ),
                 ),
                 retry_after: None,
             });
@@ -509,7 +521,7 @@ impl Shared {
         Ok((resp, request_id))
     }
 
-    /// `/v1/listen` in the token's mode.
+    /// `OpenAI` transcription through the authenticated Peek proxy.
     #[allow(clippy::too_many_arguments)] // one call site (stt.rs); the parts of one attempt
     pub(crate) async fn listen_via(
         &self,
@@ -520,16 +532,19 @@ impl Shared {
         wav: Vec<u8>,
         timeout: Duration,
         fresh_session: bool,
-    ) -> std::result::Result<Transcript, DgError> {
-        if token.mode == SpeechMode::Direct {
-            return self
-                .speech
-                .deepgram
-                .listen(token, params, wav, timeout)
-                .await;
+    ) -> std::result::Result<SpeechTranscript, SpeechError> {
+        if token.provider != SpeechProvider::Openai || token.mode != SpeechMode::Proxy {
+            return Err(SpeechError {
+                kind: RetryKind::Fatal,
+                error: Error::new(
+                    ErrorCode::SpeechUnavailable,
+                    "this backend does not support OpenAI transcription; update peek-server",
+                ),
+                retry_after: None,
+            });
         }
-        check_proxy_base(&token.base_url, &home.api_url).map_err(|e| DgError {
-            kind: DgKind::Fatal,
+        check_proxy_base(&token.base_url, &home.api_url).map_err(|e| SpeechError {
+            kind: RetryKind::Fatal,
             error: e,
             retry_after: None,
         })?;
@@ -537,7 +552,7 @@ impl Shared {
             .speech_session(home, key, fresh_session)
             .await
             .map_err(session_failure)?;
-        let (body, request_id) = client
+        client
             .speech_listen(
                 &listen_query(params),
                 wav,
@@ -546,8 +561,7 @@ impl Shared {
                 timeout,
             )
             .await
-            .map_err(classify_proxy_error)?;
-        parse_transcript(&body, request_id)
+            .map_err(classify_proxy_error)
     }
 
     /// Starts streaming speech for a bubble that just reached the UI.
@@ -576,7 +590,12 @@ impl Shared {
 
     async fn run_tts(self: &SharedRef, job: TtsJob) {
         let started = Instant::now();
-        let cache_key = TtsCache::key(&job.model, &job.text);
+        let cache_key = TtsCache::key(
+            &job.model,
+            &job.text,
+            job.voice_instructions.as_deref(),
+            job.language.as_deref(),
+        );
         let chars = job.text.chars().count();
         let est = estimated_frames(chars);
         let mut record = Record::new("tts.request", "ok")
@@ -607,6 +626,7 @@ impl Shared {
 
     /// Mint → speak → stream, retrying only before the first audio byte
     /// (§1.9.3 step 7). The error carries whether audio had started.
+    #[allow(clippy::too_many_lines)] // Keep the deadline and retry state together.
     async fn synthesize(
         &self,
         job: &TtsJob,
@@ -646,9 +666,9 @@ impl Shared {
             let token = match minted {
                 Ok(t) => t,
                 Err(e) => match budget.next(if e.retryable() {
-                    DgKind::Retry
+                    RetryKind::Retry
                 } else {
-                    DgKind::Fatal
+                    RetryKind::Fatal
                 }) {
                     Some(d) => {
                         tokio::time::sleep(jitter(d)).await;
@@ -679,14 +699,16 @@ impl Shared {
                     {
                         StreamOutcome::Done => return Ok(()),
                         StreamOutcome::FailedAfterAudio(e) => return Err((e, true)),
-                        StreamOutcome::FailedBeforeAudio(e) => match budget.next(DgKind::Retry) {
-                            Some(d) => tokio::time::sleep(jitter(d)).await,
-                            None => return Err((e, false)),
-                        },
+                        StreamOutcome::FailedBeforeAudio(e) => {
+                            match budget.next(RetryKind::Retry) {
+                                Some(d) => tokio::time::sleep(jitter(d)).await,
+                                None => return Err((e, false)),
+                            }
+                        }
                     }
                 }
-                Err(DgError {
-                    kind: DgKind::Reauth,
+                Err(SpeechError {
+                    kind: RetryKind::Reauth,
                     error,
                     ..
                 }) => {
@@ -700,18 +722,26 @@ impl Shared {
                         SpeechMode::Proxy => fresh_session = true,
                     }
                 }
-                Err(DgError {
+                Err(SpeechError {
                     kind,
                     error,
                     retry_after,
                 }) => match budget.next(kind) {
-                    Some(d) => tokio::time::sleep(retry_after.unwrap_or_else(|| jitter(d))).await,
+                    Some(d) => {
+                        tokio::time::sleep(
+                            retry_after
+                                .unwrap_or_else(|| jitter(d))
+                                .min(budget.remaining()),
+                        )
+                        .await;
+                    }
                     None => return Err((error, false)),
                 },
             }
         }
     }
 
+    #[allow(clippy::too_many_lines)] // Keep stream, playback and cache completion in one transaction.
     async fn stream_response(
         &self,
         job: &TtsJob,
@@ -727,26 +757,41 @@ impl Shared {
         let mut total = 0u64;
         let mut carry: Option<u8> = None;
         let idle = self.cfg.timings.tts_idle;
+        let mut decoder = crate::gemini::AudioStream::default();
         loop {
-            let chunk = match tokio::time::timeout(idle, resp.chunk()).await {
+            let wait = if seq == 0 {
+                self.cfg
+                    .timings
+                    .tts_first_audio_budget
+                    .saturating_sub(started.elapsed())
+            } else {
+                idle
+            };
+            let chunk = match tokio::time::timeout(wait, resp.chunk()).await {
                 Ok(Ok(Some(c))) => c,
                 Ok(Ok(None)) => break,
                 Ok(Err(e)) => {
                     let err = Error::new(
                         ErrorCode::SpeechUnavailable,
-                        format!("the Deepgram audio stream broke: {e}"),
+                        format!("the Gemini audio stream broke: {e}"),
                     )
                     .with_retryable(true);
                     return self.abandon(job, &temp, seq, total, err).await;
                 }
                 Err(_) => {
-                    let err = Error::new(
-                        ErrorCode::SpeechUnavailable,
-                        format!("the Deepgram audio stream stalled for {} s", idle.as_secs()),
-                    )
-                    .with_retryable(true);
+                    let message = if seq == 0 {
+                        "Gemini did not produce audio within the first-audio budget".to_owned()
+                    } else {
+                        format!("the Gemini audio stream stalled for {} s", idle.as_secs())
+                    };
+                    let err =
+                        Error::new(ErrorCode::SpeechUnavailable, message).with_retryable(true);
                     return self.abandon(job, &temp, seq, total, err).await;
                 }
+            };
+            let chunk = match decoder.push(&chunk) {
+                Ok(audio) => audio,
+                Err(error) => return self.abandon(job, &temp, seq, total, error).await,
             };
             let mut bytes: Vec<u8> = Vec::with_capacity(chunk.len() + 1);
             if let Some(b) = carry.take() {
@@ -787,10 +832,27 @@ impl Shared {
             return StreamOutcome::FailedBeforeAudio(
                 Error::new(
                     ErrorCode::SpeechUnavailable,
-                    "Deepgram returned an empty audio stream",
+                    "Gemini returned an empty audio stream",
                 )
                 .with_retryable(true),
             );
+        }
+        if let Err(error) = decoder.finish() {
+            return self.abandon(job, &temp, seq, total, error).await;
+        }
+        if carry.is_some() {
+            return self
+                .abandon(
+                    job,
+                    &temp,
+                    seq,
+                    total,
+                    Error::new(
+                        ErrorCode::SpeechUnavailable,
+                        "Gemini returned an incomplete audio sample",
+                    ),
+                )
+                .await;
         }
         self.ui.event(
             &TtsEnd {
@@ -938,10 +1000,18 @@ mod tests {
     fn cache_lru_and_age() -> std::io::Result<()> {
         let dir = tempfile::tempdir()?;
         let cache = TtsCache::with_limits(dir.path().to_path_buf(), 25, Duration::from_secs(3600));
-        let k1 = TtsCache::key("aura-2-thalia-en", "one");
-        let k2 = TtsCache::key("aura-2-thalia-en", "two");
+        let k1 = TtsCache::key("Kore", "one", None, None);
+        let k2 = TtsCache::key("Kore", "two", None, None);
         assert_ne!(k1, k2);
-        assert_ne!(k1, TtsCache::key("aura-2-apollo-en", "one"));
+        assert_ne!(k1, TtsCache::key("Puck", "one", None, None));
+        assert_ne!(
+            TtsCache::key("Kore", "one", Some("cheerful"), None),
+            TtsCache::key("Kore", "one", Some("whispering"), None)
+        );
+        assert_ne!(
+            TtsCache::key("Kore", "one", None, Some("en")),
+            TtsCache::key("Kore", "one", None, Some("hi"))
+        );
         for (k, len) in [(&k1, 10usize), (&k2, 10)] {
             let t = cache.temp_path();
             std::fs::write(&t, vec![0u8; len])?;
@@ -950,7 +1020,7 @@ mod tests {
         }
         assert!(cache.lookup(&k1).is_some(), "touching k1 makes k2 the LRU");
         std::thread::sleep(Duration::from_millis(20));
-        let k3 = TtsCache::key("aura-2-thalia-en", "three");
+        let k3 = TtsCache::key("Kore", "three", None, None);
         let t = cache.temp_path();
         std::fs::write(&t, vec![0u8; 10])?;
         cache.commit(&k3, &t);

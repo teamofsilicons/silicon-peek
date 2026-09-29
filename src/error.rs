@@ -162,12 +162,6 @@ impl ApiError {
         self.error.message()
     }
 
-    /// The details, if any.
-    #[cfg(test)]
-    pub(crate) fn details(&self) -> Option<&Value> {
-        self.error.details()
-    }
-
     /// `Retry-After` seconds, if set.
     #[cfg(test)]
     pub(crate) fn retry_after(&self) -> Option<u64> {

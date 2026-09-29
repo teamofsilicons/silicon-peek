@@ -25,9 +25,9 @@ use crate::{
 /// tests lower them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
-    /// Deepgram JWT mints per actor per minute (120).
+    /// Speech calls per actor per minute (120).
     pub speech_per_actor_per_minute: u32,
-    /// Deepgram JWT mints per org per minute (1200).
+    /// Speech calls per org per minute (1200).
     pub speech_per_org_per_minute: u32,
     /// Bug reports per client IP per hour (10).
     pub reports_per_ip_per_hour: u32,
@@ -79,7 +79,7 @@ pub(crate) struct Inner {
     pub(crate) production_db: Db,
     pub(crate) testing_db: Db,
     pub(crate) iam: Arc<dyn IamConnector>,
-    /// Outbound HTTP (Ting, Deepgram, GitHub, Honeycomb, Space Station).
+    /// Outbound HTTP (Ting, speech providers, GitHub, Honeycomb, Space Station).
     /// Redirects are never followed; each call sets its own timeout.
     pub(crate) http: reqwest::Client,
     pub(crate) sealer: Sealer,
@@ -91,17 +91,7 @@ pub(crate) struct Inner {
     /// Per-environment request fences: requests hold a read guard, lifecycle
     /// effects (clean, purge) take the write guard.
     env_locks: Mutex<HashMap<Uuid, Arc<RwLock<()>>>>,
-    /// Deepgram keys whose `/v1/auth/grant` answered 401/403, by
-    /// [`crate::deepgram::key_fingerprint`]: until the instant, speech
-    /// tokens for them answer `{"mode":"proxy"}` without asking again.
-    grant_forbidden: Mutex<HashMap<String, Instant>>,
 }
-
-/// How long a "this key may not mint JWTs" verdict is trusted.
-pub(crate) const GRANT_VERDICT_TTL: Duration = Duration::from_secs(600);
-/// A verdict with less than this left is re-probed by maintenance (which runs
-/// every five minutes), so it never lapses while the server runs.
-const GRANT_VERDICT_REFRESH: Duration = Duration::from_secs(330);
 
 impl AppState {
     /// Opens both databases, builds the IAM connector and the verifier.
@@ -184,7 +174,6 @@ impl AppState {
             },
             catalogs: Mutex::new(HashMap::new()),
             env_locks: Mutex::new(HashMap::new()),
-            grant_forbidden: Mutex::new(HashMap::new()),
             config,
         })))
     }
@@ -223,55 +212,5 @@ impl AppState {
     #[must_use]
     pub fn config(&self) -> &Config {
         &self.0.config
-    }
-
-    /// Time left on a cached "grant forbidden" verdict for a key fingerprint.
-    pub(crate) fn grant_forbidden_for(&self, fingerprint: &str) -> Option<Duration> {
-        let mut verdicts = self.0.grant_forbidden.lock().ok()?;
-        let now = Instant::now();
-        verdicts.retain(|_, until| *until > now);
-        verdicts
-            .get(fingerprint)
-            .map(|until| until.saturating_duration_since(now))
-    }
-
-    /// Keeps the proxy verdict of peek's own Deepgram keys warm, so the first
-    /// `speech/token` after a start (or after a verdict expired) does not pay
-    /// for a `/v1/auth/grant` round trip (about a second, TLS included).
-    ///
-    /// `initial` probes every configured key once (`main` does this at
-    /// start-up; a key that may mint gets a 1 s JWT that is thrown away).
-    /// Later calls (maintenance) only re-probe keys whose "may not mint"
-    /// verdict is about to expire; direct-mode keys mint per request anyway.
-    /// Org BYO keys are resolved per request and never probed here.
-    pub async fn prewarm_speech(&self, initial: bool) {
-        let config = &self.0.config.deepgram;
-        for key in [&config.api_key, &config.test_api_key]
-            .into_iter()
-            .flatten()
-        {
-            let fingerprint = crate::deepgram::key_fingerprint(&config.base_url, key);
-            match self.grant_forbidden_for(&fingerprint) {
-                Some(left) if left > GRANT_VERDICT_REFRESH => continue,
-                None if !initial => continue,
-                _ => {}
-            }
-            match crate::deepgram::grant(self, &config.base_url, key, 1).await {
-                Err(crate::deepgram::Failure::Status {
-                    status: 401 | 403, ..
-                }) => self.remember_grant_forbidden(fingerprint),
-                Ok(_) => {}
-                Err(_) => tracing::debug!(
-                    "the Deepgram grant probe failed; the next token request retries"
-                ),
-            }
-        }
-    }
-
-    /// Remembers that a key may not mint JWTs, for [`GRANT_VERDICT_TTL`].
-    pub(crate) fn remember_grant_forbidden(&self, fingerprint: String) {
-        if let Ok(mut verdicts) = self.0.grant_forbidden.lock() {
-            verdicts.insert(fingerprint, Instant::now() + GRANT_VERDICT_TTL);
-        }
     }
 }

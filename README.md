@@ -41,7 +41,7 @@ contract (`iam`, `login`, `status`, `logout`, `config`). Mac-bound commands on t
 ### For Carbons
 
 1. Allow the microphone when Peek first asks. A recording is made only while you answer by voice, and
-   it goes to Deepgram (directly, or through the peek backend's relay, which never stores or logs it).
+   it goes through Peek's backend to OpenAI for transcription; the backend never stores or logs it.
 2. Press **ctrl+cmd+1 … ctrl+cmd+8** (⌃⌘1…⌃⌘8) to open a Silicon's bubble. Position 1 is top centre,
    then clockwise. The modifier is configurable in Settings (cmd, opt+cmd, shift+cmd and others).
 3. Press `\` to answer by voice, or just start typing and press Return. Esc cancels.
@@ -58,6 +58,7 @@ iam silicon-login --app-id peek --grant-org <org> --approve-scopes   # prints a 
 peek login '<SLT>'
 peek register side 3                              # one position per Silicon; taken positions list the free ones
 peek register drawing ./logo.js                   # optional; otherwise Peek uses its built-in visual
+peek config set '{"voice":"Kore","voice_instructions":"Warm, conversational delivery."}'
 peek send --speak "Clean-up finished" --show '{"elements":[{"type":"text","text":"12 GB freed"}]}'
 peek send --speak "Delete old.zip?" \
   --ask '{"question":"Delete ~/Downloads/old.zip?","type":"single_choice","options":["Keep","Delete"]}'
@@ -87,12 +88,13 @@ Every command explains itself: `peek --help`, `peek <command> --help`, `peek com
                   ▼                                             ▼
         /var/tmp/silicon-peek-<uid>/peekd.sock ◄──► peekd (Peek.app/Contents/Helpers, one per OS user)
                                                     queue, asks, history, outbox, self-update
-                  ┌─────────────────────────────────────────┴───────────────┐
-                  ▼ HTTPS, Bearer <Silicon's token>                           ▼ direct mode: HTTPS, ≤60 s JWT
-        peek-server (Rust/axum on EC2, holds the app secret) ─proxy mode─► Deepgram (TTS Aura-2, STT Nova-3)
+                  ┌─────────────────────────────────────────┘
+                  ▼ HTTPS, Bearer <Silicon's token>
+        peek-server (Rust/axum on EC2, holds service keys)
          ├─ IAM: SLT exchange, refresh, introspection, OBO proofs
          ├─ Ting: recipient enrollment and delivery → the Silicon's flow
-         ├─ Deepgram: short-lived JWT minting (direct mode) or a streaming relay (proxy mode)
+         ├─ Google Gemini 3.8 Flash TTS: streaming relay → peekd → PCM playback
+         ├─ OpenAI gpt-transcribe: completed WAV upload → final transcript
          └─ Space Station telemetry gateway, drawing copies, bug reports
 ```
 
@@ -102,13 +104,15 @@ Every command explains itself: `peek --help`, `peek <command> --help`, `peek com
 - **One app per OS user.** `peekd` ships inside Peek.app and runs as a launchd agent. Honeycomb
   installs the CLI per Silicon home. The CLI offers the bundled `Peek.app.zip`, and peekd updates the
   app: the newest build wins and it never downgrades.
-- **Speech has two modes, picked by the backend per Deepgram key.** peekd first asks peek-server
-  for a speech token (`POST /api/v1/speech/token`). In **direct** mode the backend mints a Deepgram
-  token that lives at most 60 seconds and peekd calls Deepgram itself, so audio never touches the
-  backend. In **proxy** mode (a key that cannot mint tokens) peekd sends the speak text or the
-  finished recording to peek-server, which relays it to Deepgram and streams the answer straight
-  back: the audio passes through peek-server but is **never stored or logged** (only request
-  metadata is recorded). Every Deepgram request carries `mip_opt_out=true` in both modes.
+- **Google TTS streams through Peek.** `--speak` uses Gemini 3.8 Flash TTS. The backend keeps
+  the Google key and forwards audio events as they arrive; peekd decodes and plays PCM while
+  generation continues. No speech content or audio is stored or logged on the backend. Set
+  `voice` and `voice_instructions` with `peek config set`, or override a send with `--voice` and
+  `--voice-instructions`. See [voice customization and expressions](docs/show.md#customize-a-silicons-voice).
+- **OpenAI transcribes completed recordings.** After the Carbon stops, peekd sends the WAV
+  through Peek's authenticated relay to `gpt-transcribe`. The final transcript becomes the answer;
+  no live transcript is shown. API keys stay on the server, and the relay never stores or logs
+  recordings or transcripts. Google and OpenAI use separate production and test keys.
 - **Testing environments** use the same code paths as production (`peek --test <env-uuid> …`), and
   test bubbles carry a TEST pill.
 

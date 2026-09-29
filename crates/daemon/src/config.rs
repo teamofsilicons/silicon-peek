@@ -251,7 +251,7 @@ impl Default for Timings {
             outbox_idle: s(30),
             authority_sweep: s(600),
             tts_retry: vec![ms(250), s(1)],
-            tts_first_audio_budget: s(5),
+            tts_first_audio_budget: s(20),
             tts_idle: s(15),
             stt_retry: vec![ms(250), s(1)],
             stt_budget: s(20),

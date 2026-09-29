@@ -4,7 +4,7 @@ peek-server (temp SQLite) and the real peekd in an isolated run (BLUEPRINT
 decision 6), all under one directory. Used by run-local.sh / stop.sh and by
 e2e.py.
 
-    python3 scripts/e2e/local_stack.py start [--dir DIR] [--no-build] [--no-deepgram]
+    python3 scripts/e2e/local_stack.py start [--dir DIR] [--no-build] [--no-stt]
                                              [--ui-executable PATH]
     python3 scripts/e2e/local_stack.py stop [DIR]
     python3 scripts/e2e/local_stack.py env [DIR]
@@ -12,10 +12,10 @@ e2e.py.
 Nothing touches the real user's state: peekd gets PEEK_SUPPORT_DIR,
 PEEK_CACHES_DIR, PEEK_DAEMON_SOCKET and PEEK_NO_SERVICES=1 (never launches
 Peek.app, never runs the updater or watchdog); the CLI environment written to
-<DIR>/env.sh adds SILICON_HOME and the install hooks. The Deepgram key is read
-from PEEK_DEEPGRAM_KEY_FILE (default ~/.peek-operator/deepgram-api-key) and
-handed to peek-server through its environment only; it is never printed or
-written under DIR.
+<DIR>/env.sh adds SILICON_HOME and the install hooks. PEEK_GEMINI_API_KEY and
+PEEK_OPENAI_API_KEY are passed through to peek-server only for TTS and STT;
+export them before starting (the isolated server does not read the repository's
+.env). The keys are never written to stack files or printed.
 """
 
 from __future__ import annotations
@@ -40,7 +40,6 @@ REPO = HERE.parent.parent
 TARGET = Path(os.environ.get("CARGO_TARGET_DIR") or REPO / "target")
 BIN = TARGET / "debug"
 CURRENT = TARGET / "peek-local.current"
-DEFAULT_KEY_FILE = Path.home() / ".peek-operator" / "deepgram-api-key"
 ORG = "tos"
 
 
@@ -57,10 +56,10 @@ def app_secret() -> str:
 
 def build() -> None:
     subprocess.run(
-        ["cargo", "build", "-p", "silicon-peek", "--bin", "peek-server", "-p", "silicon-peek-daemon", "-p", "silicon-peek-cli"],
+        ["cargo", "build", "-p", "silicon-peek", "-p", "silicon-peek-daemon", "-p", "silicon-peek-cli"],
         cwd=REPO,
         check=True,
-        env={**os.environ, "CARGO_TARGET_DIR": str(TARGET)},
+        env={**base_env(), "CARGO_TARGET_DIR": str(TARGET)},
     )
 
 
@@ -136,7 +135,7 @@ class Stack:
         return self.state.get("pids", {})
 
 
-def start(root: Path | None = None, *, no_build: bool = False, deepgram: bool = True, ui_executable: str | None = None, quiet: bool = False) -> Stack:
+def start(root: Path | None = None, *, no_build: bool = False, stt: bool = True, ui_executable: str | None = None, quiet: bool = False) -> Stack:
     if not no_build:
         build()
     for exe in ("peek-server", "peekd", "peek"):
@@ -160,7 +159,7 @@ def start(root: Path | None = None, *, no_build: bool = False, deepgram: bool = 
     # socket gets a short private directory of its own (removed by stop()).
     socket_dir = tempfile.mkdtemp(prefix="peek-e2e-", dir="/var/tmp")
     os.chmod(socket_dir, 0o700)
-    state = {"ports": ports, "pids": pids, "started_at": time.time(), "deepgram": False, "socket_dir": socket_dir}
+    state = {"ports": ports, "pids": pids, "started_at": time.time(), "socket_dir": socket_dir}
 
     def save() -> None:
         (root / "stack.json").write_text(json.dumps(state, indent=2))
@@ -177,11 +176,9 @@ def start(root: Path | None = None, *, no_build: bool = False, deepgram: bool = 
         spawn("fakes", [sys.executable, str(HERE / "fake_services.py"), "--iam-port", str(ports["iam"]), "--ting-port", str(ports["ting"]), "--app-secret-file", str(secret_file), "--ready-file", str(ready)], base_env(), root)
         wait_until(ready.exists, 10, "the fake IAM and Ting")
 
-        key = ""
-        key_file = Path(os.environ.get("PEEK_DEEPGRAM_KEY_FILE") or DEFAULT_KEY_FILE)
-        if deepgram and key_file.is_file():
-            key = key_file.read_text().strip()
-        state["deepgram"] = bool(key)
+        openai_key = os.environ.get("PEEK_OPENAI_API_KEY", "").strip() if stt else ""
+        state["openai"] = bool(openai_key)
+        state["gemini"] = bool(os.environ.get("PEEK_GEMINI_API_KEY", "").strip())
         api = f"http://127.0.0.1:{ports['server']}"
         server_env = {
             **base_env(),
@@ -201,7 +198,8 @@ def start(root: Path | None = None, *, no_build: bool = False, deepgram: bool = 
             "PEEK_TING_BASE_URL": f"http://127.0.0.1:{ports['ting']}",
             "PEEK_HONEYCOMB_URL": "http://127.0.0.1:9",
             "PEEK_ENCRYPTION_KEY": secrets.token_hex(32),
-            "PEEK_DEEPGRAM_API_KEY": key,
+            "PEEK_OPENAI_API_KEY": openai_key,
+            "PEEK_GEMINI_API_KEY": os.environ.get("PEEK_GEMINI_API_KEY", ""),
             "PEEK_TELEMETRY": "off",
             "PEEK_TELEMETRY_HOME": str(root / "server" / "telemetry"),
             "PEEK_GITHUB_ISSUES_TOKEN": "",
@@ -238,9 +236,10 @@ def write_env(stack: Stack) -> None:
 
 
 def print_summary(stack: Stack) -> None:
-    deepgram = "real Deepgram via the speech proxy" if stack.state.get("deepgram") else "no Deepgram key (speech degrades to text)"
+    tts = "Gemini TTS" if stack.state.get("gemini") else "TTS disabled (no Gemini key)"
+    stt = "OpenAI STT" if stack.state.get("openai") else "STT disabled (no OpenAI key)"
     print(f"""peek local stack in {stack.root}
-  peek-server  {stack.api}   ({deepgram})
+  peek-server  {stack.api}   ({tts}; {stt})
   fake IAM     {stack.iam}   (any SLT logs in as si:e2e-silicon in tos)
   fake Ting    {stack.ting}   (GET {stack.ting}/_fake/tings lists received tings)
   peekd        {stack.socket}
@@ -323,7 +322,7 @@ def main() -> None:
     s = sub.add_parser("start")
     s.add_argument("--dir", type=Path)
     s.add_argument("--no-build", action="store_true")
-    s.add_argument("--no-deepgram", action="store_true")
+    s.add_argument("--no-stt", action="store_true")
     s.add_argument("--ui-executable", help="the only executable peekd accepts as the UI (PEEK_UI_EXECUTABLE)")
     t = sub.add_parser("stop")
     t.add_argument("dir", nargs="?", type=Path)
@@ -331,7 +330,7 @@ def main() -> None:
     e.add_argument("dir", nargs="?", type=Path)
     args = parser.parse_args()
     if args.cmd == "start":
-        start(args.dir, no_build=args.no_build, deepgram=not args.no_deepgram, ui_executable=args.ui_executable)
+        start(args.dir, no_build=args.no_build, stt=not args.no_stt, ui_executable=args.ui_executable)
     elif args.cmd == "stop":
         stop(args.dir)
     else:

@@ -163,7 +163,7 @@ async fn new_flags_are_refused_by_an_older_peekd() {
         assert_eq!(
             e["message"],
             format!(
-                "Peek.app on this Mac runs peekd 0.1.0, which does not support {what} yet (it needs Peek 0.1.2 or newer); Peek.app updates itself when nothing is on screen"
+                "Peek.app on this Mac runs peekd 0.1.0, which does not support {what} yet; Peek.app updates itself when nothing is on screen"
             )
         );
         assert_eq!(

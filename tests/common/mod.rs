@@ -76,6 +76,8 @@ pub struct Harness {
     pub iam: MockServer,
     pub ting: MockServer,
     pub deepgram: MockServer,
+    pub gemini: MockServer,
+    pub openai: MockServer,
     pub github: MockServer,
     pub spacestation: MockServer,
     pub honeycomb: MockServer,
@@ -124,6 +126,8 @@ impl Harness {
         let iam = MockServer::start().await;
         let ting = MockServer::start().await;
         let deepgram = MockServer::start().await;
+        let gemini = MockServer::start().await;
+        let openai = MockServer::start().await;
         let github = MockServer::start().await;
         let spacestation = MockServer::start().await;
         let honeycomb = MockServer::start().await;
@@ -157,6 +161,12 @@ impl Harness {
             ("PEEK_DEEPGRAM_API_KEY", PEEK_DG_KEY.to_owned()),
             ("PEEK_DEEPGRAM_TEST_API_KEY", PEEK_DG_TEST_KEY.to_owned()),
             ("PEEK_DEEPGRAM_BASE_URL", deepgram.uri()),
+            ("PEEK_GEMINI_API_KEY", "gemini-production-key".to_owned()),
+            ("PEEK_GEMINI_TEST_API_KEY", "gemini-testing-key".to_owned()),
+            ("PEEK_GEMINI_BASE_URL", gemini.uri()),
+            ("PEEK_OPENAI_API_KEY", "openai-production-key".to_owned()),
+            ("PEEK_OPENAI_TEST_API_KEY", "openai-testing-key".to_owned()),
+            ("PEEK_OPENAI_BASE_URL", openai.uri()),
             ("PEEK_GITHUB_ISSUES_TOKEN", GITHUB_TOKEN.to_owned()),
             ("PEEK_GITHUB_API_URL", github.uri()),
             ("PEEK_TELEMETRY", "on".to_owned()),
@@ -187,6 +197,8 @@ impl Harness {
             iam,
             ting,
             deepgram,
+            gemini,
+            openai,
             github,
             spacestation,
             honeycomb,

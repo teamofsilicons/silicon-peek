@@ -16,7 +16,7 @@ warning (newer servers may read them); any other unknown key is refused.
 
 Optional keys may be "" (not configured). PEEK_HONEYCOMB_SERVICE_TOKEN may be empty too: the
 server then answers 503 on the Honeycomb lifecycle participant routes (no testing environments),
-and this tool warns. PEEK_DEEPGRAM_MIP_OPT_OUT must be "true": peek always sends mip_opt_out=true.
+and this tool warns. PEEK_DEEPGRAM_MIP_OPT_OUT remains "true" for legacy key validation.
 PEEK_BYO_DEEPGRAM_HOSTS is optional and may even be left out (secrets written before it existed):
 "" or absent keeps the default *.deepgram.com for org BYO base URLs.
 """
@@ -134,7 +134,14 @@ SPEC: dict[str, tuple[bool, bool, Callable[[str], str | None]]] = {
     # Optional: without it the lifecycle participant routes answer 503 (warned about below).
     "PEEK_HONEYCOMB_SERVICE_TOKEN": (False, True, _pattern(r"[\x21-\x7e]{32,512}", "32-512 visible ASCII characters")),
     "PEEK_ENCRYPTION_KEY": (True, True, HEX64),
-    # Deepgram keys are [USER] (U6); without them speech degrades (BLUEPRINT §5.5).
+    # Current speech providers; production and testing use separate credentials.
+    "PEEK_GEMINI_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "a Gemini API key")),
+    "PEEK_GEMINI_TEST_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "a Gemini API key")),
+    "PEEK_GEMINI_BASE_URL": (False, False, _https_origin),
+    "PEEK_OPENAI_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "an OpenAI API key")),
+    "PEEK_OPENAI_TEST_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "an OpenAI API key")),
+    "PEEK_OPENAI_BASE_URL": (False, False, _https_origin),
+    # Legacy Deepgram configuration does not select the current speech providers.
     "PEEK_DEEPGRAM_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "a Deepgram API key")),
     "PEEK_DEEPGRAM_TEST_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "a Deepgram API key")),
     "PEEK_DEEPGRAM_BASE_URL": (True, False, _https_origin),
@@ -178,7 +185,11 @@ SPEC: dict[str, tuple[bool, bool, Callable[[str], str | None]]] = {
 # Keys that may be empty but deserve a warning when they are.
 # Optional keys added after the first deploy: a runtime secret written before them may leave them
 # out entirely (the server then uses its default), so an existing secret keeps rendering.
-MAY_BE_ABSENT = frozenset({"PEEK_BYO_DEEPGRAM_HOSTS"})
+MAY_BE_ABSENT = frozenset({
+    "PEEK_BYO_DEEPGRAM_HOSTS",
+    "PEEK_GEMINI_API_KEY", "PEEK_GEMINI_TEST_API_KEY", "PEEK_GEMINI_BASE_URL",
+    "PEEK_OPENAI_API_KEY", "PEEK_OPENAI_TEST_API_KEY", "PEEK_OPENAI_BASE_URL",
+})
 
 EMPTY_WARNINGS: dict[str, str] = {
     "PEEK_HONEYCOMB_SERVICE_TOKEN": (

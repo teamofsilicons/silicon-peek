@@ -1,7 +1,7 @@
 import Foundation
 
 /// Synthesizes the sample "speech" Simulation plays: a deterministic, speech-like tone sequence in
-/// exactly the format peekd streams from Deepgram Aura-2 (s16le, mono, 24 kHz; BLUEPRINT §8.7).
+/// exactly the format peekd streams from Google Gemini (s16le, mono, 24 kHz; BLUEPRINT §8.7).
 ///
 /// It is not intelligible speech and makes no network call. Each word becomes one to five voiced
 /// syllables (a harmonic source shaped by vowel formants, with a declining pitch contour and short

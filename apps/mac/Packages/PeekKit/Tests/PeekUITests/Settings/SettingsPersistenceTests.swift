@@ -62,8 +62,8 @@ struct SettingsPersistenceTests {
         model.setTelemetry(false)
         model.setShowTestPeeks(false)
         model.setCLIWatchdog(false)
-        model.setVoice("aura-2-apollo-en", for: "en")
-        model.setVoice("aura-2-fujin-ja", for: "ja")
+        model.setVoice("Puck", for: "en")
+        model.setVoice("Charon", for: "ja")
         model.selectSTT(.tag("pt-BR"))
         #expect(model.lastError == nil)
 
@@ -77,8 +77,8 @@ struct SettingsPersistenceTests {
         #expect(!reloaded.telemetry)
         #expect(!reloaded.showTestPeeks)
         #expect(!reloaded.cliWatchdog)
-        #expect(reloaded.voiceDefaults["en"] == "aura-2-apollo-en")
-        #expect(reloaded.voiceDefaults["ja"] == "aura-2-fujin-ja")
+        #expect(reloaded.voiceDefaults["en"] == "Puck")
+        #expect(reloaded.voiceDefaults["ja"] == "Charon")
         #expect(reloaded.voiceDefaults["de"] == DefaultVoices.byLanguage["de"])
         #expect(reloaded.sttLanguage == "pt-BR")
 
@@ -104,7 +104,7 @@ struct SettingsPersistenceTests {
         #expect(changes.contains { $0.key == "telemetry" && $0.value == .bool(false) })
         let voiceTables = changes.filter { $0.key == "voice_defaults" }.compactMap(\.value.objectValue)
         #expect(voiceTables.allSatisfy { $0.count == DefaultVoices.byLanguage.count }, "voice_defaults is always the full table")
-        #expect(voiceTables.contains { $0["ja"] == .string("aura-2-fujin-ja") && $0["en"] == .string("aura-2-apollo-en") })
+        #expect(voiceTables.contains { $0["ja"] == .string("Charon") && $0["en"] == .string("Puck") })
     }
 
     @Test("keys this build does not know survive a change")
@@ -136,10 +136,10 @@ struct SettingsPersistenceTests {
 
         #expect(!model.apply(.sttLanguage, .string("English")))
         #expect(model.lastError?.contains("BCP 47") == true)
-        #expect(!model.apply(.voiceDefaults, .object(["en": .string("aura-2-celeste-es")])))
-        #expect(model.lastError?.contains("aura-2-<name>-en") == true)
-        #expect(!model.apply(.voiceDefaults, .object(["pt": .string("aura-2-thalia-pt")])))
-        #expect(model.lastError?.contains("has no Aura-2 voices") == true)
+        #expect(!model.apply(.voiceDefaults, .object(["en": .string("bad voice")])))
+        #expect(model.lastError?.contains("Google voice") == true)
+        #expect(!model.apply(.voiceDefaults, .object(["english": .string("Kore")])))
+        #expect(model.lastError?.contains("primary language code") == true)
         #expect(!model.apply(.mode, .string("tiny")))
         #expect(model.lastError?.contains("\"normal\", \"compact\"") == true)
 
@@ -177,11 +177,11 @@ struct SettingsPersistenceTests {
         let coordinator = makeCoordinator(paths: paths, link: link)
         let model = makeModel(coordinator)
 
-        model.setVoice("aura-2-hector-fr", for: "fr")
+        model.setVoice("Orus", for: "fr")
         #expect(model.isVoiceCustomized(for: "fr"))
         model.resetVoice(for: "fr")
         #expect(!model.isVoiceCustomized(for: "fr"))
-        model.setVoice("aura-2-sander-nl", for: "nl")
+        model.setVoice("Aoede", for: "nl")
         model.resetAllVoices()
         #expect(!model.hasCustomVoices)
         #expect(PeekSettings.load(from: paths.settingsFile).settings.voiceDefaults == DefaultVoices.byLanguage)

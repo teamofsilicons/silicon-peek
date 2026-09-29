@@ -506,7 +506,7 @@ public struct ShownDoneRequest: UIRequest, Equatable {
     }
 }
 
-/// `focus`: the Carbon summoned a slot (pre-warms the session and the Deepgram JWT).
+/// `focus`: the Carbon summoned a slot (pre-warms the Peek session).
 public struct FocusRequest: UIRequest, Equatable {
     public static let op = "focus"
     public typealias Reply = IPCAck

@@ -1,7 +1,7 @@
 # honeycomb.yaml — package format 1, Manifest A: the macOS targets run install-app.sh (Honeycomb >= 0.5.0; every client is).
 format_version: 1
 app_id: "peek"
-version: "0.1.3"            # == every Cargo.toml version == CFBundleShortVersionString; git tag v0.1.3
+version: "0.1.4"            # == every Cargo.toml version == CFBundleShortVersionString; git tag v0.1.4
 bin:
   peek: "cli"
 targets:

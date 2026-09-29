@@ -1,5 +1,5 @@
 //! `GET/PUT/DELETE /api/v1/orgs/{org}/byo/deepgram`: an org's own Deepgram
-//! key. Any member may read the status; changes need `org_role` owner or
+//! legacy key (unused by speech). Any member may read the status; changes need `org_role` owner or
 //! admin (disclosed by `self.membership.read`). The key is never returned.
 
 use axum::{
@@ -117,8 +117,7 @@ pub(crate) async fn put(
             "api_key must be a Deepgram API key: 16–512 visible ASCII characters",
         ));
     }
-    // The org chooses where peek-server sends this key and every member's
-    // audio: only https hosts on the operator's allowlist (Deepgram's own by
+    // Validate legacy keys only on allowed HTTPS hosts (Deepgram's own by
     // default), never an IP address or localhost.
     let base_url = match request.base_url.as_deref() {
         None => None,
@@ -165,8 +164,7 @@ pub(crate) async fn put(
     status(&plane, org).await.map(Json)
 }
 
-/// `DELETE`: removes the org's key (minting falls back to nothing but peek's
-/// own key, which is the configured default, not a silent fallback).
+/// `DELETE`: removes the stored legacy key; active speech routing is unchanged.
 pub(crate) async fn delete(
     State(state): State<AppState>,
     plane: Plane,

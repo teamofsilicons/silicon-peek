@@ -58,7 +58,7 @@ After a clean, queued events and local history for the old generation are droppe
 | peek backend | every table has a `ctx` column, resolved from the validated secret and never from client input; test rows live in a separate database file |
 | Ting | types, grants and hooks exist per context; a clean wipes them |
 | Telemetry | test events are tagged `environment:"testing"` and never written to the production tables |
-| Speech | test contexts use a separate Deepgram project key (`PEEK_DEEPGRAM_TEST_API_KEY`), and requests are tagged `testing` |
+| Speech | TTS uses `PEEK_GEMINI_TEST_API_KEY`; transcription uses `PEEK_OPENAI_TEST_API_KEY`. Test contexts never fall back to production keys |
 
 ### Headers on each hop
 
@@ -108,4 +108,4 @@ After `honeycomb environments action $ENV clean`, repeat steps 2 to 7. The repos
 
 ## Local tests without any environment
 
-The Rust crates are tested against local fakes only: wiremock stands in for the peek backend, IAM, Ting and Deepgram, and every test uses a temporary `SILICON_HOME` and a private helper socket (`PEEK_DAEMON_SOCKET`). No test needs a key or touches your real `~/.peek` or `~/Library/Application Support/Peek`. To run the real binaries by hand against a local peek-server, use the [isolated run mode](development.md#isolated-run-mode): `PEEK_SUPPORT_DIR`, `PEEK_CACHES_DIR`, `PEEK_DAEMON_SOCKET`, `PEEK_NO_SERVICES=1` and `PEEK_API_URL` keep peekd and Peek.app away from your real data, login items and launch agents.
+The Rust crates are tested against local fakes only: wiremock stands in for the peek backend, IAM, Ting, Google and OpenAI, and every test uses a temporary `SILICON_HOME` and a private helper socket (`PEEK_DAEMON_SOCKET`). No test needs a key or touches your real `~/.peek` or `~/Library/Application Support/Peek`. To run the real binaries by hand against a local peek-server, use the [isolated run mode](development.md#isolated-run-mode): `PEEK_SUPPORT_DIR`, `PEEK_CACHES_DIR`, `PEEK_DAEMON_SOCKET`, `PEEK_NO_SERVICES=1` and `PEEK_API_URL` keep peekd and Peek.app away from your real data, login items and launch agents.

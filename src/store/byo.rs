@@ -4,7 +4,6 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 
 /// A stored BYO key.
 pub(crate) struct ByoKey {
-    pub(crate) sealed: Vec<u8>,
     pub(crate) base_url: Option<String>,
     pub(crate) updated_at: i64,
 }
@@ -31,13 +30,12 @@ pub(crate) fn put(
 /// The org's key, if configured.
 pub(crate) fn get(conn: &Connection, ctx: &str, org: &str) -> rusqlite::Result<Option<ByoKey>> {
     conn.query_row(
-        "SELECT sealed, base_url, updated_at FROM byo_keys WHERE ctx = ?1 AND org_id = ?2 AND provider = 'deepgram'",
+        "SELECT base_url, updated_at FROM byo_keys WHERE ctx = ?1 AND org_id = ?2 AND provider = 'deepgram'",
         params![ctx, org],
         |row| {
             Ok(ByoKey {
-                sealed: row.get(0)?,
-                base_url: row.get(1)?,
-                updated_at: row.get(2)?,
+                base_url: row.get(0)?,
+                updated_at: row.get(1)?,
             })
         },
     )

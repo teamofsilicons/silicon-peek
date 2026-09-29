@@ -3,8 +3,8 @@
 //! One peekd runs per macOS account, shipped inside
 //! `Peek.app/Contents/Helpers/peekd` and registered by the app as a launchd
 //! agent. It owns the slot registry, the send queue, asks and history, the
-//! delivery outbox, every Deepgram call (TTS streamed to the UI, STT once
-//! per recording), per-home session refresh under each home's lock, the
+//! delivery outbox, Google TTS streamed to the UI, `OpenAI` STT once
+//! per recording, per-home session refresh under each home's lock, the
 //! telemetry relay, Peek.app's self-update and the stale-CLI watchdog.
 //!
 //! It serves two roles on `/var/tmp/silicon-peek-<uid>/peekd.sock`: CLIs
@@ -24,8 +24,8 @@ pub mod commands;
 pub mod config;
 pub mod daemon;
 pub mod db;
-pub mod deepgram;
 pub mod drawings;
+mod gemini;
 pub mod homes;
 pub mod logging;
 pub mod matching;
@@ -38,6 +38,7 @@ mod server;
 pub mod settings;
 pub mod slots;
 pub mod speech;
+pub mod speech_request;
 pub mod state;
 pub mod stt;
 mod sys;

@@ -2,7 +2,7 @@ import Foundation
 import OSLog
 import PeekCore
 
-/// Plays peekd's streamed Deepgram Aura-2 PCM and exposes what drawings read as `input.speech`
+/// Plays peekd's streamed PCM and exposes what drawings read as `input.speech`
 /// (BLUEPRINT §0.1 item 2, §1.9.3, §8.7; notes/speech §4.2):
 ///
 /// * `tts.begin` resets the stream. Each `tts.chunk` (s16le mono, 24 kHz) is cut into 20–50 ms buffers with a

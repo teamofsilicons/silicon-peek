@@ -6,9 +6,10 @@ mod common;
 use common::{DEAD_API, Env};
 use serde_json::json;
 
-const VALID: [&str; 8] = [
+const VALID: [&str; 9] = [
     "telemetry",
     "voice",
+    "voice_instructions",
     "language",
     "notify",
     "api_url",
@@ -27,7 +28,7 @@ async fn config_set_is_strict() {
         (r#"{"telemetry":true,"telemetry":false}"#, "invalid_json"),
         (r#"{"colour":"red"}"#, "unknown_config_key"),
         (r#"{"telemetry":"no"}"#, "invalid_input"),
-        (r#"{"voice":"thalia"}"#, "invalid_input"),
+        (r#"{"voice":"not a voice"}"#, "invalid_input"),
         (r#"{"notify":["everything"]}"#, "invalid_input"),
         (r#"{"api_url":"http://example.com"}"#, "invalid_input"),
         (r#"{"delivery_max_age_hours":169}"#, "invalid_input"),
@@ -54,26 +55,27 @@ async fn config_set_merges_and_prints_the_result() {
         .run(&[
             "config",
             "set",
-            r#"{"notify":["show_dismissed","speech_finished"],"voice":"aura-2-thalia-en","language":"EN","delivery_max_age_hours":24}"#,
+            r#"{"notify":["show_dismissed","speech_finished"],"voice":"Kore","voice_instructions":"Warm, calm, Indian accent.","language":"EN","delivery_max_age_hours":24}"#,
         ])
         .await;
     assert_eq!(run.code, 0, "{}", run.stderr);
     let show = env.run(&["config", "show", "--json"]).await.json();
     assert_eq!(
         show,
-        json!({"schema":1,"telemetry":true,"voice":"aura-2-thalia-en","language":"en",
+        json!({"schema":1,"telemetry":true,"voice":"Kore","voice_instructions":"Warm, calm, Indian accent.","language":"en",
                "notify":["speech_finished","show_dismissed"],"api_url":null,"delivery_max_age_hours":24,"position":null,"drawing":null})
     );
     let reset = env
         .run(&[
             "config",
             "set",
-            r#"{"voice":null,"delivery_max_age_hours":null}"#,
+            r#"{"voice":null,"voice_instructions":null,"delivery_max_age_hours":null}"#,
             "--json",
         ])
         .await;
     assert_eq!(reset.code, 0);
     assert!(reset.json()["voice"].is_null());
+    assert!(reset.json()["voice_instructions"].is_null());
     assert_eq!(reset.json()["delivery_max_age_hours"], 168);
     let get = env.run(&["config", "get", "notify", "--json"]).await;
     assert_eq!(

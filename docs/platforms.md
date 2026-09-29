@@ -19,7 +19,7 @@ The macOS CLI itself runs on older macOS releases, but Peek.app (and so every bu
 
 ## Commands on Linux and Windows
 
-These work fully everywhere: `iam`, `login`, `login status`, `logout`, `config …`, `ting enroll`, `org byo deepgram …`, `docs`, `commands`, `report`, `update`, `doctor`, `--help`, `--version`.
+These work fully everywhere: `iam`, `login`, `login status`, `logout`, `config …`, `ting enroll`, `org byo deepgram …` (legacy key management), `docs`, `commands`, `report`, `update`, `doctor`, `--help`, `--version`.
 
 Every Mac-bound command (`send`, `register side`, `register drawing`, `unregister`, `ask …`, `history`, `status`, `app …` except `app status`, `daemon …`) exits **4** with:
 

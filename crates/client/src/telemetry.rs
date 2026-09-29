@@ -45,7 +45,7 @@ pub fn actor_hash(org: &OrgId, actor: &ActorId) -> String {
 
 /// Keys allowed in an event's `context` object (§6.4). Anything else is
 /// dropped before an event is recorded.
-pub const CONTEXT_KEYS: [&str; 31] = [
+pub const CONTEXT_KEYS: [&str; 32] = [
     "slot",
     "mode",
     "appearance",
@@ -72,6 +72,7 @@ pub const CONTEXT_KEYS: [&str; 31] = [
     "tts_ttfb_ms",
     "stt_ms",
     "stt_language",
+    "stt_request_id",
     "matched",
     "dg_request_id",
     "key_source",

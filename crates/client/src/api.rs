@@ -34,14 +34,14 @@ pub mod routes {
     pub const TING_RECIPIENT: &str = "/api/v1/ting/recipient";
     /// `POST` answer delivery.
     pub const DELIVERIES: &str = "/api/v1/deliveries";
-    /// `POST` Deepgram JWT minting (or the proxy verdict).
+    /// `POST` speech provider selection and token/proxy verdict.
     pub const SPEECH_TOKEN: &str = "/api/v1/speech/token";
     /// The speech proxy's base path (`{"mode":"proxy"}` token replies point
     /// `base_url` at `<public origin>` + this).
     pub const SPEECH_BASE: &str = "/api/v1/speech";
-    /// `POST` TTS through the speech proxy (streams linear16 audio back).
+    /// `POST` TTS through the speech proxy (streams Gemini audio events back).
     pub const SPEECH_SPEAK: &str = "/api/v1/speech/speak";
-    /// `POST` STT through the speech proxy (raw audio in, Deepgram JSON out).
+    /// `POST` STT through the speech proxy (raw WAV in, `SpeechTranscript` JSON out).
     pub const SPEECH_LISTEN: &str = "/api/v1/speech/listen";
     /// `PUT`/`GET`/`DELETE` the Silicon's drawing copy.
     pub const DRAWING: &str = "/api/v1/drawings/current";
@@ -115,8 +115,19 @@ pub struct ReadyChecks {
     pub iam_config: String,
     /// `ok` or `missing`.
     pub ting_config: String,
-    /// `configured` or `missing`.
+    /// Legacy Deepgram status.
+    #[serde(default = "missing_provider_status")]
     pub deepgram: String,
+    /// Gemini speech synthesis: `configured` or `missing`.
+    #[serde(default = "missing_provider_status")]
+    pub gemini: String,
+    /// `OpenAI` transcription: `configured` or `missing` (absent on older servers).
+    #[serde(default = "missing_provider_status")]
+    pub openai: String,
+}
+
+fn missing_provider_status() -> String {
+    "missing".to_owned()
 }
 
 /// `GET /readyz` (200 when ready, 503 otherwise, same body).
@@ -325,13 +336,13 @@ pub struct DeliveryResponse {
     pub replayed: bool,
 }
 
-/// What a Deepgram token is for.
+/// What a speech token or proxy route is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeechPurpose {
-    /// Text to speech (Aura-2).
+    /// Text to speech (Gemini).
     Tts,
-    /// Speech to text (Nova-3).
+    /// Speech to text (`OpenAI` gpt-transcribe).
     Stt,
 }
 
@@ -343,7 +354,7 @@ pub struct SpeechTokenRequest {
     pub purpose: SpeechPurpose,
 }
 
-/// Which Deepgram key minted the token.
+/// Which account serves the speech request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeySource {
@@ -363,7 +374,20 @@ pub struct SpeechParams {
     pub tags: Vec<String>,
 }
 
-/// How peekd reaches Deepgram for this token.
+/// Speech service used by this token or proxy route.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeechProvider {
+    /// Deepgram (legacy servers; current clients refuse this provider).
+    #[default]
+    Deepgram,
+    /// Google Gemini text to speech.
+    Gemini,
+    /// `OpenAI` completed-recording transcription.
+    Openai,
+}
+
+/// How peekd reaches the speech service for this token.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeechMode {
@@ -371,7 +395,7 @@ pub enum SpeechMode {
     /// (a JWT minted with `POST /v1/auth/grant`).
     #[default]
     Direct,
-    /// The Deepgram key cannot mint JWTs: call peek-server's speech proxy at
+    /// Call peek-server's speech proxy (Gemini TTS or fallback STT) at
     /// `base_url` (`/speak`, `/listen`) with the Silicon's own session.
     Proxy,
 }
@@ -380,6 +404,9 @@ pub enum SpeechMode {
 /// and is never logged; a proxy reply carries no credential at all.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpeechToken {
+    /// Speech provider. Absent means Deepgram (older servers).
+    #[serde(default)]
+    pub provider: SpeechProvider,
     /// Direct (JWT) or proxy. Absent means direct (older servers).
     #[serde(default)]
     pub mode: SpeechMode,
@@ -397,8 +424,8 @@ pub struct SpeechToken {
     pub params: SpeechParams,
 }
 
-/// Aura-2 output sample rates the speech proxy accepts (linear16).
-pub const SPEAK_SAMPLE_RATES: [u32; 5] = [8_000, 16_000, 24_000, 32_000, 48_000];
+/// Gemini linear16 output uses a fixed sample rate of 24000 Hz.
+pub const SPEAK_SAMPLE_RATES: [u32; 1] = [24_000];
 
 /// `POST /api/v1/speech/speak` body (speech proxy).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -406,16 +433,35 @@ pub const SPEAK_SAMPLE_RATES: [u32; 5] = [8_000, 16_000, 24_000, 32_000, 48_000]
 pub struct SpeechSpeakRequest {
     /// 1–2000 characters.
     pub text: String,
-    /// `aura-2-<name>-<lang>`.
+    /// Gemini voice ID (for example `Kore`); the wire field remains `model`.
     pub model: String,
+    /// Speaking style, accent, pace and delivery instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_instructions: Option<String>,
+    /// Optional BCP 47 language hint; absent lets Gemini detect the language.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
     /// linear16 sample rate (default 24000; one of [`SPEAK_SAMPLE_RATES`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample_rate: Option<u32>,
 }
 
-/// Query parameters `POST /api/v1/speech/listen` forwards to Deepgram; any
-/// other parameter is refused. `detect_language` and `keyterm` may repeat.
-/// peek-server adds `tag` and `mip_opt_out` itself.
+/// Provider-neutral result of `POST /api/v1/speech/listen`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpeechTranscript {
+    /// The transcribed text; empty when nothing was heard.
+    pub text: String,
+    /// Provider request ID, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    /// Language reported by the provider (never inferred from a request hint).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detected_language: Option<String>,
+}
+
+/// Query parameters accepted by `POST /api/v1/speech/listen`.
+/// `detect_language` and `keyterm` may repeat. The server translates these
+/// hints into `OpenAI` transcription fields; `smart_format` is kept for compatibility.
 pub const LISTEN_PARAMS: [&str; 6] = [
     "model",
     "language",
@@ -847,6 +893,7 @@ mod tests {
             "access_token":"jwt","expires_in":60,"base_url":"https://api.deepgram.com",
             "key_source":"peek","params":{"mip_opt_out":true,"tags":["peek","production"]}}))?;
         assert_eq!(direct.mode, SpeechMode::Direct);
+        assert_eq!(direct.provider, SpeechProvider::Deepgram);
         assert_eq!(
             direct.access_token.as_ref().map(Secret::expose),
             Some("jwt")
@@ -861,17 +908,34 @@ mod tests {
         assert_eq!(v["mode"], "proxy");
         let speak = SpeechSpeakRequest {
             text: "hi".into(),
-            model: "aura-2-thalia-en".into(),
+            model: "Kore".into(),
+            voice_instructions: None,
+            language: None,
             sample_rate: None,
         };
         assert_eq!(
             serde_json::to_string(&speak)?,
-            r#"{"text":"hi","model":"aura-2-thalia-en"}"#
+            r#"{"text":"hi","model":"Kore"}"#
         );
         assert!(
             serde_json::from_value::<SpeechSpeakRequest>(json!({"text":"a","model":"m","voice":1}))
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn speech_transcripts_and_readiness_are_additive() -> Result<(), serde_json::Error> {
+        let transcript: SpeechTranscript = serde_json::from_value(json!({"text":"hello"}))?;
+        assert_eq!(transcript.text, "hello");
+        assert!(transcript.request_id.is_none());
+        assert!(transcript.detected_language.is_none());
+        assert!(serde_json::from_value::<SpeechTranscript>(json!({"results":{}})).is_err());
+        let checks: ReadyChecks =
+            serde_json::from_value(json!({"db":"ok","iam_config":"ok","ting_config":"ok"}))?;
+        assert_eq!(checks.gemini, "missing");
+        assert_eq!(checks.openai, "missing");
+        assert_eq!(serde_json::to_value(SpeechProvider::Openai)?, "openai");
         Ok(())
     }
 

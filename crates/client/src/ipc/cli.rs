@@ -18,7 +18,7 @@ use crate::{
         limits,
         send::{
             Notify, SendFlags, check_duration, check_expires_in, check_flags, check_isi,
-            check_speak, check_tz_name, check_voice, normalize_language,
+            check_speak, check_tz_name, check_voice, check_voice_instructions, normalize_language,
         },
         show::Show,
     },
@@ -44,7 +44,7 @@ pub struct Warning {
 pub mod warnings {
     /// No TTS voice for the detected language; the text was shown as a pill.
     pub const SPEAK_LANGUAGE_UNSUPPORTED: &str = "speak_language_unsupported";
-    /// Deepgram is not configured or unavailable; the text was shown as a pill.
+    /// Speech is not configured or unavailable; the text was shown as a pill.
     pub const SPEECH_UNAVAILABLE: &str = "speech_unavailable";
     /// TTS failed before any audio played.
     pub const SPEECH_FAILED: &str = "speech_failed";
@@ -185,8 +185,17 @@ pub mod features {
     pub const SCHEDULE: &str = "schedule";
     /// `Notify::Shown` and `peek.send.shown`.
     pub const NOTIFY_SHOWN: &str = "notify_shown";
-    /// Every feature of peekd 0.1.2.
-    pub const ALL: [&str; 5] = [QUEUE_V2, EXPIRY_ALL, REPLACE, SCHEDULE, NOTIFY_SHOWN];
+    /// Gemini streaming speech and configurable voice instructions.
+    pub const GEMINI_TTS: &str = "gemini_tts";
+    /// Every feature of the current peekd.
+    pub const ALL: [&str; 6] = [
+        QUEUE_V2,
+        EXPIRY_ALL,
+        REPLACE,
+        SCHEDULE,
+        NOTIFY_SHOWN,
+        GEMINI_TTS,
+    ];
 }
 
 impl Op for Hello {
@@ -514,6 +523,9 @@ pub struct SendOp {
     pub ask: Option<Ask>,
     /// `--voice` (or config `voice`).
     pub voice: Option<String>,
+    /// Speaking style, accent, pace and delivery instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_instructions: Option<String>,
     /// `--lang` (or config `language`).
     pub lang: Option<String>,
     /// `--notify` (or config `notify`).
@@ -568,6 +580,7 @@ impl SendOp {
             show: self.show.is_some(),
             ask: self.ask.is_some(),
             voice: self.voice.is_some(),
+            voice_instructions: self.voice_instructions.is_some(),
             lang: self.lang.is_some(),
             duration: self.duration_ms.is_some(),
             expires_in: self.expires_in_s.is_some(),
@@ -586,6 +599,9 @@ impl SendOp {
         }
         if let Some(v) = &self.voice {
             check_voice(v)?;
+        }
+        if let Some(instructions) = &self.voice_instructions {
+            check_voice_instructions(instructions)?;
         }
         if let Some(l) = &self.lang {
             normalize_language(l)?;
@@ -746,13 +762,13 @@ pub enum SendStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeechStatus {
-    /// Streaming from Deepgram.
+    /// Streaming from the speech service.
     Pending,
     /// Served from the local TTS cache.
     Cached,
     /// No speech (no `--speak`, or speech is unavailable).
     Skipped,
-    /// The detected language has no Aura-2 voice.
+    /// Legacy servers: the detected language has no supported voice.
     UnsupportedLanguage,
 }
 
@@ -761,7 +777,7 @@ pub enum SpeechStatus {
 pub struct SpeechInfo {
     /// Status.
     pub status: SpeechStatus,
-    /// The Aura-2 voice.
+    /// The speech voice ID.
     #[serde(default)]
     pub model: Option<String>,
     /// Characters spoken.
@@ -1297,6 +1313,9 @@ impl Op for ScheduleClear {
 pub struct ConfigSyncConfig {
     /// Default voice.
     pub voice: Option<String>,
+    /// Speaking style, accent, pace and delivery instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_instructions: Option<String>,
     /// Default TTS language.
     pub language: Option<String>,
     /// Default notifications.
@@ -1595,6 +1614,7 @@ mod tests {
             show: None,
             ask: None,
             voice: None,
+            voice_instructions: None,
             lang: None,
             notify: vec![],
             duration_ms: None,
@@ -1660,6 +1680,7 @@ mod tests {
                 &json!({"question":"Keep?","type":"single_choice","options":["Yes","No"]}),
             )?),
             voice: None,
+            voice_instructions: None,
             lang: None,
             notify: vec![Notify::SpeechFinished],
             duration_ms: None,
@@ -1705,6 +1726,7 @@ mod tests {
             show: None,
             ask: None,
             voice: None,
+            voice_instructions: None,
             lang: None,
             notify: vec![],
             duration_ms: None,
@@ -1853,7 +1875,8 @@ mod tests {
                 "expiry_all",
                 "replace",
                 "schedule",
-                "notify_shown"
+                "notify_shown",
+                "gemini_tts"
             ])
         );
         assert!(new.has_feature(features::SCHEDULE));

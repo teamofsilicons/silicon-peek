@@ -2,7 +2,7 @@
 //! `peek config set '<json-object>'` (BLUEPRINT §7.3).
 //!
 //! ```json
-//! {"schema":1,"telemetry":true,"voice":null,"language":null,"notify":[],
+//! {"schema":1,"telemetry":true,"voice":null,"voice_instructions":null,"language":null,"notify":[],
 //!  "api_url":null,"delivery_max_age_hours":168,"position":null,"drawing":null}
 //! ```
 
@@ -15,7 +15,7 @@ use crate::{
     error::{Error, ErrorCode, Result},
     identity::{ApiUrl, SlotIndex},
     json::{kind, parse_object},
-    schema::send::{Notify, check_voice, normalize_language},
+    schema::send::{Notify, check_voice, check_voice_instructions, normalize_language},
 };
 
 /// The current config schema.
@@ -25,9 +25,10 @@ pub const CONFIG_SCHEMA: u32 = 1;
 pub const DEFAULT_DELIVERY_MAX_AGE_HOURS: u32 = 168;
 
 /// Every key `config set` accepts, in documentation order.
-pub const CONFIG_KEYS: [&str; 8] = [
+pub const CONFIG_KEYS: [&str; 9] = [
     "telemetry",
     "voice",
+    "voice_instructions",
     "language",
     "notify",
     "api_url",
@@ -45,8 +46,10 @@ pub struct Config {
     pub schema: u32,
     /// This home's telemetry (default on).
     pub telemetry: bool,
-    /// Default TTS voice; `null` picks the per-language default.
+    /// Default Gemini TTS voice; `null` picks Kore.
     pub voice: Option<String>,
+    /// Default speaking style, accent, pace and delivery instructions.
+    pub voice_instructions: Option<String>,
     /// TTS language when detection is ambiguous; `null` detects.
     pub language: Option<String>,
     /// Default `--notify`.
@@ -70,6 +73,7 @@ impl Default for Config {
             schema: CONFIG_SCHEMA,
             telemetry: true,
             voice: None,
+            voice_instructions: None,
             language: None,
             notify: Vec::new(),
             api_url: None,
@@ -142,6 +146,7 @@ impl Config {
         })
     }
 
+    #[allow(clippy::too_many_lines)] // keep validation for every config key in one match
     fn set_value(&mut self, key: &str, value: &Value) -> Result<()> {
         let bad = |expected: &str| {
             Error::invalid_input(format!(
@@ -165,7 +170,17 @@ impl Config {
                         check_voice(s)?;
                         Some(s.clone())
                     }
-                    _ => return Err(bad("an Aura-2 voice name or null")),
+                    _ => return Err(bad("a Gemini voice ID or null")),
+                };
+            }
+            "voice_instructions" => {
+                self.voice_instructions = match value {
+                    Value::Null => None,
+                    Value::String(s) => {
+                        check_voice_instructions(s)?;
+                        Some(s.clone())
+                    }
+                    _ => return Err(bad("voice instructions (1–2000 characters) or null")),
                 };
             }
             "language" => {
@@ -274,6 +289,7 @@ impl Config {
             "schema": self.schema,
             "telemetry": self.telemetry,
             "voice": self.voice,
+            "voice_instructions": self.voice_instructions,
             "language": self.language,
             "notify": self.notify,
             "api_url": self.api_url,
@@ -288,6 +304,7 @@ impl Config {
     pub fn sync_payload(&self) -> crate::ipc::cli::ConfigSyncConfig {
         crate::ipc::cli::ConfigSyncConfig {
             voice: self.voice.clone(),
+            voice_instructions: self.voice_instructions.clone(),
             language: self.language.clone(),
             notify: self.notify.clone(),
             telemetry: self.telemetry,
@@ -339,7 +356,7 @@ mod tests {
     fn default_matches_the_blueprint() {
         assert_eq!(
             Config::default().to_public_value(),
-            json!({"schema":1,"telemetry":true,"voice":null,"language":null,"notify":[],"api_url":null,"delivery_max_age_hours":168,"position":null,"drawing":null})
+            json!({"schema":1,"telemetry":true,"voice":null,"voice_instructions":null,"language":null,"notify":[],"api_url":null,"delivery_max_age_hours":168,"position":null,"drawing":null})
         );
     }
 
@@ -369,10 +386,16 @@ mod tests {
     fn merge_validates_every_key_and_null_resets() -> Result<()> {
         let mut c = Config::default();
         let patch = Config::parse_patch(
-            r#"{"telemetry":false,"voice":"aura-2-thalia-en","language":"EN","notify":["show_dismissed","speech_finished"],"api_url":"http://127.0.0.1:9/","delivery_max_age_hours":24,"position":3,"drawing":"/tmp/logo.js"}"#,
+            r#"{"telemetry":false,"voice":"Kore","voice_instructions":"Warm, calm. <indian accent>Anuv Jain</indian accent>","language":"EN","notify":["show_dismissed","speech_finished"],"api_url":"http://127.0.0.1:9/","delivery_max_age_hours":24,"position":3,"drawing":"/tmp/logo.js"}"#,
         )?;
         c.merge(&patch)?;
         assert!(!c.telemetry);
+        assert_eq!(c.voice.as_deref(), Some("Kore"));
+        assert_eq!(
+            c.voice_instructions.as_deref(),
+            Some("Warm, calm. <indian accent>Anuv Jain</indian accent>")
+        );
+        assert_eq!(c.sync_payload().voice_instructions, c.voice_instructions);
         assert_eq!(c.language.as_deref(), Some("en"));
         assert_eq!(
             c.notify,
@@ -386,10 +409,11 @@ mod tests {
         assert_eq!(c.position.map(SlotIndex::get), Some(3));
         assert_eq!(c.drawing.as_deref(), Some("/tmp/logo.js"));
         c.merge(&Config::parse_patch(
-            r#"{"telemetry":null,"voice":null,"notify":null,"delivery_max_age_hours":null,"position":null,"drawing":null}"#,
+            r#"{"telemetry":null,"voice":null,"voice_instructions":null,"notify":null,"delivery_max_age_hours":null,"position":null,"drawing":null}"#,
         )?)?;
         assert!(c.telemetry);
         assert!(c.voice.is_none());
+        assert!(c.voice_instructions.is_none());
         assert!(c.notify.is_empty());
         assert!(c.position.is_none());
         assert!(c.drawing.is_none());
@@ -408,7 +432,9 @@ mod tests {
             r#"{"drawing":""}"#,
             r#"{"drawing":7}"#,
             r#"{"telemetry":"no"}"#,
-            r#"{"voice":"thalia"}"#,
+            r#"{"voice":"not a voice"}"#,
+            r#"{"voice_instructions":""}"#,
+            r#"{"voice_instructions":12}"#,
             r#"{"language":"english"}"#,
             r#"{"notify":["everything"]}"#,
             r#"{"notify":"speech_finished"}"#,
@@ -416,7 +442,7 @@ mod tests {
             r#"{"delivery_max_age_hours":0}"#,
             r#"{"delivery_max_age_hours":169}"#,
             r#"{"delivery_max_age_hours":1.5}"#,
-            r#"{"telemetry":false,"voice":"bad"}"#,
+            r#"{"telemetry":false,"voice":"bad voice"}"#,
         ] {
             assert!(c.merge(&Config::parse_patch(bad)?).is_err(), "{bad}");
             assert_eq!(c, Config::default(), "{bad} must not partially apply");
@@ -438,7 +464,7 @@ mod tests {
 
     #[test]
     fn get_unset_and_unknown_extras() -> Result<()> {
-        let mut c: Config = serde_json::from_value(json!({"schema":1,"telemetry":true,"voice":null,"language":null,"notify":[],"api_url":null,"delivery_max_age_hours":168,"future_key":7}))
+        let mut c: Config = serde_json::from_value(json!({"schema":1,"telemetry":true,"voice":null,"voice_instructions":null,"language":null,"notify":[],"api_url":null,"delivery_max_age_hours":168,"future_key":7}))
             .map_err(|e| Error::internal(e.to_string()))?;
         assert_eq!(c.extra.get("future_key"), Some(&json!(7)));
         assert_eq!(c.get("telemetry")?, json!(true));

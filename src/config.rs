@@ -45,6 +45,12 @@ pub const VARIABLES: &[&str] = &[
     "PEEK_DEEPGRAM_API_KEY",
     "PEEK_DEEPGRAM_TEST_API_KEY",
     "PEEK_DEEPGRAM_BASE_URL",
+    "PEEK_OPENAI_API_KEY",
+    "PEEK_OPENAI_TEST_API_KEY",
+    "PEEK_OPENAI_BASE_URL",
+    "PEEK_GEMINI_API_KEY",
+    "PEEK_GEMINI_TEST_API_KEY",
+    "PEEK_GEMINI_BASE_URL",
     "PEEK_DEEPGRAM_TOKEN_TTL_SECONDS",
     "PEEK_DEEPGRAM_MIP_OPT_OUT",
     "PEEK_BYO_DEEPGRAM_HOSTS",
@@ -83,8 +89,12 @@ pub struct Config {
     pub honeycomb: HoneycombConfig,
     /// AES-256-GCM key for BYO keys and environment root keys.
     pub encryption_key: EncryptionKey,
-    /// Deepgram token minting.
+    /// Legacy Deepgram administration compatibility; unused for speech.
     pub deepgram: DeepgramConfig,
+    /// Gemini text-to-speech streaming.
+    pub gemini: GeminiConfig,
+    /// `OpenAI` transcription.
+    pub openai: OpenaiConfig,
     /// GitHub issue filing for bug reports.
     pub github: GithubConfig,
     /// Space Station telemetry.
@@ -161,18 +171,40 @@ impl fmt::Debug for EncryptionKey {
     }
 }
 
-/// Deepgram settings.
+/// `OpenAI` transcription settings. Testing never uses the production key.
+#[derive(Clone, Debug)]
+pub struct OpenaiConfig {
+    /// Production key (`PEEK_OPENAI_API_KEY`).
+    pub api_key: Option<Secret>,
+    /// Isolated testing key (`PEEK_OPENAI_TEST_API_KEY`).
+    pub test_api_key: Option<Secret>,
+    /// API origin (`PEEK_OPENAI_BASE_URL`).
+    pub base_url: String,
+}
+
+/// Gemini TTS settings. Production and testing keys never mix.
+#[derive(Clone, Debug)]
+pub struct GeminiConfig {
+    /// Production Gemini API key (`PEEK_GEMINI_API_KEY`).
+    pub api_key: Option<Secret>,
+    /// Separate testing key (`PEEK_GEMINI_TEST_API_KEY`).
+    pub test_api_key: Option<Secret>,
+    /// Gemini API origin (`PEEK_GEMINI_BASE_URL`).
+    pub base_url: String,
+}
+
+/// Legacy Deepgram configuration retained for administrative compatibility.
 #[derive(Clone, Debug)]
 pub struct DeepgramConfig {
-    /// peek's production key (Member role).
+    /// Legacy production key; never used for speech.
     pub api_key: Option<Secret>,
-    /// The key for every testing context (a separate Deepgram project).
+    /// Legacy testing key; never used for speech.
     pub test_api_key: Option<Secret>,
     /// Deepgram origin.
     pub base_url: String,
-    /// JWT lifetime in seconds (1–3600).
+    /// Legacy JWT lifetime setting (1–3600); no speech JWTs are minted.
     pub token_ttl_seconds: u32,
-    /// Whether peekd must add `mip_opt_out=true`.
+    /// Legacy privacy setting, retained for configuration compatibility.
     pub mip_opt_out: bool,
     /// Hosts an org's BYO key may name as its base URL
     /// (`PEEK_BYO_DEEPGRAM_HOSTS`, default `*.deepgram.com`).
@@ -654,6 +686,19 @@ impl Config {
             }
         };
 
+        let openai = OpenaiConfig {
+            api_key: r.secret("PEEK_OPENAI_API_KEY", 16, 512, "an OpenAI API key"),
+            test_api_key: r.secret("PEEK_OPENAI_TEST_API_KEY", 16, 512, "an OpenAI API key"),
+            base_url: r.origin("PEEK_OPENAI_BASE_URL", "https://api.openai.com"),
+        };
+        let gemini = GeminiConfig {
+            api_key: r.secret("PEEK_GEMINI_API_KEY", 16, 512, "a Gemini API key"),
+            test_api_key: r.secret("PEEK_GEMINI_TEST_API_KEY", 16, 512, "a Gemini API key"),
+            base_url: r.origin(
+                "PEEK_GEMINI_BASE_URL",
+                "https://generativelanguage.googleapis.com",
+            ),
+        };
         let deepgram = DeepgramConfig {
             api_key: r.secret("PEEK_DEEPGRAM_API_KEY", 16, 512, "a Deepgram API key"),
             test_api_key: r.secret("PEEK_DEEPGRAM_TEST_API_KEY", 16, 512, "a Deepgram API key"),
@@ -674,16 +719,13 @@ impl Config {
                     ByoHosts(vec![HostPattern::Subdomains("deepgram.com".to_owned())])
                 })
             },
-            // peek always opts out of Deepgram's Model Improvement Program:
-            // the variable may only confirm it.
+            // Retain the legacy setting's validation for existing deployments.
             mip_opt_out: match r.value("PEEK_DEEPGRAM_MIP_OPT_OUT").as_deref() {
                 None | Some("true") => true,
                 Some(other) => {
                     r.problem(
                         "PEEK_DEEPGRAM_MIP_OPT_OUT",
-                        format!(
-                            "must be `true` (peek always sends mip_opt_out=true to Deepgram), got `{other}`"
-                        ),
+                        format!("must be `true` (legacy compatibility setting), got `{other}`"),
                     );
                     true
                 }
@@ -754,6 +796,8 @@ impl Config {
                 },
                 encryption_key,
                 deepgram,
+                gemini,
+                openai,
                 github,
                 telemetry,
                 warnings: r.warnings,

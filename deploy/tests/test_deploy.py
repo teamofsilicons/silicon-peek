@@ -96,6 +96,27 @@ class RenderEnvTests(unittest.TestCase):
     def test_quoting_escapes_backslash_and_quote(self) -> None:
         self.assertEqual(render_env.quote('a"b\\c'), '"a\\"b\\\\c"')
 
+    def test_speech_keys_are_validated_without_echoing_and_optional_for_older_secrets(self) -> None:
+        document = filled_runtime()
+        speech_keys = [
+            "PEEK_GEMINI_API_KEY", "PEEK_GEMINI_TEST_API_KEY",
+            "PEEK_OPENAI_API_KEY", "PEEK_OPENAI_TEST_API_KEY",
+        ]
+        for name in speech_keys:
+            document[name] = "private-test-key-" + name
+        code, out, err = call(render_env, ["--check"], json.dumps(document))
+        self.assertEqual(code, 0, err)
+        for name in speech_keys:
+            self.assertNotIn(document[name], out + err)
+        document["PEEK_OPENAI_API_KEY"] = "invalid"
+        code, _, err = call(render_env, ["--check"], json.dumps(document))
+        self.assertEqual(code, 1)
+        self.assertIn("PEEK_OPENAI_API_KEY: must be an OpenAI API key", err)
+        for name in [*speech_keys, "PEEK_GEMINI_BASE_URL", "PEEK_OPENAI_BASE_URL"]:
+            del document[name]
+        code, _, err = call(render_env, ["--check"], json.dumps(document))
+        self.assertEqual(code, 0, err)
+
     def test_rejections_are_specific(self) -> None:
         cases = {
             "PEEK_BIND": ("0.0.0.0:8080", "127.0.0.1:8080"),

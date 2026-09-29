@@ -27,7 +27,7 @@ public struct PeekSettings: Sendable, Equatable {
     public var backdrop: BackdropSourceSetting = .wallpaper
     public var telemetry = true
     public var showTestPeeks = true
-    /// Language (BCP 47 primary subtag) → Aura-2 voice.
+    /// Language (BCP 47 primary subtag) → Google voice.
     public var voiceDefaults: [String: String] = DefaultVoices.byLanguage
     /// `auto` or a BCP 47 tag.
     public var sttLanguage = "auto"
@@ -77,21 +77,21 @@ public struct PeekSettings: Sendable, Equatable {
             sttLanguage = text
         case .voiceDefaults:
             guard let object = value.objectValue else {
-                throw SettingsError(key: key.rawValue, message: "must be an object of language → aura-2 voice; got \(value.jsonString)")
+                throw SettingsError(key: key.rawValue, message: "must be an object of language → Google voice; got \(value.jsonString)")
             }
             var voices: [String: String] = [:]
             for (language, voice) in object {
-                guard DefaultVoices.supportedLanguages.contains(language) else {
+                guard (2...3).contains(language.utf8.count), Self.isLanguageTag(language) else {
                     throw SettingsError(
                         key: key.rawValue,
-                        message: "language \"\(language)\" has no Aura-2 voices; use one of \(DefaultVoices.supportedLanguages.joined(separator: ", "))")
+                        message: "language \"\(language)\" must be a lowercase 2–3 letter primary language code")
                 }
-                guard let name = voice.stringValue, DefaultVoices.isValidVoice(name), name.hasSuffix("-\(language)") else {
+                guard let name = voice.stringValue, DefaultVoices.isValidVoice(name) else {
                     throw SettingsError(
                         key: key.rawValue,
-                        message: "voice for \"\(language)\" must match aura-2-<name>-\(language); got \(voice.jsonString)")
+                        message: "voice for \"\(language)\" must be a Google voice name or ID (1–128 ASCII letters, digits, _ or -); got \(voice.jsonString)")
                 }
-                voices[language] = name
+                voices[language] = name.hasPrefix("aura-") ? "Kore" : name
             }
             voiceDefaults = DefaultVoices.byLanguage.merging(voices) { _, chosen in chosen }
         }

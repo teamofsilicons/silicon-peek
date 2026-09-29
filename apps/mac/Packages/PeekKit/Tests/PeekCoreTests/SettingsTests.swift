@@ -20,7 +20,7 @@ struct SettingsTests {
         #expect(settings.backdrop == .wallpaper)
         #expect(settings.telemetry)
         #expect(settings.showTestPeeks)
-        #expect(settings.voiceDefaults["en"] == "aura-2-thalia-en")
+        #expect(settings.voiceDefaults["en"] == "Kore")
         #expect(settings.sttLanguage == "auto")
         #expect(settings.cliWatchdog)
     }
@@ -45,8 +45,8 @@ struct SettingsTests {
         #expect(settings.hotkeyModifier == .ctrlCmd)
         #expect(settings.telemetry == true)
         #expect(settings.sttLanguage == "pt-BR")
-        #expect(settings.voiceDefaults["es"] == "aura-2-selena-es")
-        #expect(settings.voiceDefaults["en"] == "aura-2-thalia-en")
+        #expect(settings.voiceDefaults["es"] == "Kore", "legacy Aura preference migrates without a warning")
+        #expect(settings.voiceDefaults["en"] == "Kore")
         #expect(settings.cliWatchdog == false)
         #expect(settings.extra["future"] == ["x": 1])
         #expect(settings.jsonValue["updates"] == ["cli_watchdog": false, "channel": "beta"])
@@ -72,8 +72,12 @@ struct SettingsTests {
         #expect(settings.display == .main)
         #expect(throws: SettingsError.self) { try settings.apply(.backdrop, "camera") }
         #expect(throws: SettingsError.self) { try settings.apply(.sttLanguage, "English") }
-        #expect(throws: SettingsError.self) { try settings.apply(.voiceDefaults, ["pt": "aura-2-x-pt"]) }
-        #expect(throws: SettingsError.self) { try settings.apply(.voiceDefaults, ["en": "aura-2-celeste-es"]) }
+        #expect(throws: SettingsError.self) { try settings.apply(.voiceDefaults, ["english": "Kore"]) }
+        #expect(throws: SettingsError.self) { try settings.apply(.voiceDefaults, ["en": "bad voice"]) }
+        try settings.apply(.voiceDefaults, ["hi": "Puck", "ta": "voice_tamil", "en": "aura-2-thalia-en"])
+        #expect(settings.voiceDefaults["hi"] == "Puck")
+        #expect(settings.voiceDefaults["ta"] == "voice_tamil")
+        #expect(settings.voiceDefaults["en"] == "Kore")
         try settings.apply(.cliWatchdog, false)
         #expect(settings.value(for: .cliWatchdog) == false)
     }

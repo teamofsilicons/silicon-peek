@@ -231,12 +231,23 @@ Move the four keys into `runtime.json` as `PEEK_BACKEND_TABLE_KEY`, `PEEK_CLIDAE
 `render-env.py --check`, `put-secret-value` and `deploy.py --require-tls`, and `rm -P` the four
 key files.
 
-## P7: Deepgram [USER key, then MUTATING] (depends on U6)
+## P7: Google TTS and OpenAI transcription [USER keys, then MUTATING] (depends on U6)
 
-The account holder creates a Member-role key and a separate test-project key, and decides on MIP
-opt-out. Put them into `PEEK_DEEPGRAM_API_KEY` and `PEEK_DEEPGRAM_TEST_API_KEY`, redeploy, and
-check `/readyz`, which must show `"deepgram":"configured"`. Until this is done, `--speak` degrades
-to a text pill and voice answers are disabled (BLUEPRINT §5.5).
+Set `PEEK_GEMINI_API_KEY` in the server's runtime secret for Gemini 3.8 Flash TTS and
+`PEEK_GEMINI_TEST_API_KEY` for isolated test traffic. The server uses the pinned model
+`gemini-3.8-flash-tts`; it streams Google's SSE to clients and keeps the API key server-side.
+Peek adds no TTS concurrency cap; Google's project quotas govern upstream capacity.
+Speech content and audio are never stored or logged.
+
+Microphone transcription needs `PEEK_OPENAI_API_KEY` and a separate
+`PEEK_OPENAI_TEST_API_KEY`. The server uploads completed recordings to OpenAI
+`gpt-transcribe`; no provider credentials are sent to clients. Legacy org Deepgram keys
+remain manageable for compatibility but do not affect either speech provider.
+Missing test keys never fall back to production.
+
+Redeploy, then check `/readyz` for `"gemini":"configured"` and `"openai":"configured"`.
+Without the Google key, `--speak` falls back to a text pill; without an OpenAI key,
+voice answers are unavailable. Keep keys in runtime secrets, never in tracked files.
 
 ## P8: website [MUTATING, USER DNS] (depends on U9)
 
@@ -309,7 +320,7 @@ scripts/testing/bootstrap.sh --yes --participant-registered --clean   # wipe (ge
 | Task | Command |
 |---|---|
 | Logs | `sudo journalctl -u peek-server -u caddy --since -1h` (through `ssm start-session`) |
-| Health | `curl -fsS http://127.0.0.1:8080/healthz` on the host; `/readyz` lists `db`, `iam_config`, `ting_config` and `deepgram` |
+| Health | `curl -fsS http://127.0.0.1:8080/healthz` on the host; `/readyz` lists `db`, `iam_config`, `ting_config`, `gemini` and `openai` |
 | Roll back | Redeploy the previous build: `python3 deploy/deploy.py --binary <old peek-server>`. Every release directory stays under `/opt/peek/releases` (the current one, the previous one and the three newest others). |
 | Backups | `systemctl list-timers peek-backup.timer`; `sudo -u peek python3 /opt/peek/current/backup.py`; objects are under `s3://<ArtifactBucket>/backups/YYYY/MM/DD/HHMMSSZ/` |
 | Restore | Stop `peek-server`. Copy the snapshot over `/var/lib/peek/<name>` (owner `peek`, mode 0600). Delete any stale `-wal`/`-shm` files. Start `peek-server`. |

@@ -89,12 +89,10 @@ async fn run(config: Config) -> ExitCode {
     let maintenance = {
         let state = state.clone();
         tokio::spawn(async move {
-            state.prewarm_speech(true).await;
             let mut every = tokio::time::interval(MAINTENANCE_EVERY);
             loop {
                 every.tick().await;
                 state.maintenance().await;
-                state.prewarm_speech(false).await;
             }
         })
     };

@@ -16,8 +16,8 @@ pub(crate) async fn healthz() -> Json<Health> {
 }
 
 /// Readiness: both databases answer and the IAM app secret is configured.
-/// A missing Deepgram key is reported but does not make the server unready
-/// (speech degrades to text, §5.5).
+/// Speech provider configuration is reported separately; missing provider keys
+/// do not make the core server unready (speech degrades to text, §5.5).
 pub(crate) async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<Ready>) {
     let db = match (
         state.0.production_db.ping().await,
@@ -34,6 +34,18 @@ pub(crate) async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<R
         "missing"
     };
     let checks = ReadyChecks {
+        gemini: if config.gemini.api_key.is_some() {
+            "configured"
+        } else {
+            "missing"
+        }
+        .to_owned(),
+        openai: if config.openai.api_key.is_some() {
+            "configured"
+        } else {
+            "missing"
+        }
+        .to_owned(),
         db: db.clone(),
         iam_config: iam_config.to_owned(),
         ting_config: "ok".to_owned(),

@@ -9,7 +9,7 @@ use silicon_peek_client::Error;
 use silicon_peek_daemon::{DaemonConfig, logging, restrict_umask, start};
 
 const USAGE: &str = "\
-peekd: the per-user Peek daemon (slots, queue, Deepgram, delivery outbox)
+peekd: the per-user Peek daemon (slots, queue, speech, delivery outbox)
 
 Usage:
   peekd run [--launchd | --parent-ui | --headless]

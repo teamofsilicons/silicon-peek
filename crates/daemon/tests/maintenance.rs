@@ -332,6 +332,7 @@ async fn failed_verification_rejects_and_a_busy_ui_defers() {
         ),
         ask: None,
         voice: None,
+        voice_instructions: None,
         lang: None,
         notify: vec![],
         duration_ms: None,
@@ -453,6 +454,7 @@ async fn a_homes_opt_out_covers_peekds_own_events_and_backend_calls() {
         ),
         ask: None,
         voice: None,
+        voice_instructions: None,
         lang: None,
         notify: vec![],
         duration_ms: None,
@@ -546,6 +548,7 @@ async fn an_environment_opt_out_mirrored_by_config_sync_lasts_until_the_cli_send
     let sync = ConfigSync {
         config: ConfigSyncConfig {
             voice: None,
+            voice_instructions: None,
             language: None,
             notify: vec![],
             telemetry: false,
@@ -667,6 +670,7 @@ async fn telemetry_is_relayed_through_the_gateway_and_honours_opt_outs() {
         &ConfigSync {
             config: ConfigSyncConfig {
                 voice: None,
+                voice_instructions: None,
                 language: None,
                 notify: vec![],
                 telemetry: false,

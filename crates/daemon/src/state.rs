@@ -233,7 +233,7 @@ pub struct Shared {
     pub waiters: Mutex<HashMap<AskId, oneshot::Sender<WaiterMsg>>>,
     /// peek-server.
     pub net: Net,
-    /// Deepgram and the TTS cache.
+    /// Google TTS, `OpenAI` STT, and the local audio cache.
     pub speech: Speech,
     /// Telemetry relay.
     pub telemetry: Telemetry,

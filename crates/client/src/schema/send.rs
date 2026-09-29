@@ -9,7 +9,7 @@ use serde_json::json;
 use super::{Lines, check_text, limits};
 use crate::error::{Error, ErrorCode, Result};
 
-/// Languages Deepgram Aura-2 speaks (BLUEPRINT §8.7).
+/// Legacy Aura-2 language list retained for client API compatibility.
 pub const TTS_LANGUAGES: [&str; 7] = ["en", "es", "de", "fr", "nl", "it", "ja"];
 
 /// Opt-in notifications (`--notify`, config `notify`).
@@ -85,7 +85,7 @@ pub fn check_speak(text: &str) -> Result<()> {
     )
     .map_err(|e| {
         if *e.code() == ErrorCode::SpeakTooLong {
-            e.with_hint("Deepgram Aura speaks at most 2000 characters per request; split it over several sends")
+            e.with_hint("peek accepts at most 2000 characters per speech request; split it over several sends")
         } else {
             e
         }
@@ -107,41 +107,52 @@ pub fn check_isi(isi: &str) -> Result<()> {
     )
 }
 
-/// Validates a Deepgram voice: `^aura-2-[a-z]+-(en|es|de|fr|nl|it|ja)$`.
+/// Validates a Gemini prebuilt or custom voice ID (1–128 ASCII letters,
+/// digits, underscores or hyphens). Legacy Aura IDs remain readable so
+/// peekd can replace an old configured voice with the Gemini default.
 ///
 /// # Errors
 /// `invalid_input` with an example.
 pub fn check_voice(voice: &str) -> Result<()> {
-    let ok = voice
-        .strip_prefix("aura-2-")
-        .and_then(|rest| rest.rsplit_once('-'))
-        .is_some_and(|(name, lang)| {
-            !name.is_empty()
-                && name.bytes().all(|b| b.is_ascii_lowercase())
-                && TTS_LANGUAGES.contains(&lang)
-        });
-    if ok {
+    if (1..=128).contains(&voice.len())
+        && voice
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
         Ok(())
     } else {
-        Err(Error::invalid_input(format!(
-            "voice `{voice}` is not an Aura-2 voice; expected aura-2-<name>-<{}>",
-            TTS_LANGUAGES.join("|")
-        ))
-        .with_hint(
-            "for example aura-2-thalia-en; see https://developers.deepgram.com/docs/tts-models",
-        ))
+        Err(Error::invalid_input("voice must be a Gemini voice ID of 1–128 ASCII letters, digits, underscores or hyphens")
+            .with_hint("use a prebuilt voice such as Kore, Puck or Aoede, or your Google custom voice ID"))
     }
+}
+
+/// Validates delivery instructions without changing text or inline markup.
+///
+/// # Errors
+/// `invalid_input` for empty text, control characters or more than 2000 characters.
+pub fn check_voice_instructions(instructions: &str) -> Result<()> {
+    check_text(
+        "--voice-instructions",
+        instructions,
+        1,
+        limits::SPEAK_MAX_CHARS,
+        ErrorCode::InvalidInput,
+        Lines::Multi,
+    )
 }
 
 /// The language of an Aura-2 voice (`aura-2-thalia-en` → `en`).
 #[must_use]
 pub fn voice_language(voice: &str) -> Option<&str> {
-    voice.rsplit_once('-').map(|(_, l)| l)
+    voice
+        .strip_prefix("aura-2-")?
+        .rsplit_once('-')
+        .map(|(_, l)| l)
 }
 
 /// Validates a BCP 47 language tag and returns its primary subtag,
-/// lowercased (`EN` → `en`, `es-MX` → `es`, `zh-Hant-TW` → `zh`): voices are
-/// chosen by language, never by region or script.
+/// lowercased (`EN` → `en`, `es-MX` → `es`, `zh-Hant-TW` → `zh`).
+/// Gemini voices are multilingual; use voice instructions for an accent.
 ///
 /// # Errors
 /// `invalid_input` unless the primary subtag is 2–3 ASCII letters and every
@@ -159,7 +170,7 @@ pub fn normalize_language(lang: &str) -> Result<String> {
         Err(Error::invalid_input(format!(
             "language `{lang}` is not a BCP 47 language tag; use a tag such as `en`, `es-MX` or `ja`"
         ))
-        .with_hint("peek uses the primary subtag (the part before the first -) to pick the voice"))
+        .with_hint("peek uses the primary subtag (the part before the first -) as a language hint; use voice instructions for an accent"))
     }
 }
 
@@ -325,6 +336,8 @@ pub struct SendFlags {
     pub ask: bool,
     /// `--voice` given.
     pub voice: bool,
+    /// `--voice-instructions` given.
+    pub voice_instructions: bool,
     /// `--lang` given.
     pub lang: bool,
     /// `--duration` given.
@@ -354,7 +367,7 @@ impl SendFlags {
 }
 
 /// Enforces the flag combination rules (contract §5.2): at least one of
-/// speak/show/ask; show and ask are exclusive; voice/lang need speak;
+/// speak/show/ask; show and ask are exclusive; voice/instructions/lang need speak;
 /// duration needs show or speak and never goes with ask; wait needs ask and
 /// no schedule; one deadline; one schedule; a scheduled send takes only
 /// `--expires-at`; `--tz` needs `--at` or `--expires-at`.
@@ -378,9 +391,9 @@ pub fn check_flags(f: SendFlags) -> Result<()> {
             "send the show first, then the ask (it queues behind), or put the context into the question",
         );
     }
-    if (f.voice || f.lang) && !f.speak {
+    if (f.voice || f.voice_instructions || f.lang) && !f.speak {
         return conflict(
-            "--voice and --lang apply only to --speak",
+            "--voice, --voice-instructions and --lang apply only to --speak",
             "add --speak \"…\" or drop them",
         );
     }
@@ -482,13 +495,23 @@ mod tests {
 
     #[test]
     fn voices_and_languages() {
+        assert!(check_voice("Kore").is_ok());
+        assert!(check_voice("custom_voice-123").is_ok());
         assert!(check_voice("aura-2-thalia-en").is_ok());
-        assert!(check_voice("aura-2-izanami-ja").is_ok());
-        assert!(check_voice("aura-2-thalia-pt").is_err());
-        assert!(check_voice("aura-2--en").is_err());
-        assert!(check_voice("aura-1-thalia-en").is_err());
-        assert!(check_voice("aura-2-Thalia-en").is_err());
+        assert!(check_voice("").is_err());
+        assert!(check_voice("not a voice").is_err());
+        assert!(check_voice("voice?key=secret").is_err());
+        assert!(check_voice(&"x".repeat(129)).is_err());
         assert_eq!(voice_language("aura-2-celeste-es"), Some("es"));
+        assert_eq!(voice_language("custom-voice"), None);
+        assert!(
+            check_voice_instructions("Warm, calm.\n<indian accent>Anuv Jain</indian accent>")
+                .is_ok()
+        );
+        assert!(check_voice_instructions(&"é".repeat(2000)).is_ok());
+        assert!(check_voice_instructions(&"é".repeat(2001)).is_err());
+        assert!(check_voice_instructions("").is_err());
+        assert!(check_voice_instructions("calm\0voice").is_err());
         assert_eq!(normalize_language("EN").ok().as_deref(), Some("en"));
         assert!(normalize_language("e").is_err());
         assert!(normalize_language("english").is_err());

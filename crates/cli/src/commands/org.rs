@@ -1,5 +1,5 @@
 //! `peek org byo deepgram set|show|delete` (BLUEPRINT §5.2): the org's own
-//! Deepgram key. The backend requires `org_role ∈ {owner, admin}` for writes
+//! legacy Deepgram key, unused by current speech. The backend requires `org_role ∈ {owner, admin}` for writes
 //! and never returns the key.
 
 use serde_json::{Value, json};
@@ -22,8 +22,8 @@ fn check_base_url(raw: &str) -> Result<String> {
         Error::invalid_input(format!("--base-url `{raw}` is not a URL: {e}"))
             .with_hint("for example https://api.eu.deepgram.com")
     })?;
-    // peek-server calls this origin for every member's speech, so it is
-    // always https and a host name (the server also checks its allowlist).
+    // The legacy key validator calls this origin, so it is always https
+    // and a host name (the server also checks its allowlist).
     if url.scheme() != "https" {
         return Err(Error::invalid_input(format!(
             "--base-url `{raw}` must use https"
@@ -47,14 +47,14 @@ fn check_base_url(raw: &str) -> Result<String> {
 fn human(v: &Value) -> String {
     if v["configured"] == true {
         format!(
-            "org {} uses its own Deepgram key (base URL {}, updated {})",
+            "org {} has a legacy Deepgram key (unused by current speech; base URL {}, updated {})",
             v["org_id"].as_str().unwrap_or_default(),
             v["base_url"].as_str().unwrap_or("https://api.deepgram.com"),
             v["updated_at"].as_str().unwrap_or("?")
         )
     } else {
         format!(
-            "org {} uses peek's Deepgram key",
+            "org {} has no legacy Deepgram key; speech uses Google TTS and OpenAI transcription",
             v["org_id"].as_str().unwrap_or_default()
         )
     }
@@ -91,7 +91,7 @@ pub async fn run(g: &Globals, out: Out, command: OrgCommand) -> Result<()> {
             })
             .await?;
             out.value(&with_org(&status, org.as_str()), human);
-            next(out, &["peek send --speak \"test\""]);
+            next(out, &["peek org byo deepgram show --json"]);
         }
         DeepgramCommand::Show => {
             let session = g.session(crate::context::store()?, false).await?;

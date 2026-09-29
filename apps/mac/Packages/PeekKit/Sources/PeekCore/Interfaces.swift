@@ -441,7 +441,7 @@ public enum TTSStreamEvent: Sendable, Equatable {
     }
 }
 
-/// Plays peekd's streamed Deepgram PCM (s16le mono 24 kHz) and exposes its level/progress timeline
+/// Plays peekd's streamed PCM (s16le mono 24 kHz) and exposes its level/progress timeline
 /// (BLUEPRINT §8.7). Implemented by PeekAudio.
 @MainActor
 public protocol SpeechPlaying: AnyObject {

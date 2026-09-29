@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use silicon_peek_client::{
     Error, Result,
     runtime::fs::{read_private, write_atomic},
-    schema::send::{TTS_LANGUAGES, check_voice, voice_language},
+    schema::send::{check_voice, normalize_language},
 };
 
 /// Update-related settings.
@@ -47,7 +47,7 @@ pub struct Settings {
     pub telemetry: bool,
     /// Show bubbles of testing environments.
     pub show_test_peeks: bool,
-    /// Per-language TTS voice overrides (`{"en":"aura-2-apollo-en"}`).
+    /// Per-language TTS voice overrides (`{"en":"Puck"}`).
     pub voice_defaults: BTreeMap<String, String>,
     /// `auto` or a BCP 47 language for speech-to-text.
     pub stt_language: String,
@@ -243,7 +243,9 @@ impl Settings {
             }
             "voice_defaults" => {
                 let obj = value.as_object().ok_or_else(|| {
-                    Error::invalid_input(r#"setting `voice_defaults` must be an object like {"en":"aura-2-apollo-en"}"#)
+                    Error::invalid_input(
+                        r#"setting `voice_defaults` must be an object like {"en":"Puck"}"#,
+                    )
                 })?;
                 let mut next = BTreeMap::new();
                 for (lang, voice) in obj {
@@ -252,19 +254,14 @@ impl Settings {
                             "voice_defaults.{lang} must be a voice name string"
                         ))
                     })?;
-                    if !TTS_LANGUAGES.contains(&lang.as_str()) {
-                        return Err(Error::invalid_input(format!(
-                            "voice_defaults key `{lang}` is not a TTS language; allowed: {}",
-                            TTS_LANGUAGES.join(", ")
-                        )));
-                    }
+                    let language = normalize_language(lang)?;
                     check_voice(voice)?;
-                    if voice_language(voice) != Some(lang.as_str()) {
-                        return Err(Error::invalid_input(format!(
-                            "voice `{voice}` does not speak `{lang}`"
-                        )));
-                    }
-                    next.insert(lang.clone(), voice.to_owned());
+                    let voice = if voice.starts_with("aura-") {
+                        "Kore"
+                    } else {
+                        voice
+                    };
+                    next.insert(language, voice.to_owned());
                 }
                 self.voice_defaults = next;
             }
@@ -377,13 +374,13 @@ mod tests {
         s.apply("hotkey_modifier", &json!("ctrl+cmd"))?;
         assert!(s.apply("hotkey_modifier", &json!("shift")).is_err());
         assert!(s.apply("hotkey_modifier", &json!("cmd+cmd")).is_err());
-        s.apply("voice_defaults", &json!({"en":"aura-2-apollo-en"}))?;
+        s.apply("voice_defaults", &json!({"en":"Puck"}))?;
         assert!(
-            s.apply("voice_defaults", &json!({"en":"aura-2-celeste-es"}))
+            s.apply("voice_defaults", &json!({"en":"bad voice"}))
                 .is_err()
         );
         assert!(
-            s.apply("voice_defaults", &json!({"hi":"aura-2-x-en"}))
+            s.apply("voice_defaults", &json!({"english":"Kore"}))
                 .is_err()
         );
         s.apply("stt_language", &json!("en-US"))?;

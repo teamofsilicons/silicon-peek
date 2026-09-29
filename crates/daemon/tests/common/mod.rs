@@ -1,5 +1,5 @@
 //! Shared fixtures: a whole peekd in a temp directory, a wiremock
-//! peek-server and Deepgram, Silicon homes with sessions, a fake CLI and a
+//! peek-server and a legacy provider, Silicon homes with sessions, a fake CLI and a
 //! fake Peek.app speaking IPC v1 over the real socket.
 
 #![allow(
@@ -11,12 +11,14 @@
 
 use std::{
     collections::{HashMap, VecDeque},
+    fmt::Write as _,
     os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use silicon_peek_client::{
     Error, Result, Secret,
@@ -38,7 +40,7 @@ use silicon_peek_daemon::{DaemonConfig, DaemonHandle, config::Timings, config::U
 use tokio::{net::unix::OwnedWriteHalf, sync::oneshot};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{method, path},
+    matchers::{body_json, method, path},
 };
 
 pub const FULL_SCOPE: &str = "obo:ting:subscriptions.register obo:ting:subscriptions.revoke obo:ting:tings.send self.identity.read self.membership.read self.profile.read";
@@ -46,6 +48,22 @@ pub const FULL_SCOPE: &str = "obo:ting:subscriptions.register obo:ting:subscript
 /// 100 000 bytes of PCM with a recognizable pattern.
 pub fn pcm(len: usize) -> Vec<u8> {
     (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect()
+}
+
+/// Gemini SSE audio events, intentionally split between PCM samples.
+pub fn sse_audio(audio: &[u8]) -> String {
+    let mut stream = String::new();
+    for chunk in audio.chunks(999) {
+        let _ = write!(
+            stream,
+            "data: {}\n\n",
+            json!({
+                "event_type": "step.delta", "delta": {"type": "audio", "data": STANDARD.encode(chunk)}
+            })
+        );
+    }
+    stream.push_str("data: {\"event_type\":\"interaction.completed\"}\n\ndata: [DONE]\n\n");
+    stream
 }
 
 pub fn fast_timings() -> Timings {
@@ -142,14 +160,26 @@ impl Harness {
         rusqlite::Connection::open(self.cfg.support_dir.join("peekd.sqlite")).unwrap()
     }
 
-    /// Speech token, drawing sync and Deepgram TTS defaults.
+    /// Gemini TTS, `OpenAI` STT and drawing sync defaults.
     pub async fn mount_defaults(&self) {
         Mock::given(method("POST"))
             .and(path("/api/v1/speech/token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "access_token": "jwt-test", "expires_in": 60, "base_url": self.deepgram.uri(),
-                "key_source": "peek", "params": {"mip_opt_out": true, "tags": ["peek", "production"]}
+                "provider": "openai", "mode": "proxy", "expires_in": 600,
+                "base_url": format!("{}/api/v1/speech", self.server.uri()),
+                "key_source": "peek", "params": {"mip_opt_out": true, "tags": []}
             })))
+            .mount(&self.server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/speech/token"))
+            .and(body_json(json!({"purpose": "tts"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "provider": "gemini", "mode": "proxy", "expires_in": 3600,
+                "base_url": format!("{}/api/v1/speech", self.server.uri()),
+                "key_source": "peek", "params": {"mip_opt_out": true, "tags": []}
+            })))
+            .with_priority(2)
             .mount(&self.server)
             .await;
         Mock::given(method("PUT"))

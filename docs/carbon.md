@@ -51,7 +51,7 @@ Peek samples what is behind each bubble (your desktop picture by default) and pi
 - **Long text opens in place.** Click a long text that does not fit and it opens right where it is, in a small glass popup that bounces open and shows all of it. Click it again, click anywhere else or press Esc to close it.
 - **Long text grows away from the edge.** At every one of the eight positions the narrow text column grows toward the middle of the screen, never off it, and leans with the arc only as much as stays easy to read.
 
-When the Silicon speaks, with or without something to show, the bubble slides back 1.5 seconds after the speech ends. A show without speech stays for a few seconds, longer for more text. An ask stays until you answer or dismiss it. If the speech cannot be played (for example, its language has no voice), the words appear as a pill instead.
+When the Silicon speaks, with or without something to show, the bubble slides back 1.5 seconds after the speech ends. A show without speech stays for a few seconds, longer for more text. An ask stays until you answer or dismiss it. If the speech cannot be played (for example, the speech provider is unavailable), the words appear as a pill instead.
 
 A bubble is ready before it moves: Peek prepares the glass, the colours behind it and the Silicon's first drawing frame out of sight, then slides it in, so nothing changes colour or shading after it lands.
 
@@ -79,7 +79,7 @@ While your Mac is locked or its display is asleep, Peek shows nothing and says n
 - If the recording was silent, nothing is uploaded, and the bubble stays open with "Didn't hear anything — try again or type".
 - If transcription fails, the question comes back with "Couldn't transcribe — type instead". Peek never sends an empty answer.
 
-The first time you use the mic, macOS asks for microphone permission. Peek records only while you are answering. Your recording is sent once to Deepgram to turn it into text (directly, or relayed by peek's backend, which never stores or logs it), and deleted from your Mac once the answer is delivered. See [Privacy](privacy.md).
+The first time you use the mic, macOS asks for microphone permission. Peek records only while you are answering. After you stop, your recording is sent through Peek's backend to OpenAI `gpt-transcribe` to turn it into text (the backend never stores or logs it), and deleted from your Mac once the answer is delivered. See [Privacy](privacy.md).
 
 ## Talk to a Silicon first
 
@@ -126,13 +126,13 @@ Settings has five tabs:
 | General | Hotkeys | ⌘, ⌃⌘, ⌥⌘, ⇧⌘, ⌃⌥⌘ or ⌃⌥, each followed by 1 … 8 | ⌃⌘1 … ⌃⌘8 |
 | General | Share usage and diagnostics | On or off. Content is never included. See [Telemetry](telemetry.md). | On |
 | General | Keep Silicons' peek CLI up to date | The helper's hourly fallback to Honeycomb's updater | On |
-| Voice | Speaking voice | The default Aura-2 voice per language | per language |
+| Voice | Speaking voice | Google voice; your Silicon can set a voice and delivery instructions through the CLI | `Kore` |
 | Voice | Listening language | Automatic (your macOS languages), a fixed language, or any BCP 47 tag | Automatic |
 | Testing | Show test peeks | Whether bubbles from testing environments appear; also lists the environments in use | On |
 | Startup | Launch at login, background helper | Status only, with a hint and **Open Login Items…** when macOS needs your approval | – |
 | Diagnostics | – | Versions (app, helper, macOS, QuickJS, glass mode), the helper's socket, microphone permission, `settings.json` and the end of the helper's log | – |
 
-**Simulation** (menu bar → Simulation…, or General → Open Simulation…) lets you try every combination (position, speak, show, each ask type, mode, appearance, backdrop) with built-in samples. It uses no network, no IAM, no Ting and no Deepgram, and its bubbles are labelled `SIMULATION`. A voice answer in Simulation is recorded but never transcribed.
+**Simulation** (menu bar → Simulation…, or General → Open Simulation…) lets you try every combination (position, speak, show, each ask type, mode, appearance, backdrop) with built-in samples. It uses no network, no IAM, no Ting, no Google and no OpenAI, and its bubbles are labelled `SIMULATION`. A voice answer in Simulation is recorded but never transcribed.
 
 **Test bubbles** come from a Silicon running against a testing environment. They carry a `TEST · <environment name>` pill and a dashed ring, and show "Sent to test silicon" after you answer. A real bubble always takes priority over a test bubble at the same position.
 

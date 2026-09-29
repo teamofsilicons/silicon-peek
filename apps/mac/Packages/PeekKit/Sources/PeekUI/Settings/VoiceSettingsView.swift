@@ -1,7 +1,7 @@
 import PeekCore
 import SwiftUI
 
-/// Settings › Voice: the default Aura-2 voice per language, and the speech-to-text language.
+/// Settings › Voice: the default Google voice per language, and the speech-to-text language.
 struct VoiceSettingsView: View {
     let model: SettingsModel
 
@@ -23,8 +23,8 @@ struct VoiceSettingsView: View {
                 }
             } footer: {
                 SettingsFootnote(
-                    "Peek speaks a Silicon's --speak text with Deepgram Aura-2 in the text's language. A Silicon's own "
-                        + "--voice or config voice wins over these defaults. Text in other languages is shown instead of spoken.")
+                    "Peek streams speech with Google Gemini. These voices work across languages. A Silicon can customize "
+                        + "the voice and delivery through Peek CLI; its voice choice overrides these defaults.")
             }
 
             Section {
@@ -54,8 +54,8 @@ struct VoiceSettingsView: View {
                 Text("Listening")
             } footer: {
                 SettingsFootnote(
-                    "Voice answers are recorded on this Mac and sent once, after you stop, to Deepgram Nova-3 through peekd. "
-                        + "Automatic lets Deepgram choose among your system languages; a fixed language is a little more accurate.")
+                    "After you stop recording, Peek sends the completed audio through its backend to OpenAI gpt-transcribe. "
+                        + "Automatic uses your system languages as hints; OpenAI detects the spoken language. A selected language supplies a hint.")
             }
 
             SettingsErrorBanner(model: model)

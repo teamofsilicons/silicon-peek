@@ -24,7 +24,8 @@ use silicon_peek_client::{
         ask::Ask,
         send::{
             Notify, SendFlags, check_duration, check_flags, check_isi, check_speak, check_voice,
-            check_wait, normalize_language, parse_expires_in, parse_schedule_in,
+            check_voice_instructions, check_wait, normalize_language, parse_expires_in,
+            parse_schedule_in,
         },
         show::Show,
     },
@@ -95,6 +96,7 @@ pub fn prepare_at(
         show: args.show.is_some(),
         ask: args.ask.is_some(),
         voice: args.voice.is_some(),
+        voice_instructions: args.voice_instructions.is_some(),
         lang: args.lang.is_some(),
         duration: args.duration.is_some(),
         expires_in: args.expires_in.is_some(),
@@ -120,6 +122,10 @@ pub fn prepare_at(
         .transpose()?;
     if let Some(v) = &args.voice {
         check_voice(v).map_err(|e| e.with_input_field("--voice", ""))?;
+    }
+    if let Some(instructions) = &args.voice_instructions {
+        check_voice_instructions(instructions)
+            .map_err(|e| e.with_input_field("--voice-instructions", ""))?;
     }
     let lang = args
         .lang
@@ -221,6 +227,7 @@ pub fn prepare_at(
         show,
         ask,
         voice: args.voice.clone(),
+        voice_instructions: args.voice_instructions.clone(),
         lang,
         notify,
         duration_ms,
@@ -247,6 +254,14 @@ pub fn prepare_at(
 fn needed_features(p: &Prepared) -> Vec<(&'static str, &'static str)> {
     let mut needed = Vec::new();
     let op = &p.op;
+    if op.voice_instructions.is_some()
+        || op.voice.as_deref().is_some_and(|v| !v.starts_with("aura-"))
+    {
+        needed.push((
+            features::GEMINI_TTS,
+            "Gemini voices and --voice-instructions",
+        ));
+    }
     if (op.expires_in_s.is_some() && op.ask.is_none()) || op.expires_at.is_some() {
         needed.push((
             features::EXPIRY_ALL,
@@ -278,6 +293,14 @@ pub async fn run(g: &Globals, out: Out, args: SendArgs) -> Result<()> {
         .and_then(|s| s.read_config().ok())
         .unwrap_or_default();
     let mut prepared = prepare(&args, &config.notify)?;
+    if prepared.op.speak.is_some() {
+        prepared.op.voice = prepared.op.voice.or_else(|| config.voice.clone());
+        prepared.op.lang = prepared.op.lang.or_else(|| config.language.clone());
+        prepared.op.voice_instructions = prepared
+            .op
+            .voice_instructions
+            .or_else(|| config.voice_instructions.clone());
+    }
     let (_session, auth) = mac_session(g).await?;
     let mut svc = service::ensure_service().await?;
     require_features(&svc, &needed_features(&prepared))?;
@@ -533,6 +556,7 @@ mod tests {
             show: None,
             ask: None,
             voice: None,
+            voice_instructions: None,
             lang: None,
             duration: None,
             expires_in: None,
@@ -631,11 +655,38 @@ mod tests {
         a.lang = Some("not a tag".into());
         assert_eq!(field(&a).as_deref(), Some("--lang"));
         a.lang = None;
-        a.voice = Some("thalia".into());
+        a.voice = Some("not a voice".into());
         assert_eq!(field(&a).as_deref(), Some("--voice"));
         a.voice = None;
         a.notify = Some("nope".into());
         assert_eq!(field(&a).as_deref(), Some("--notify"));
+    }
+
+    #[test]
+    fn gemini_voice_instructions_reach_the_daemon_unchanged() -> Result<()> {
+        let mut a = args();
+        a.speak = Some("<indian accent>Anuv Jain</indian accent>".into());
+        a.voice = Some("Kore".into());
+        a.voice_instructions = Some("Warm and conversational.\nSlow down for names.".into());
+        a.lang = Some("hi-IN".into());
+        let p = prepare(&a, &[])?;
+        assert_eq!(p.op.speak, a.speak);
+        assert_eq!(p.op.voice_instructions, a.voice_instructions);
+        assert_eq!(p.op.lang.as_deref(), Some("hi"));
+        assert!(
+            needed_features(&p)
+                .iter()
+                .any(|(f, _)| *f == features::GEMINI_TTS)
+        );
+        a.voice_instructions = Some("x".repeat(2001));
+        assert_eq!(field(&a).as_deref(), Some("--voice-instructions"));
+        a.voice_instructions = Some("Warm".into());
+        a.speak = None;
+        a.show = Some(r#"{"elements":[{"type":"text","text":"hi"}]}"#.into());
+        a.voice = None;
+        a.lang = None;
+        assert_eq!(code(&a), Some(ErrorCode::ConflictingFlags));
+        Ok(())
     }
 
     #[test]
