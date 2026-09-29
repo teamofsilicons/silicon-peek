@@ -1,10 +1,11 @@
 import manifest from "./topics.json";
+import packageInfo from "../../package.json";
 
 export const SITE_URL = "https://peek.teamofsilicons.com";
 export const REPO_URL = "https://github.com/teamofsilicons/silicon-peek";
 export const CRATE_URL = "https://crates.io/crates/silicon-peek-client";
 export const INSTALL_COMMAND = "curl -fsSL https://peek.teamofsilicons.com/install.sh | sh";
-export const VERSION = "0.1.3";
+export const VERSION = packageInfo.version;
 
 /**
  * The Carbon's default shortcut modifier (ctrl+cmd, so ⌃⌘1…⌃⌘8). Plain cmd+1…8 switches tabs in most

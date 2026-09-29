@@ -235,8 +235,10 @@ if [[ $ENV != "<ENV>" ]] && ! have root_key; then
 fi
 if ! { [[ -d $STATE ]] && have iam_env_key.done; }; then
     # UNCERTAIN (gap-testing §11): whether `iam env key` is authorized for a Honeycomb-created environment.
-    mutate "store the root key in the IAM CLI so iam4 --test works" "iam4 -o json env key $ENV" \
-        iam_cmd -o json env key "$ENV" >/dev/null && save_state iam_env_key.done 1 || true
+    if mutate "store the root key in the IAM CLI so iam4 --test works" "iam4 -o json env key $ENV" \
+        iam_cmd -o json env key "$ENV" >/dev/null; then
+        save_state iam_env_key.done 1 || true
+    fi
 fi
 
 # ---------------------------------------------------------------------------------------- B. identities

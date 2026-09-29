@@ -10,7 +10,7 @@ export const DOCS_DIR = join(WEB_DIR, "..", "docs");
 export const DIST_DIR = join(WEB_DIR, "dist");
 export const SITE_URL = "https://peek.teamofsilicons.com";
 export const REPO_URL = "https://github.com/teamofsilicons/silicon-peek";
-export const VERSION = "0.1.3";
+export const VERSION = JSON.parse(readFileSync(join(WEB_DIR, "package.json"), "utf8")).version;
 
 /** The topic manifest shared with the landing page (web/src/shared/topics.json). */
 export function loadManifest() {

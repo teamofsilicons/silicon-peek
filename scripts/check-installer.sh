@@ -16,8 +16,10 @@ fail() {
 }
 
 for file in "$canonical" "$served"; do
-    [ -f "$file" ] && [ ! -L "$file" ] || fail "$file is missing or a symlink" \
-        "restore it from BLUEPRINT §9.4; both copies must be regular files"
+    if [ ! -f "$file" ] || [ -L "$file" ]; then
+        fail "$file is missing or a symlink" \
+            "restore it from BLUEPRINT §9.4; both copies must be regular files"
+    fi
 done
 
 if ! cmp -s "$canonical" "$served"; then

@@ -61,8 +61,11 @@ resolve() {
     # One Peek.app per OS user: the account's real home, never SILICON_HOME.
     real_home=$(/usr/bin/dscl /Search -read "/Users/$user" NFSHomeDirectory 2>/dev/null \
         | /usr/bin/sed -n 's/^NFSHomeDirectory: //p')
-    [ -n "$real_home" ] && [ -d "$real_home" ] || real_home=${HOME:-}
-    [ -n "$real_home" ] && [ -d "$real_home" ] || { say degraded home "cannot resolve the home of user '$user'"; return 1; }
+    if [ -z "$real_home" ] || [ ! -d "$real_home" ]; then real_home=${HOME:-}; fi
+    if [ -z "$real_home" ] || [ ! -d "$real_home" ]; then
+        say degraded home "cannot resolve the home of user '$user'"
+        return 1
+    fi
     apps=${PEEK_INSTALL_APPLICATIONS_DIR:-"$real_home/Applications"}
     support=${PEEK_INSTALL_SUPPORT_DIR:-"$real_home/Library/Application Support/Peek"}
     app="$apps/Peek.app"
@@ -82,7 +85,10 @@ resolve() {
 field() { /usr/bin/sed -n "s/^$1=//p" "$info" | /usr/bin/head -n 1; }
 
 install_locked() {
-    [ -f "$zip" ] && [ -f "$info" ] || { say degraded payload "missing $zip or $info"; return 0; }
+    if [ ! -f "$zip" ] || [ ! -f "$info" ]; then
+        say degraded payload "missing $zip or $info"
+        return 0
+    fi
     bundle_id=$(field bundle_id); build=$(field bundle_version); short=$(field short_version)
     team=$(field team_id); zsha=$(field zip_sha256); min_os=$(field minimum_system_version)
     case "$build" in ''|*[!0-9]*) say degraded payload "bundle_version '$build' in $info is not an integer"; return 0 ;; esac
