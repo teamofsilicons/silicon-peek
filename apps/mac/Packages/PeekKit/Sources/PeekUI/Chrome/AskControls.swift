@@ -97,6 +97,7 @@ struct TypingFieldView: View {
     @FocusState private var focused: Bool
     /// The caret goes after the seed character (a printable key after the hotkey), never selecting it.
     @State private var selection: TextSelection?
+    @State private var pendingCaret = false
 
     var body: some View {
         let shade = model.shade
@@ -130,11 +131,22 @@ struct TypingFieldView: View {
         .frame(width: size.width, height: size.height)
         .onAppear { focus() }
         .onChange(of: model.focusRequest) { focus() }
+        .onChange(of: focused) {
+            if focused, pendingCaret {
+                pendingCaret = false
+                focus()
+            }
+        }
     }
 
     private func focus() {
-        focused = true
-        selection = TextSelection(insertionPoint: model.typingText.endIndex)
+        // AppKit selects all when editing begins; place the caret after the focus handoff.
+        if focused {
+            selection = TextSelection(insertionPoint: model.typingText.endIndex)
+        } else {
+            pendingCaret = true
+            focused = true
+        }
     }
 
     private var canSend: Bool { !model.typingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }

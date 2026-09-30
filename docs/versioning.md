@@ -4,7 +4,7 @@ peek runs as many pieces that update on their own schedules: a CLI copy in every
 
 ## One version number
 
-Every Cargo package, `honeycomb.yaml`, the app's `CFBundleShortVersionString` and the git tag share one version (`0.1.4`, tag `v0.1.4`). The app's build number is derived from it (`major × 1,000,000 + minor × 1,000 + patch`, so 0.1.4 is build 1004) and only ever increases. `peek --version`, `peek iam --json` (`version`) and `peek daemon status` (`version`, `ui.build`) report it.
+Every Cargo package, `honeycomb.yaml`, the app's `CFBundleShortVersionString` and the git tag share one version (`0.1.5`, tag `v0.1.5`). The app's build number is derived from it (`major × 1,000,000 + minor × 1,000 + patch`, so 0.1.5 is build 1005) and only ever increases. `peek --version`, `peek iam --json` (`version`) and `peek daemon status` (`version`, `ui.build`) report it.
 
 The package version describes a release. Compatibility is decided by the **contract versions** below, not by comparing package versions.
 
@@ -106,6 +106,10 @@ targets:
 Changes are checked against the consumers that depend on them: the Stemcell app contract (the exact `iam --json`, `login status` and `logout` behaviours), the Ting data schemas, the IPC frames of the previous protocol, and the documented CLI outputs. The docs build fails if any advertised `peek docs` topic is missing.
 
 ## Changelog
+
+### 0.1.5
+
+- Fix the initial keyboard focus and caret handoff when typing into a summoned Peek. The first character is preserved as typing continues in curved, straight and compact fields; clicking back into a field preserves the chosen caret position.
 
 ### 0.1.4
 

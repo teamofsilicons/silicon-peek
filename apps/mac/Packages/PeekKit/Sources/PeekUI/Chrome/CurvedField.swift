@@ -72,6 +72,7 @@ struct CurvedFieldView: View {
     @FocusState private var focused: Bool
     /// The caret goes after the seed character (a printable key after the hotkey), never selecting it.
     @State private var selection: TextSelection?
+    @State private var pendingCaret = false
     @State private var pressed = false
 
     private var typing: Bool { model.content.input == .typing }
@@ -158,6 +159,12 @@ struct CurvedFieldView: View {
         }
         .animation(.spring(duration: 0.35, bounce: 0.2), value: typing)
         .onChange(of: model.focusRequest) { focus() }
+        .onChange(of: focused) {
+            if focused, pendingCaret {
+                pendingCaret = false
+                focus()
+            }
+        }
     }
 
     private func tapped() {
@@ -165,8 +172,13 @@ struct CurvedFieldView: View {
     }
 
     private func focus() {
-        focused = true
-        selection = TextSelection(insertionPoint: model.typingText.endIndex)
+        // AppKit selects all when editing begins; place the caret after the focus handoff.
+        if focused {
+            selection = TextSelection(insertionPoint: model.typingText.endIndex)
+        } else {
+            pendingCaret = true
+            focused = true
+        }
     }
 
     // MARK: Drawing

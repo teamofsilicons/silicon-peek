@@ -177,4 +177,64 @@ struct SlotInputTests {
             panel.close()
         }
     }
+
+    @Test("summoned typing hands subsequent keys to the native text editor")
+    @MainActor
+    func typingFocus() async throws {
+        _ = NSApplication.shared
+        func pump() { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01)) }
+        func settle() async throws {
+            for _ in 0..<20 {
+                pump()
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        for (slot, mode) in [(SlotIndex.bottom, DisplayMode.normal), (.right, .normal), (.bottom, .compact)] {
+            let manager = SlotManager(environment: SlotManagerEnvironment(
+                speech: SlotFakeSpeech(), mic: SlotFakeMic(), images: SlotFakeImages(), input: SlotFakeInputHub(),
+                backdrop: SlotFakeBackdrop(), glassMode: .frosted,
+                makeSurface: { _, chrome in SlotPanelController(chrome: chrome, glass: .frosted, prewarm: .none) },
+                visibleFrame: { _ in SlotFixtures.visibleFrame }, host: { _ in nil }, send: { _, _ in BubbleDelivery() }))
+            manager.setMode(mode)
+            manager.updateTable([SlotState(index: slot, actorID: "si:dj", orgID: "tos", displayName: "DJ")])
+            manager.summon(slot)
+            try await settle()
+            let surface = try #require(manager.surface(on: slot) as? SlotPanelController)
+            let chrome = surface.chrome
+            defer { manager.dismissAll(); surface.panel.close() }
+
+            // The summon handler consumes the first key before the field exists.
+            let seed = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                                   timestamp: 0, windowNumber: surface.panel.windowNumber,
+                                                   context: nil, characters: "h", charactersIgnoringModifiers: "h",
+                                                   isARepeat: false, keyCode: 4))
+            surface.panel.sendEvent(seed)
+            #expect(chrome.typingText == "h")
+            try await settle()
+            #expect(surface.panel.isKeyWindow)
+            let editor = try #require(surface.panel.firstResponder as? NSTextView)
+            #expect(editor.selectedRange() == NSRange(location: 1, length: 0))
+            let key = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                                  timestamp: 0, windowNumber: surface.panel.windowNumber,
+                                                  context: nil, characters: "i", charactersIgnoringModifiers: "i",
+                                                  isARepeat: false, keyCode: 34))
+            surface.panel.sendEvent(key)
+            try await settle()
+            #expect(chrome.typingText == "hi")
+            #expect(surface.panel.firstResponder === editor)
+            surface.panel.sendEvent(key)
+            try await settle()
+            #expect(chrome.typingText == "hii")
+
+            // Native refocus (e.g. a mouse click) keeps the user's chosen insertion point.
+            let field = try #require(editor.delegate as? NSTextField)
+            #expect(surface.panel.makeFirstResponder(nil))
+            try await settle()
+            #expect(surface.panel.makeFirstResponder(field))
+            let refocused = try #require(field.currentEditor())
+            refocused.selectedRange = NSRange(location: 1, length: 0)
+            try await settle()
+            #expect(refocused.selectedRange == NSRange(location: 1, length: 0))
+        }
+    }
 }
