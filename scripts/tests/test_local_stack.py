@@ -19,7 +19,7 @@ spec.loader.exec_module(local_stack)
 
 class LocalStackTests(unittest.TestCase):
     def test_speech_keys_are_only_passed_to_server(self):
-        keys = {"PEEK_GEMINI_API_KEY": "fake-gemini-local-stack-key", "PEEK_OPENAI_API_KEY": "fake-openai-local-stack-key"}
+        keys = {"PEEK_DEEPGRAM_API_KEY": "fake-deepgram-local-stack-key", "PEEK_OPENAI_API_KEY": "fake-openai-local-stack-key"}
         children = {}
 
         def spawn(argv, **kwargs):
@@ -51,7 +51,7 @@ class LocalStackTests(unittest.TestCase):
                 for name in keys:
                     self.assertNotIn(name, cargo.call_args.kwargs["env"])
                 stack = local_stack.start(root / "stack", no_build=True)
-            self.assertTrue(stack.state["gemini"])
+            self.assertTrue(stack.state["elevenlabs"])
             self.assertTrue(stack.state["openai"])
             for name, key in keys.items():
                 self.assertEqual(children["peek-server"][name], key)

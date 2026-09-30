@@ -12,7 +12,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{DaemonCli, Harness, Home, eventually, pcm, query_one, sse_audio};
+use common::{DaemonCli, Harness, Home, eventually, pcm, query_one};
 use serde_json::{Value, json};
 use silicon_peek_client::{
     ErrorCode,
@@ -28,10 +28,6 @@ use silicon_peek_client::{
     schema::{ask::Ask, send::Notify},
     timestamp::Timestamp,
     ting::Gesture,
-};
-use wiremock::{
-    Mock, ResponseTemplate,
-    matchers::{method, path},
 };
 
 fn send_op() -> SendOp {
@@ -559,15 +555,7 @@ async fn a_waiting_show_expires_unseen_and_the_silicon_is_told() {
 #[tokio::test]
 async fn an_on_screen_speak_expires_after_shown() {
     let h = Harness::start().await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/speech/speak"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_raw(sse_audio(&pcm(48_000)), "text/event-stream"),
-        )
-        .mount(&h.server)
-        .await;
+    h.agent.audio(pcm(48_000));
     let (home, ui) = ready(&h, "si:expspk", 3, 1002).await;
     let mut op = speak("A long announcement that outlives its deadline.");
     op.expires_in_s = Some(10);
@@ -661,15 +649,7 @@ async fn expiry_keeps_running_while_the_carbon_is_away() {
 #[tokio::test]
 async fn a_1002_app_reports_shown_before_speech_and_notifications() {
     let h = Harness::start().await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/speech/speak"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_raw(sse_audio(&pcm(24_000)), "text/event-stream"),
-        )
-        .mount(&h.server)
-        .await;
+    h.agent.audio(pcm(24_000));
     let (home, ui) = ready(&h, "si:shown", 2, 1002).await;
     let mut op = speak("Build finished");
     op.notify = vec![Notify::Shown];

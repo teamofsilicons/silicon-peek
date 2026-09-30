@@ -34,7 +34,7 @@ public struct SimulationLogEntry: Identifiable, Equatable, Sendable {
 ///    which the presenter hands to its speech player, driving `speech.level/progress/done`.
 ///
 /// Everything the bubble sends back (answers, dismissals, `speech.done`, voice recordings, …)
-/// lands in ``log``. Nothing reaches peekd, IAM, Ting, Google or OpenAI.
+/// lands in ``log``. Nothing reaches peekd, IAM, Ting, Deepgram or OpenAI.
 @MainActor
 @Observable
 public final class SimulationEngine {

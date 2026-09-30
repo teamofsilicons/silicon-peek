@@ -8,8 +8,9 @@ BLUEPRINT §5.2). It holds peek's IAM app secret and nothing a Silicon owns:
 - introspects every bearer **live** on every request (§2.7);
 - mints a fresh single-use Ting OBO proof for every enrollment, revocation and
   delivery attempt, bound to the exact body bytes (§3.4–§3.6);
-- streams Gemini TTS and sends completed WAV recordings to OpenAI
-  `gpt-transcribe` through authenticated relays; provider keys stay on the server;
+- mints short-lived connection tokens for direct ElevenLabs TTS through Deepgram
+  Voice Agent and relays completed WAV recordings to OpenAI `gpt-transcribe`;
+  permanent provider keys stay on the server;
 - keeps each Silicon's drawing copy, files bug reports as GitHub issues,
   relays client telemetry to Space Station, receives IAM webhooks, and is a
   Honeycomb lifecycle participant for testing environments (§2.9, §2.10).
@@ -25,7 +26,7 @@ BLUEPRINT §5.2). It holds peek's IAM app secret and nothing a Silicon owns:
 | `auth.rs` | bearer verification (the §2.7 checks) and per-route scopes |
 | `iam.rs` | the IAM seam: `IamPlane`/`IamConnector` traits over `silicon-iam-client` 4.0.0 |
 | `ting.rs` | OBO proofs, enrollment, revocation, deliveries, the §3.6 error matrix |
-| `gemini.rs`, `openai.rs`, `deepgram.rs`, `github.rs` | Gemini TTS streaming, OpenAI transcription, legacy Deepgram BYO key validation, and bug reports |
+| `elevenlabs.rs`, `openai.rs`, `deepgram.rs`, `github.rs` | TTS connection tokens, OpenAI transcription, legacy Deepgram BYO key validation, and bug reports |
 | `honeycomb.rs` | lifecycle participant (barrier → wipe → receipt) and activity reports |
 | `webhook.rs` | IAM webhook verification, routing, dedupe and removal cleanup |
 | `idempotency.rs` | the `idempotency` table semantics |
@@ -45,7 +46,7 @@ after 60 s.
 | Method and path | Auth | Notes |
 |---|---|---|
 | `GET /healthz` | – | `{"status":"ok","service":"peek","version"}` |
-| `GET /readyz` | – | `200`/`503` `{"status","checks":{"db","iam_config","ting_config","gemini","openai","deepgram"}}`; ready = both databases answer and the app secret is set |
+| `GET /readyz` | – | `200`/`503` `{"status","checks":{"db","iam_config","ting_config","elevenlabs","openai","deepgram"}}`; ready = both databases answer and the app secret is set |
 | `GET /api/v1/iam` | – (test key optional) | discovery; with a test key also `testing_environment_id`, `testing_generation`, `testing_environment{id,name,generation}` |
 | `POST /api/v1/auth/login` | – | `{"slt"}` (+ `X-Org-ID` hint) → session incl. `ting` enrollment; public IDs refused in production (`slt_is_public_id`) |
 | `POST /api/v1/auth/refresh` | – | `{"refresh_token"}` → session without `ting`; terminal errors → `401 session_rejected` |
@@ -53,8 +54,7 @@ after 60 s.
 | `GET /api/v1/auth/me` | Bearer + `X-Org-ID` | live identity, `display_name` (via `application_reads().me()`), `org_role`, scopes, `reconsent_required`, `ting` |
 | `POST /api/v1/ting/recipient` | Bearer | `{}` → `{"subscribed":true,"subscription_id"}` (explicit enrollment only; never automatic, D7) |
 | `POST /api/v1/deliveries` | Bearer | peekd's exact outbox bytes → `{"event_id","ting_id","status":"accepted","silent","replayed"}`; `type` must be one of the nine `peek.*` types (`TingType::ALL`: the six 0.1.0 types plus `peek.send.expired`, `peek.schedule.due`, `peek.send.shown`), `data` must match that type's strict client-crate schema and `data.context` the plane, and `key` must be `<verified actor>/<subject id>/<event>` |
-| `POST /api/v1/speech/token` | Bearer | TTS returns `{"provider":"gemini","mode":"proxy",…}`; STT returns `{"provider":"openai","mode":"proxy",…}`. Both use `base_url:"<PEEK_PUBLIC_ORIGIN>/api/v1/speech"` and return no provider credential. |
-| `POST /api/v1/speech/speak` | Bearer | `{"text","model","voice_instructions"?,"language"?,"sample_rate"?:24000}` → Gemini 3.8 Flash TTS SSE forwarded unbuffered. `model` is the selected voice ID, e.g. `Kore`. |
+| `POST /api/v1/speech/token` | Bearer | TTS returns `{"provider":"elevenlabs","mode":"direct","access_token":<temporary JWT>,"expires_in":30,"base_url":"wss://agent.deepgram.com/v1/agent/converse",…}`. STT returns `{"provider":"openai","mode":"proxy",…}` with the Peek speech base URL and no provider credential. |
 | `POST /api/v1/speech/listen` | Bearer | completed WAV (≤ 4 MiB) + allow-listed query (`model`, `language`, `detect_language`*, `keyterm`*, `numerals`, `smart_format`) → `{"text","request_id"?,"detected_language"?}` from OpenAI `gpt-transcribe` |
 | `PUT/GET/DELETE /api/v1/drawings/current` | Bearer | raw JS ≤ 256 KiB with `X-Peek-Drawing-Sha256`; `GET` sends `ETag: "<sha256>"` (and honours `If-None-Match`) |
 | `GET/PUT/DELETE /api/v1/orgs/{org}/byo/deepgram` | Bearer; PUT/DELETE need owner/admin | Legacy administration only; `PUT {"api_key","base_url"?}` validates and seals a Deepgram key, which is never returned or used for speech |
@@ -76,19 +76,28 @@ telemetry gateway (browsers never send one; Space Station dedupes by
   idempotency_in_progress` (retryable). Only successes are stored, so a failed
   attempt never poisons its key. The work runs in its own task, so a client
   that disconnects still finds the result on retry.
-- **speech/token, speech/speak, speech/listen** require the key but never
+- **speech/token, speech/listen** require the key but never
   replay (audio and text are never stored).
 
-### Speech (§5.2, speech proxy mode)
+### Speech
 
-TTS uses `PEEK_GEMINI_API_KEY`, or only `PEEK_GEMINI_TEST_API_KEY` on the testing plane.
-The API model is pinned to `gemini-3.8-flash-tts`; voice IDs and delivery instructions
-come from the daemon's request. Peek converts paired `<indian accent>Anuv Jain</indian accent>`
-spans into scoped `speech_metadata.style` and preserves Google's singleton vocal tags.
-Requests use `store:false`. The server relays Google's SSE unchanged (24 kHz mono PCM
-encoded in audio deltas); clients decode and play it progressively. Peek adds no
-TTS concurrency cap; Google's project quotas govern upstream capacity. EOF or
-client disconnect releases the upstream connection. Provider error bodies are dropped.
+TTS uses `PEEK_DEEPGRAM_API_KEY`, or only `PEEK_DEEPGRAM_TEST_API_KEY` on the testing
+plane. The key needs Member permission or higher. Each authenticated token request
+mints a fresh JWT with `POST /v1/auth/grant`; the default TTL is 30 seconds
+(`PEEK_DEEPGRAM_TOKEN_TTL_SECONDS`, 1–3600). The token is never cached or stored by
+Peek. Grant response bodies are limited to 32 KiB, tokens and lifetimes are checked,
+and provider error bodies are discarded. The client uses `Authorization: Bearer`
+to open a direct Voice Agent WebSocket. The JWT must be valid at connection time;
+it does not limit the lifetime of an already open connection.
+
+Text, cues and TTS audio travel directly between the Mac and Deepgram's ElevenLabs
+provider. The backend has no TTS audio relay or `/api/v1/speech/speak` route.
+`PEEK_ELEVENLABS_AGENT_URL` defaults to the canonical Voice Agent endpoint; only that
+WSS endpoint or a local `ws://` test server is accepted. The daemon owns the voice,
+model, native cue formatting, streaming playback and cancellation. Missing Member
+permission returns a nonretryable `elevenlabs_rejected` error; there is no proxy
+fallback. Temporary grants permit the provider's supported usage APIs, rather than
+being restricted to a specific voice or TTS input.
 
 STT uses `PEEK_OPENAI_API_KEY`, or only `PEEK_OPENAI_TEST_API_KEY` on the testing
 plane. Missing keys fail with `503 speech_unavailable {reason:not_configured}`;
@@ -109,7 +118,7 @@ bodies are discarded; 408, 429, 5xx and transport failures are retryable, while
 invalid inputs and rejected credentials are not. Audio and transcript text are
 never logged.
 
-Token and relay calls share one budget: 120 per minute per Silicon, 1200 per org.
+Token and transcription calls share one budget: 120 per minute per Silicon, 1200 per org.
 `listen` accepts up to 4 MiB (the router default is 1 MiB); `deploy/Caddyfile`
 allows 5 MiB on `/api/v1/speech/listen` and 1 MB elsewhere.
 
@@ -161,7 +170,7 @@ Every variable, with a local default, is in [`../.env.example`](../.env.example)
 (a unit test keeps that file in sync with `config::VARIABLES`). Required:
 `PEEK_IAM_WEBHOOK_SECRET` and `PEEK_ENCRYPTION_KEY`. Deliberately optional:
 `PEEK_IAM_APP_SECRET` (first deploy: `/readyz` says `iam_config: missing`, IAM
-routes answer `503 iam_misconfigured`), the Gemini and OpenAI keys (`503
+routes answer `503 iam_misconfigured`), the Deepgram and OpenAI keys (`503
 speech_unavailable {"reason":"not_configured"}`), the GitHub token (reports stay
 `stored`), the Honeycomb token (participant routes answer `503`), and the Space
 Station keys (a bad key disables that table with a warning; never a startup
@@ -170,7 +179,7 @@ failure). Unknown `PEEK_*` variables are logged as warnings.
 ## Running locally with a fake IAM
 
 The quickest way is the whole local stack — fake IAM and Ting, this server
-(temp SQLite, optional real Gemini and OpenAI keys passed explicitly through
+(temp SQLite, optional real Deepgram and OpenAI keys passed explicitly through
 the environment) and an isolated peekd — printed as an environment to source:
 
 ```sh
@@ -212,6 +221,6 @@ cargo test -p silicon-peek
 Unit tests cover configuration, sealing, the §2.7 checks, the delivery error
 matrix, idempotency, the lifecycle transition table and the telemetry rules.
 The integration tests in `tests/` run the real router and the real
-`silicon-iam-client` against local wiremock fakes of IAM, Ting, Gemini, OpenAI, legacy Deepgram,
+`silicon-iam-client` against local wiremock fakes of IAM, Ting, OpenAI, Deepgram,
 GitHub, Space Station and Honeycomb, with temp-dir databases; nothing talks to
 a real service, except opt-in ignored live speech tests.

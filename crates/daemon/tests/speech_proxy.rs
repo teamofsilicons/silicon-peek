@@ -1,9 +1,5 @@
-//! Speech proxy mode from peekd's side: when peek-server's token reply says
-//! `{"mode":"proxy"}`, TTS and STT go through `/api/v1/speech/speak|listen`
-//! with the Silicon's own session (never to another host), a refused session
-//! is refreshed once, and the TTS stream reaches the UI exactly as in direct
-//! mode (`tts.begin` with `est_frames`, `tts.chunk` from seq 0, `tts.end`
-//! with `total_frames`). Plus the IPC additions of the integration pass.
+//! Direct `ElevenLabs` TTS over Deepgram Voice Agent and proxied `OpenAI` STT.
+//! Tests authentication, native cues, streaming, cache and interruption behavior.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::too_many_lines)]
 
@@ -11,13 +7,20 @@ mod common;
 
 use std::time::Duration;
 
-use common::{Harness, eventually, pcm, sse_audio};
+use common::{
+    Harness,
+    agent::{JWT, ResponsePlan},
+    eventually, pcm,
+};
 use serde_json::{Value, json};
 use silicon_peek_client::{
     ErrorCode,
     identity::{Context, SlotIndex},
     ipc::{
-        cli::{AppUninstall, ConfigSync, Doctor, RegisterSide, SendOp, SendStatus, SpeechStatus},
+        cli::{
+            AppUninstall, ConfigSync, Doctor, RegisterSide, SendCancel, SendOp, SendStatus,
+            SpeechStatus,
+        },
         ui::{MessageOp, SettingsChanged, UiStatusReport, VoiceSubmit},
     },
     schema::ask::Ask,
@@ -30,7 +33,7 @@ use silicon_peek_daemon::{
 };
 use wiremock::{
     Mock, ResponseTemplate,
-    matchers::{header, header_exists, method, path, query_param},
+    matchers::{body_json, header, method, path, query_param},
 };
 
 fn send_op() -> SendOp {
@@ -53,75 +56,45 @@ fn send_op() -> SendOp {
     }
 }
 
-/// Overrides the token reply with a proxy verdict for `base`.
-async fn proxy_token(h: &Harness, base: &str) {
-    let base = base.to_owned();
-    Mock::given(method("POST"))
-        .and(path("/api/v1/speech/token"))
-        .respond_with(move |req: &wiremock::Request| {
-            let body: Value = serde_json::from_slice(&req.body).unwrap();
-            ResponseTemplate::new(200).set_body_json(json!({
-                "provider": if body["purpose"] == "tts" { "gemini" } else { "openai" },
-                "mode": "proxy", "expires_in": 600, "base_url": base,
-                "key_source": "peek", "params": {"mip_opt_out": true, "tags": ["peek", "development"]}
-            }))
-        })
-        .with_priority(1)
-        .mount(&h.server)
-        .await;
-}
-
 #[tokio::test]
-async fn proxy_mode_streams_tts_through_the_backend_with_the_silicons_session() {
+async fn direct_tts_sends_only_a_short_lived_jwt_and_streams_native_cues() {
     let h = Harness::start().await;
-    proxy_token(&h, &format!("{}/api/v1/speech", h.server.uri())).await;
     let audio = pcm(90_000);
-    Mock::given(method("POST"))
-        .and(path("/api/v1/speech/speak"))
-        .and(header("authorization", "Bearer oat_sicleanup"))
-        .and(header("x-org-id", "tos"))
-        .and(header_exists("idempotency-key"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .insert_header("dg-request-id", "dg-proxy-1")
-                .set_body_raw(sse_audio(&audio), "text/event-stream"),
-        )
-        .expect(2)
-        .mount(&h.server)
-        .await;
+    h.agent.audio(audio.clone());
     let ui = h.ui().await;
     let home = h.home("si:cleanup");
     h.register(&home, 3, &ui).await;
-    let text = "The build finished. Deploying to staging now.";
+    let text = "The build finished. [laughs] Deploying to staging now.";
     let mut op = send_op();
     op.speak = Some(text.into());
-    op.voice_instructions = Some("Warm, Indian accent.".into());
+    op.voice_instructions = Some("Warm, [smile]\n Indian accent.".into());
     op.lang = Some("hi".into());
     let (r, _) = h.call(&home, &op, vec![]).await.unwrap();
     let _ = ui.expect("peek.show").await;
     let (begin, bytes, total) = ui.tts_stream(r.send_id.as_str()).await;
     assert_eq!(begin["format"], "s16le");
     assert_eq!(begin["sample_rate"], 24000);
-    assert_eq!(
-        begin["est_frames"],
-        estimated_frames(text.chars().count()),
-        "est_frames ≈ chars ÷ 14 × 24000"
-    );
-    assert_eq!(bytes, audio[..90_000], "every whole sample, in order");
+    assert_eq!(begin["est_frames"], estimated_frames(text.chars().count()));
+    assert_eq!(bytes, audio, "every whole sample, in order");
     assert_eq!(total, 45_000, "total_frames = bytes ÷ 2");
-    let sent = h
-        .server
-        .received_requests()
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|r| r.url.path() == "/api/v1/speech/speak")
-        .unwrap();
-    let body: Value = serde_json::from_slice(&sent.body).unwrap();
+    let record = h.agent.records.lock().unwrap()[0].clone();
+    assert_eq!(record.authorization, format!("Bearer {JWT}"));
     assert_eq!(
-        body,
-        json!({"text": text, "model": "Kore", "voice_instructions": "Warm, Indian accent.", "language": "hi", "sample_rate": 24000})
+        record.settings["agent"],
+        json!({"speak":{"provider":{
+            "type":"eleven_labs", "model_id":"eleven_v4", "voice_id":"JBFqnCBsd6RMkjVDRZzb", "language_code":"hi"
+        }}})
+    );
+    assert_eq!(record.settings["mip_opt_out"], true);
+    assert_eq!(record.settings["flags"]["history"], false);
+    assert_eq!(
+        record.settings["audio"]["output"],
+        json!({"encoding":"linear16","sample_rate":24000,"container":"none"})
+    );
+    assert_eq!(
+        record.injection,
+        json!({"type":"InjectAgentMessage","behavior":"queue",
+        "message":format!("[Warm, smile Indian accent.] {text}")})
     );
     let cache = h.cfg.support_dir.join("cache/tts");
     eventually(3, "completed speech cache", || {
@@ -133,29 +106,73 @@ async fn proxy_mode_streams_tts_through_the_backend_with_the_silicons_session() 
     assert_eq!(cached.speech.unwrap().status, SpeechStatus::Cached);
     let (_, cached_bytes, _) = ui.tts_stream(cached.send_id.as_str()).await;
     assert_eq!(cached_bytes, audio);
+    assert_eq!(
+        h.agent.count(),
+        1,
+        "cached audio opens no provider connection"
+    );
     op.voice_instructions = Some("Whisper softly.".into());
     let (changed, _) = h.call(&home, &op, vec![]).await.unwrap();
     assert_eq!(changed.speech.unwrap().status, SpeechStatus::Pending);
     let _ = ui.tts_stream(changed.send_id.as_str()).await;
-    let requests = h.server.received_requests().await.unwrap();
-    let last = requests
-        .iter()
-        .rev()
-        .find(|r| r.url.path() == "/api/v1/speech/speak")
-        .unwrap();
-    let body: Value = serde_json::from_slice(&last.body).unwrap();
-    assert_eq!(body["voice_instructions"], "Whisper softly.");
-    assert!(
-        h.deepgram.received_requests().await.unwrap().is_empty(),
-        "nothing goes to Deepgram directly in proxy mode"
+    assert_eq!(h.agent.count(), 2);
+    assert_eq!(
+        h.agent.records.lock().unwrap()[1].injection["message"],
+        format!("[Whisper softly.] {text}")
     );
+    assert!(
+        h.server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|request| request.url.path() != "/api/v1/speech/speak")
+    );
+    assert!(h.deepgram.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn long_speech_queues_complete_sentences_on_one_connection() {
+    let h = Harness::start().await;
+    h.agent.respond(vec![ResponsePlan::Batch {
+        bytes: pcm(48_000),
+        messages: 2,
+    }]);
+    let ui = h.ui().await;
+    let home = h.home("si:cleanup");
+    h.register(&home, 3, &ui).await;
+    let text = format!(
+        "{}done. {}ready.",
+        "The first update is almost ".repeat(8),
+        "The next update is nearly ".repeat(8)
+    );
+    assert!(text.len() > 300);
+    let mut op = send_op();
+    op.speak = Some(text.clone());
+    let (sent, _) = h.call(&home, &op, vec![]).await.unwrap();
+    let (_, bytes, total) = ui.tts_stream(sent.send_id.as_str()).await;
+    assert_eq!(bytes, pcm(48_000));
+    assert_eq!(total, 24_000);
+    assert_eq!(h.agent.count(), 1);
+    let records = h.agent.records.lock().unwrap().clone();
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().all(|r| r.injection["behavior"] == "queue"));
+    let actual: String = records
+        .iter()
+        .map(|r| r.injection["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(actual, text, "sentence batching preserves every character");
+    let cache = h.cfg.support_dir.join("cache/tts");
+    eventually(3, "all sentence audio cached after completion", || {
+        std::fs::read_dir(&cache).unwrap().count() == 1
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn proxy_mode_transcribes_through_the_backend() {
     let h = Harness::start().await;
     h.accept_deliveries().await;
-    proxy_token(&h, &format!("{}/api/v1/speech", h.server.uri())).await;
     Mock::given(method("POST"))
         .and(path("/api/v1/speech/listen"))
         .and(header("authorization", "Bearer oat_sicleanup"))
@@ -380,17 +397,17 @@ async fn transcription_upload_obeys_the_total_time_budget() {
 }
 
 #[tokio::test]
-async fn a_refused_session_is_refreshed_once_and_a_foreign_proxy_is_never_used() {
+async fn a_refused_session_is_refreshed_before_minting_the_provider_jwt() {
     let h = Harness::start().await;
-    proxy_token(&h, &format!("{}/api/v1/speech", h.server.uri())).await;
-    // The first speak is refused (the access token was revoked); peekd
-    // refreshes the session and retries once with the new token.
+    h.agent.audio(pcm(4800));
     Mock::given(method("POST"))
-        .and(path("/api/v1/speech/speak"))
+        .and(path("/api/v1/speech/token"))
         .and(header("authorization", "Bearer oat_sicleanup"))
         .respond_with(ResponseTemplate::new(401).set_body_json(json!({
             "error": {"code": "unauthenticated", "message": "inactive", "retryable": false}
         })))
+        .with_priority(1)
+        .expect(1)
         .mount(&h.server)
         .await;
     Mock::given(method("POST"))
@@ -401,17 +418,17 @@ async fn a_refused_session_is_refreshed_once_and_a_foreign_proxy_is_never_used()
             "actor": {"type": "silicon", "public_id": "si:cleanup"}, "org_id": "tos", "org_ids": ["tos"],
             "membership_id": "si:cleanup[tos]"
         })))
-        .expect(1)
-        .mount(&h.server)
-        .await;
+        .expect(1).mount(&h.server).await;
     Mock::given(method("POST"))
-        .and(path("/api/v1/speech/speak"))
+        .and(path("/api/v1/speech/token"))
         .and(header("authorization", "Bearer oat_refreshed01"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_raw(sse_audio(&pcm(4800)), "text/event-stream"),
-        )
+        .and(body_json(json!({"purpose":"tts"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "provider":"elevenlabs", "mode":"direct", "expires_in":30,
+            "access_token":JWT, "base_url":h.agent.url,
+            "key_source":"peek", "params":{"mip_opt_out":true,"tags":[]}
+        })))
+        .with_priority(1)
         .expect(1)
         .mount(&h.server)
         .await;
@@ -423,24 +440,42 @@ async fn a_refused_session_is_refreshed_once_and_a_foreign_proxy_is_never_used()
     let (r, _) = h.call(&home, &op, vec![]).await.unwrap();
     let (_, bytes, _) = ui.tts_stream(r.send_id.as_str()).await;
     assert_eq!(bytes.len(), 4800);
-
-    // A proxy URL that is not this home's backend is refused: the session
-    // is never sent anywhere else and the UI shows the text instead.
-    let other = Harness::start().await;
-    proxy_token(&other, "http://127.0.0.1:9/api/v1/speech").await;
-    let ui2 = other.ui().await;
-    let home2 = other.home("si:cleanup");
-    other.register(&home2, 2, &ui2).await;
-    let (r2, _) = other.call(&home2, &op, vec![]).await.unwrap();
-    let err = ui2.expect("tts.error").await;
-    assert_eq!(err.fields["send_id"], r2.send_id.as_str());
-    assert_eq!(err.fields["error"]["code"], "speech_unavailable");
-    assert!(
-        err.fields["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("never sends a session elsewhere")
+    assert_eq!(h.agent.count(), 1);
+    assert_eq!(
+        h.agent.records.lock().unwrap()[0].authorization,
+        format!("Bearer {JWT}")
     );
+}
+
+#[tokio::test]
+async fn tts_refuses_proxy_tokens_and_untrusted_provider_urls() {
+    for (mode, url) in [
+        ("proxy", "http://127.0.0.1:9/api/v1/speech"),
+        ("direct", "wss://example.com/v1/agent/converse"),
+    ] {
+        let h = Harness::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/speech/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "provider":"elevenlabs", "mode":mode, "expires_in":30,
+                "access_token":JWT, "base_url":url,
+                "key_source":"peek", "params":{"mip_opt_out":true,"tags":[]}
+            })))
+            .with_priority(1)
+            .mount(&h.server)
+            .await;
+        let ui = h.ui().await;
+        let home = h.home("si:cleanup");
+        h.register(&home, 2, &ui).await;
+        let mut op = send_op();
+        op.speak = Some("hello".into());
+        let (sent, _) = h.call(&home, &op, vec![]).await.unwrap();
+        let err = ui.expect("tts.error").await;
+        assert_eq!(err.fields["send_id"], sent.send_id.as_str());
+        assert_eq!(err.fields["error"]["code"], "speech_unavailable");
+        assert_eq!(h.agent.count(), 0);
+        assert!(h.deepgram.received_requests().await.unwrap().is_empty());
+    }
 }
 
 #[tokio::test]
@@ -470,21 +505,14 @@ async fn a_legacy_deepgram_tts_token_is_refused_without_fallback() {
 #[tokio::test]
 async fn scheduled_speech_keeps_its_voice_instructions_across_restart() {
     let mut h = Harness::start().await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/speech/speak"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(sse_audio(&pcm(4800)), "text/event-stream"),
-        )
-        .expect(1)
-        .mount(&h.server)
-        .await;
+    h.agent.audio(pcm(4800));
     let ui = h.ui().await;
     let home = h.home("si:cleanup");
     h.register(&home, 4, &ui).await;
     let mut config = home
         .store
         .merge_config(
-            r#"{"voice":"Puck","voice_instructions":"Warm, Indian accent.","language":"hi"}"#,
+            r#"{"voice":"cgSgspJ2msm6clMCkdW9","voice_instructions":"Warm, Indian accent.","language":"hi"}"#,
         )
         .unwrap();
     h.call(
@@ -497,7 +525,7 @@ async fn scheduled_speech_keeps_its_voice_instructions_across_restart() {
     .await
     .unwrap();
     let mut op = send_op();
-    op.speak = Some("<indian accent>Anuv Jain</indian accent>".into());
+    op.speak = Some("[strong Indian accent] Anuv Jain".into());
     op.due_at = Some(Timestamp::now().plus(Duration::from_secs(60)));
     let (scheduled, _) = h.call(&home, &op, vec![]).await.unwrap();
     assert_eq!(scheduled.status, SendStatus::Scheduled);
@@ -519,40 +547,30 @@ async fn scheduled_speech_keeps_its_voice_instructions_across_restart() {
     h.handle().advance_wall_clock(Duration::from_secs(61));
     let (_, bytes, _) = restarted_ui.tts_stream(scheduled.send_id.as_str()).await;
     assert_eq!(bytes, pcm(4800));
-    let requests = h.server.received_requests().await.unwrap();
-    let spoken = requests
-        .iter()
-        .find(|r| r.url.path() == "/api/v1/speech/speak")
-        .unwrap();
-    let body: Value = serde_json::from_slice(&spoken.body).unwrap();
-    assert_eq!(body["text"], op.speak.unwrap());
-    assert_eq!(body["model"], "Puck");
-    assert_eq!(body["voice_instructions"], "Warm, Indian accent.");
-    assert_eq!(body["language"], "hi");
+    assert_eq!(h.agent.count(), 1);
+    let record = h.agent.records.lock().unwrap()[0].clone();
+    assert_eq!(
+        record.injection["message"],
+        format!("[Warm, Indian accent.] {}", op.speak.unwrap())
+    );
+    assert_eq!(
+        record.settings["agent"]["speak"]["provider"]["voice_id"],
+        "cgSgspJ2msm6clMCkdW9"
+    );
+    assert_eq!(
+        record.settings["agent"]["speak"]["provider"]["language_code"],
+        "hi"
+    );
 }
 
 #[tokio::test]
 async fn incomplete_audio_is_never_cached_or_retried_after_playback_starts() {
-    let complete = sse_audio(&pcm(90_000));
-    let completion = "data: {\"event_type\":\"interaction.completed\"}\n\ndata: [DONE]\n\n";
-    let truncated = complete.strip_suffix(completion).unwrap().to_owned();
-    for (stream, has_audio) in [
-        (format!("{truncated}data: not-json\n\n"), true),
-        (truncated, true),
-        (sse_audio(&pcm(90_001)), true),
-        ("data: not-json\n\n".into(), false),
-    ] {
+    for (stream, has_audio) in [(pcm(90_000), true), (Vec::new(), false)] {
         let h = Harness::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/speech/speak"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "text/event-stream")
-                    .set_body_raw(stream, "text/event-stream"),
-            )
-            .expect(if has_audio { 1 } else { 3 })
-            .mount(&h.server)
-            .await;
+        h.agent.respond(vec![ResponsePlan::Audio {
+            bytes: stream,
+            done: false,
+        }]);
         let ui = h.ui().await;
         let home = h.home("si:cleanup");
         h.register(&home, 4, &ui).await;
@@ -574,8 +592,46 @@ async fn incomplete_audio_is_never_cached_or_retried_after_playback_starts() {
                 .count(),
             0
         );
+        assert_eq!(h.agent.count(), if has_audio { 1 } else { 3 });
         assert!(h.deepgram.received_requests().await.unwrap().is_empty());
     }
+}
+
+#[tokio::test]
+async fn cancelling_live_speech_drops_the_provider_socket_without_caching() {
+    let h = Harness::start().await;
+    h.agent.respond(vec![ResponsePlan::Pause(pcm(4800))]);
+    let ui = h.ui().await;
+    let home = h.home("si:cleanup");
+    h.register(&home, 4, &ui).await;
+    let mut op = send_op();
+    op.speak = Some("Test cancellation during speech.".into());
+    let (sent, _) = h.call(&home, &op, vec![]).await.unwrap();
+    let _ = ui.expect("tts.chunk").await;
+    h.call(
+        &home,
+        &SendCancel {
+            target: sent.send_id.to_string(),
+        },
+        vec![],
+    )
+    .await
+    .unwrap();
+    eventually(3, "upstream socket cancellation", || {
+        h.agent
+            .disconnected
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == 1
+    })
+    .await;
+    eventually(3, "cancelled audio cache cleanup", || {
+        std::fs::read_dir(h.cfg.support_dir.join("cache/tts"))
+            .unwrap()
+            .count()
+            == 0
+    })
+    .await;
+    assert_eq!(h.agent.count(), 1);
 }
 
 #[tokio::test]

@@ -185,8 +185,8 @@ pub mod features {
     pub const SCHEDULE: &str = "schedule";
     /// `Notify::Shown` and `peek.send.shown`.
     pub const NOTIFY_SHOWN: &str = "notify_shown";
-    /// Gemini streaming speech and configurable voice instructions.
-    pub const GEMINI_TTS: &str = "gemini_tts";
+    /// `ElevenLabs` streaming speech and configurable voice instructions.
+    pub const ELEVENLABS_TTS: &str = "elevenlabs_tts";
     /// Every feature of the current peekd.
     pub const ALL: [&str; 6] = [
         QUEUE_V2,
@@ -194,7 +194,7 @@ pub mod features {
         REPLACE,
         SCHEDULE,
         NOTIFY_SHOWN,
-        GEMINI_TTS,
+        ELEVENLABS_TTS,
     ];
 }
 
@@ -1876,7 +1876,7 @@ mod tests {
                 "replace",
                 "schedule",
                 "notify_shown",
-                "gemini_tts"
+                "elevenlabs_tts"
             ])
         );
         assert!(new.has_feature(features::SCHEDULE));

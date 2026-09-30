@@ -4,7 +4,7 @@ peek runs as many pieces that update on their own schedules: a CLI copy in every
 
 ## One version number
 
-Every Cargo package, `honeycomb.yaml`, the app's `CFBundleShortVersionString` and the git tag share one version (`0.1.5`, tag `v0.1.5`). The app's build number is derived from it (`major × 1,000,000 + minor × 1,000 + patch`, so 0.1.5 is build 1005) and only ever increases. `peek --version`, `peek iam --json` (`version`) and `peek daemon status` (`version`, `ui.build`) report it.
+Every Cargo package, `honeycomb.yaml`, the app's `CFBundleShortVersionString` and the git tag share one version (`0.1.6`, tag `v0.1.6`). The app's build number is derived from it (`major × 1,000,000 + minor × 1,000 + patch`, so 0.1.6 is build 1006) and only ever increases. `peek --version`, `peek iam --json` (`version`) and `peek daemon status` (`version`, `ui.build`) report it.
 
 The package version describes a release. Compatibility is decided by the **contract versions** below, not by comparing package versions.
 
@@ -28,7 +28,7 @@ A change that is not additive (removing or renaming a field, changing its type o
 - **CLI ↔ helper.** The first frame on every connection is `hello`, carrying the CLI's `protocols` list. The helper picks the highest common protocol. With none in common, it answers `cli_outdated`, and the hint is `honeycomb update 'peek'`. If the helper is the older side, the CLI offers the app bundled in its own package (`app.offer`); the helper installs it when the screen is idle, and the CLI retries for up to 30 s before failing with `app_update_pending` (retryable, exit 5).
 - **Features within protocol 1.** The helper's `hello` reply lists what it supports in `features` (0.1.2: `queue_v2`, `expiry_all`, `replace`, `schedule`, `notify_shown`; absent from older helpers, which means none). A CLI refuses an option its helper does not list with `app_update_pending` and `details.missing_features`, instead of letting an older helper silently ignore it. The other way round, the helper knows each CLI's version from its `hello` and answers a CLI older than 0.1.2 in words it knows: `slot_busy` instead of `queue_full`, and the ask state `cancelled` instead of `replaced`.
 - **CLI and helper ↔ backend.** `GET /api/v1/iam` returns `"compatibility":{"cli":">=0.1.0, <1.0.0","ipc_protocols":[1]}`. The CLI sends `Peek-Client-Version` on login.
-- **Helper ↔ backend speech.** Google TTS always uses `/api/v1/speech/speak`: the backend relays Gemini SSE events and the helper decodes PCM as they arrive. `POST /api/v1/speech/token` is retained as compatibility discovery and returns `proxy` without exposing provider credentials. OpenAI transcription uses `/api/v1/speech/listen` for a completed recording and returns a final transcript. See [Development](development.md#speech-tokens-and-the-relay).
+- **Helper ↔ backend speech.** `POST /api/v1/speech/token` returns a temporary Deepgram token with `provider: "elevenlabs"` and `mode: "direct"` for TTS. The helper uses it to stream ElevenLabs v4 audio directly from Deepgram Voice Agent. OpenAI transcription uses `/api/v1/speech/listen` for a completed recording and returns a final transcript. See [Development](development.md#speech-tokens-and-the-relay).
 - **Stores.** A writer that finds a `schema` newer than it understands refuses to touch the file with `store_schema_newer` (exit 4, hint `honeycomb update 'peek'`), instead of corrupting it.
 - **Drawings.** A drawing that reads an `input` field an older app does not have gets `undefined`. Write drawings with `?.` so they degrade instead of throwing.
 
@@ -43,6 +43,8 @@ A change that is not additive (removing or renaming a field, changing its type o
 | 0.1.x | newer, IPC 1 dropped | – | – | – | `cli_outdated`: update the CLI |
 | newer | 0.1.x | v1 | ≥ 0.5.0 | 26.0 or newer | the CLI offers its app; `app_update_pending` until installed |
 | 0.1.x on Linux or Windows | – | v1 | ≥ 0.5.0 | – | IAM commands only ([Platforms](platforms.md)) |
+
+Speech in 0.1.6 requires the 0.1.6 CLI and helper (`elevenlabs_tts`). Update both together. The 0.1.6 backend no longer serves Google TTS; older helpers cannot synthesize speech against it. Replace saved Google or Aura voice names with ElevenLabs voice IDs. Text, drawings, history and login sessions remain compatible.
 
 External contracts peek relies on:
 
@@ -106,6 +108,15 @@ targets:
 Changes are checked against the consumers that depend on them: the Stemcell app contract (the exact `iam --json`, `login status` and `logout` behaviours), the Ting data schemas, the IPC frames of the previous protocol, and the documented CLI outputs. The docs build fails if any advertised `peek docs` topic is missing.
 
 ## Changelog
+
+These entries describe the behavior of each historical release; the current speech setup is documented in [Speak and show](show.md).
+
+### 0.1.6
+
+- Replace Google TTS with standard ElevenLabs v4 through Deepgram Voice Agent. The Mac streams audio directly using a 30-second token; the long-lived provider key stays on the backend. OpenAI transcription is unchanged.
+- George is the default male voice. Choose a voice ID, save delivery instructions, or add inline emotion, accent, reaction and pause cues. The voice guide includes paired `[x]...[/x]` cues for instructions with a start and end.
+- Queue long narration at sentence boundaries so playback starts sooner. Saved delivery instructions repeat for each piece; inline cue scope remains best effort across pieces.
+- Update the CLI and Peek.app together. Replace old Google or Aura voice names with ElevenLabs IDs; the previous Google speech route and angle-bracket accent shorthand are removed.
 
 ### 0.1.5
 

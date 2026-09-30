@@ -99,7 +99,7 @@ class RenderEnvTests(unittest.TestCase):
     def test_speech_keys_are_validated_without_echoing_and_optional_for_older_secrets(self) -> None:
         document = filled_runtime()
         speech_keys = [
-            "PEEK_GEMINI_API_KEY", "PEEK_GEMINI_TEST_API_KEY",
+            "PEEK_DEEPGRAM_API_KEY", "PEEK_DEEPGRAM_TEST_API_KEY",
             "PEEK_OPENAI_API_KEY", "PEEK_OPENAI_TEST_API_KEY",
         ]
         for name in speech_keys:
@@ -112,10 +112,18 @@ class RenderEnvTests(unittest.TestCase):
         code, _, err = call(render_env, ["--check"], json.dumps(document))
         self.assertEqual(code, 1)
         self.assertIn("PEEK_OPENAI_API_KEY: must be an OpenAI API key", err)
-        for name in [*speech_keys, "PEEK_GEMINI_BASE_URL", "PEEK_OPENAI_BASE_URL"]:
+        for name in ["PEEK_OPENAI_API_KEY", "PEEK_OPENAI_TEST_API_KEY", "PEEK_ELEVENLABS_AGENT_URL", "PEEK_OPENAI_BASE_URL"]:
             del document[name]
         code, _, err = call(render_env, ["--check"], json.dumps(document))
         self.assertEqual(code, 0, err)
+
+    def test_voice_agent_endpoint_is_fixed_in_production(self) -> None:
+        document = filled_runtime()
+        for url in ["wss://attacker.example/agent", "ws://localhost:1234/agent", "wss://agent.deepgram.com/v1/listen"]:
+            document["PEEK_ELEVENLABS_AGENT_URL"] = url
+            code, _, err = call(render_env, ["--check"], json.dumps(document))
+            self.assertEqual(code, 1)
+            self.assertIn("PEEK_ELEVENLABS_AGENT_URL", err)
 
     def test_rejections_are_specific(self) -> None:
         cases = {

@@ -254,13 +254,8 @@ pub fn prepare_at(
 fn needed_features(p: &Prepared) -> Vec<(&'static str, &'static str)> {
     let mut needed = Vec::new();
     let op = &p.op;
-    if op.voice_instructions.is_some()
-        || op.voice.as_deref().is_some_and(|v| !v.starts_with("aura-"))
-    {
-        needed.push((
-            features::GEMINI_TTS,
-            "Gemini voices and --voice-instructions",
-        ));
+    if op.speak.is_some() {
+        needed.push((features::ELEVENLABS_TTS, "ElevenLabs v4 speech"));
     }
     if (op.expires_in_s.is_some() && op.ask.is_none()) || op.expires_at.is_some() {
         needed.push((
@@ -663,10 +658,10 @@ mod tests {
     }
 
     #[test]
-    fn gemini_voice_instructions_reach_the_daemon_unchanged() -> Result<()> {
+    fn elevenlabs_voice_instructions_reach_the_daemon_unchanged() -> Result<()> {
         let mut a = args();
-        a.speak = Some("<indian accent>Anuv Jain</indian accent>".into());
-        a.voice = Some("Kore".into());
+        a.speak = Some("[Indian accent] Anuv Jain".into());
+        a.voice = Some("JBFqnCBsd6RMkjVDRZzb".into());
         a.voice_instructions = Some("Warm and conversational.\nSlow down for names.".into());
         a.lang = Some("hi-IN".into());
         let p = prepare(&a, &[])?;
@@ -676,7 +671,7 @@ mod tests {
         assert!(
             needed_features(&p)
                 .iter()
-                .any(|(f, _)| *f == features::GEMINI_TTS)
+                .any(|(f, _)| *f == features::ELEVENLABS_TTS)
         );
         a.voice_instructions = Some("x".repeat(2001));
         assert_eq!(field(&a).as_deref(), Some("--voice-instructions"));
@@ -911,7 +906,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let p = at_now(&speak_args())?;
-        assert!(names(&p).is_empty(), "a plain send needs nothing new");
+        assert_eq!(names(&p), vec![features::ELEVENLABS_TTS]);
         let mut a = args();
         a.ask = Some(r#"{"question":"q","type":"text"}"#.into());
         a.expires_in = Some("60".into());
@@ -922,7 +917,10 @@ mod tests {
         let mut a = speak_args();
         a.expires_in = Some("60".into());
         a.in_ = None;
-        assert_eq!(names(&at_now(&a)?), vec![features::EXPIRY_ALL]);
+        assert_eq!(
+            names(&at_now(&a)?),
+            vec![features::ELEVENLABS_TTS, features::EXPIRY_ALL]
+        );
         let mut a = speak_args();
         a.in_ = Some("1h".into());
         a.replace = true;
@@ -930,6 +928,7 @@ mod tests {
         assert_eq!(
             names(&at_now(&a)?),
             vec![
+                features::ELEVENLABS_TTS,
                 features::SCHEDULE,
                 features::REPLACE,
                 features::NOTIFY_SHOWN
@@ -937,8 +936,9 @@ mod tests {
         );
         let p = prepare_at(&speak_args(), &[Notify::Shown], now(), &kolkata)?;
         assert!(p.notify_from_config);
-        assert!(
-            names(&p).is_empty(),
+        assert_eq!(
+            names(&p),
+            vec![features::ELEVENLABS_TTS],
             "a config default is dropped, not refused"
         );
         Ok(())
@@ -998,9 +998,9 @@ mod tests {
             base(
                 "showing",
                 json!({"ask_id": "ask_1", "expires_at": "2026-09-27T06:22:00Z",
-                "speech": {"status": "pending", "model": "aura-2-thalia-en", "chars": 5}})
+                "speech": {"status": "pending", "model": "JBFqnCBsd6RMkjVDRZzb", "chars": 5}})
             ),
-            "sent snd_1 to position 3 (showing)\nspeech: pending (5 characters, aura-2-thalia-en)\nask: ask_1\nexpires: 2026-09-27 11:52 IST (Asia/Kolkata) (in 10m)"
+            "sent snd_1 to position 3 (showing)\nspeech: pending (5 characters, JBFqnCBsd6RMkjVDRZzb)\nask: ask_1\nexpires: 2026-09-27 11:52 IST (Asia/Kolkata) (in 10m)"
         );
         // An older peekd has no queue position.
         let old = json!({"send_id": "snd_1", "ask_id": null, "slot": 3, "status": "queued", "warnings": []});

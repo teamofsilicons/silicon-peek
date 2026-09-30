@@ -20,7 +20,7 @@ struct SettingsTests {
         #expect(settings.backdrop == .wallpaper)
         #expect(settings.telemetry)
         #expect(settings.showTestPeeks)
-        #expect(settings.voiceDefaults["en"] == "Kore")
+        #expect(settings.voiceDefaults["en"] == "JBFqnCBsd6RMkjVDRZzb")
         #expect(settings.sttLanguage == "auto")
         #expect(settings.cliWatchdog)
     }
@@ -38,15 +38,15 @@ struct SettingsTests {
     func lenientDecode() {
         let data = Data(#"""
             {"schema":1,"mode":"compact","hotkey_modifier":"hyper","telemetry":"yes","stt_language":"pt-BR",
-             "voice_defaults":{"es":"aura-2-selena-es"},"updates":{"cli_watchdog":false,"channel":"beta"},"future":{"x":1}}
+             "voice_defaults":{"es":"DtsPFCrhbCbbJkwZsb3d"},"updates":{"cli_watchdog":false,"channel":"beta"},"future":{"x":1}}
             """#.utf8)
         let (settings, warnings) = PeekSettings.decode(data)
         #expect(settings.mode == .compact)
         #expect(settings.hotkeyModifier == .ctrlCmd)
         #expect(settings.telemetry == true)
         #expect(settings.sttLanguage == "pt-BR")
-        #expect(settings.voiceDefaults["es"] == "Kore", "legacy Aura preference migrates without a warning")
-        #expect(settings.voiceDefaults["en"] == "Kore")
+        #expect(settings.voiceDefaults["es"] == "DtsPFCrhbCbbJkwZsb3d")
+        #expect(settings.voiceDefaults["en"] == "JBFqnCBsd6RMkjVDRZzb")
         #expect(settings.cliWatchdog == false)
         #expect(settings.extra["future"] == ["x": 1])
         #expect(settings.jsonValue["updates"] == ["cli_watchdog": false, "channel": "beta"])
@@ -72,12 +72,12 @@ struct SettingsTests {
         #expect(settings.display == .main)
         #expect(throws: SettingsError.self) { try settings.apply(.backdrop, "camera") }
         #expect(throws: SettingsError.self) { try settings.apply(.sttLanguage, "English") }
-        #expect(throws: SettingsError.self) { try settings.apply(.voiceDefaults, ["english": "Kore"]) }
+        #expect(throws: SettingsError.self) { try settings.apply(.voiceDefaults, ["english": "JBFqnCBsd6RMkjVDRZzb"]) }
         #expect(throws: SettingsError.self) { try settings.apply(.voiceDefaults, ["en": "bad voice"]) }
-        try settings.apply(.voiceDefaults, ["hi": "Puck", "ta": "voice_tamil", "en": "aura-2-thalia-en"])
-        #expect(settings.voiceDefaults["hi"] == "Puck")
+        try settings.apply(.voiceDefaults, ["hi": "DtsPFCrhbCbbJkwZsb3d", "ta": "voice_tamil", "en": "JBFqnCBsd6RMkjVDRZzb"])
+        #expect(settings.voiceDefaults["hi"] == "DtsPFCrhbCbbJkwZsb3d")
         #expect(settings.voiceDefaults["ta"] == "voice_tamil")
-        #expect(settings.voiceDefaults["en"] == "Kore")
+        #expect(settings.voiceDefaults["en"] == "JBFqnCBsd6RMkjVDRZzb")
         try settings.apply(.cliWatchdog, false)
         #expect(settings.value(for: .cliWatchdog) == false)
     }

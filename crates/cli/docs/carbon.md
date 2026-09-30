@@ -126,13 +126,13 @@ Settings has five tabs:
 | General | Hotkeys | ⌘, ⌃⌘, ⌥⌘, ⇧⌘, ⌃⌥⌘ or ⌃⌥, each followed by 1 … 8 | ⌃⌘1 … ⌃⌘8 |
 | General | Share usage and diagnostics | On or off. Content is never included. See [Telemetry](telemetry.md). | On |
 | General | Keep Silicons' peek CLI up to date | The helper's hourly fallback to Honeycomb's updater | On |
-| Voice | Speaking voice | Google voice; your Silicon can set a voice and delivery instructions through the CLI | `Kore` |
+| Voice | Speaking voice | ElevenLabs voice; your Silicon can set a voice and delivery instructions through the CLI | George (`JBFqnCBsd6RMkjVDRZzb`) |
 | Voice | Listening language | Automatic (your macOS languages), a fixed language, or any BCP 47 tag | Automatic |
 | Testing | Show test peeks | Whether bubbles from testing environments appear; also lists the environments in use | On |
 | Startup | Launch at login, background helper | Status only, with a hint and **Open Login Items…** when macOS needs your approval | – |
 | Diagnostics | – | Versions (app, helper, macOS, QuickJS, glass mode), the helper's socket, microphone permission, `settings.json` and the end of the helper's log | – |
 
-**Simulation** (menu bar → Simulation…, or General → Open Simulation…) lets you try every combination (position, speak, show, each ask type, mode, appearance, backdrop) with built-in samples. It uses no network, no IAM, no Ting, no Google and no OpenAI, and its bubbles are labelled `SIMULATION`. A voice answer in Simulation is recorded but never transcribed.
+**Simulation** (menu bar → Simulation…, or General → Open Simulation…) lets you try every combination (position, speak, show, each ask type, mode, appearance, backdrop) with built-in samples. It uses no network, no IAM, no Ting, no Deepgram, no ElevenLabs and no OpenAI, and its bubbles are labelled `SIMULATION`. A voice answer in Simulation is recorded but never transcribed.
 
 **Test bubbles** come from a Silicon running against a testing environment. They carry a `TEST · <environment name>` pill and a dashed ring, and show "Sent to test silicon" after you answer. A real bubble always takes priority over a test bubble at the same position.
 

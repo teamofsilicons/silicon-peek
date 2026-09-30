@@ -48,9 +48,7 @@ pub const VARIABLES: &[&str] = &[
     "PEEK_OPENAI_API_KEY",
     "PEEK_OPENAI_TEST_API_KEY",
     "PEEK_OPENAI_BASE_URL",
-    "PEEK_GEMINI_API_KEY",
-    "PEEK_GEMINI_TEST_API_KEY",
-    "PEEK_GEMINI_BASE_URL",
+    "PEEK_ELEVENLABS_AGENT_URL",
     "PEEK_DEEPGRAM_TOKEN_TTL_SECONDS",
     "PEEK_DEEPGRAM_MIP_OPT_OUT",
     "PEEK_BYO_DEEPGRAM_HOSTS",
@@ -89,10 +87,10 @@ pub struct Config {
     pub honeycomb: HoneycombConfig,
     /// AES-256-GCM key for BYO keys and environment root keys.
     pub encryption_key: EncryptionKey,
-    /// Legacy Deepgram administration compatibility; unused for speech.
+    /// TTS token credentials and legacy Deepgram administration.
     pub deepgram: DeepgramConfig,
-    /// Gemini text-to-speech streaming.
-    pub gemini: GeminiConfig,
+    /// Direct-client `ElevenLabs` Voice Agent endpoint returned with temporary tokens.
+    pub elevenlabs_agent_url: String,
     /// `OpenAI` transcription.
     pub openai: OpenaiConfig,
     /// GitHub issue filing for bug reports.
@@ -182,27 +180,16 @@ pub struct OpenaiConfig {
     pub base_url: String,
 }
 
-/// Gemini TTS settings. Production and testing keys never mix.
-#[derive(Clone, Debug)]
-pub struct GeminiConfig {
-    /// Production Gemini API key (`PEEK_GEMINI_API_KEY`).
-    pub api_key: Option<Secret>,
-    /// Separate testing key (`PEEK_GEMINI_TEST_API_KEY`).
-    pub test_api_key: Option<Secret>,
-    /// Gemini API origin (`PEEK_GEMINI_BASE_URL`).
-    pub base_url: String,
-}
-
-/// Legacy Deepgram configuration retained for administrative compatibility.
+/// Deepgram credentials for `ElevenLabs` TTS, plus legacy BYO administration.
 #[derive(Clone, Debug)]
 pub struct DeepgramConfig {
-    /// Legacy production key; never used for speech.
+    /// Production credential for TTS connection tokens.
     pub api_key: Option<Secret>,
-    /// Legacy testing key; never used for speech.
+    /// Isolated testing credential for TTS connection tokens.
     pub test_api_key: Option<Secret>,
     /// Deepgram origin.
     pub base_url: String,
-    /// Legacy JWT lifetime setting (1–3600); no speech JWTs are minted.
+    /// Temporary token lifetime in seconds (1–3600; default 30).
     pub token_ttl_seconds: u32,
     /// Legacy privacy setting, retained for configuration compatibility.
     pub mip_opt_out: bool,
@@ -691,13 +678,18 @@ impl Config {
             test_api_key: r.secret("PEEK_OPENAI_TEST_API_KEY", 16, 512, "an OpenAI API key"),
             base_url: r.origin("PEEK_OPENAI_BASE_URL", "https://api.openai.com"),
         };
-        let gemini = GeminiConfig {
-            api_key: r.secret("PEEK_GEMINI_API_KEY", 16, 512, "a Gemini API key"),
-            test_api_key: r.secret("PEEK_GEMINI_TEST_API_KEY", 16, 512, "a Gemini API key"),
-            base_url: r.origin(
-                "PEEK_GEMINI_BASE_URL",
-                "https://generativelanguage.googleapis.com",
-            ),
+        let elevenlabs_agent_url = {
+            let default = "wss://agent.deepgram.com/v1/agent/converse";
+            let value = r
+                .value("PEEK_ELEVENLABS_AGENT_URL")
+                .unwrap_or_else(|| default.to_owned());
+            match parse_agent_url(&value) {
+                Ok(url) => url,
+                Err(why) => {
+                    r.problem("PEEK_ELEVENLABS_AGENT_URL", why);
+                    default.to_owned()
+                }
+            }
         };
         let deepgram = DeepgramConfig {
             api_key: r.secret("PEEK_DEEPGRAM_API_KEY", 16, 512, "a Deepgram API key"),
@@ -705,11 +697,11 @@ impl Config {
             base_url: r.origin("PEEK_DEEPGRAM_BASE_URL", "https://api.deepgram.com"),
             token_ttl_seconds: u32::try_from(r.seconds(
                 "PEEK_DEEPGRAM_TOKEN_TTL_SECONDS",
-                60,
+                30,
                 1,
                 3600,
             ))
-            .unwrap_or(60),
+            .unwrap_or(30),
             byo_hosts: {
                 let raw = r
                     .value("PEEK_BYO_DEEPGRAM_HOSTS")
@@ -796,7 +788,7 @@ impl Config {
                 },
                 encryption_key,
                 deepgram,
-                gemini,
+                elevenlabs_agent_url,
                 openai,
                 github,
                 telemetry,
@@ -866,6 +858,28 @@ fn valid_repo(repo: &str) -> bool {
         .is_some_and(|(owner, name)| part(owner) && part(name))
 }
 
+/// An encrypted WebSocket endpoint, with plain connections allowed only for local mocks.
+fn parse_agent_url(value: &str) -> Result<String, String> {
+    let url = Url::parse(value).map_err(|_| "must be a valid wss:// URL".to_owned())?;
+    if url.host_str().is_none()
+        || !((url.scheme() == "wss"
+            && url.host_str() == Some("agent.deepgram.com")
+            && url.port_or_known_default() == Some(443)
+            && url.path() == "/v1/agent/converse")
+            || (url.scheme() == "ws" && is_loopback(&url)))
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(
+            "must be wss://agent.deepgram.com/v1/agent/converse without credentials, query or fragment (ws:// only on loopback)"
+                .to_owned(),
+        );
+    }
+    Ok(url.to_string())
+}
+
 /// Whether a URL host is loopback (`localhost`, 127/8, `::1`).
 pub(crate) fn is_loopback(url: &Url) -> bool {
     match url.host() {
@@ -924,7 +938,7 @@ mod tests {
         assert!(c.iam.app_secret.is_none(), "an empty app secret is allowed");
         assert_eq!(c.iam.request_timeout, Duration::from_secs(5));
         assert_eq!(c.ting.request_timeout, Duration::from_secs(15));
-        assert_eq!(c.deepgram.token_ttl_seconds, 60);
+        assert_eq!(c.deepgram.token_ttl_seconds, 30);
         assert!(c.deepgram.mip_opt_out);
         assert_eq!(c.public_origin, "https://backend.peek.teamofsilicons.com");
         assert_eq!(c.web_origins, ["https://peek.teamofsilicons.com"]);
@@ -1080,6 +1094,27 @@ mod tests {
             assert!(load(&map).is_err(), "{bad} must be refused");
         }
         Ok(())
+    }
+
+    #[test]
+    fn voice_agent_endpoints_are_canonical_or_local_mocks() {
+        for endpoint in [
+            "wss://agent.deepgram.com/v1/agent/converse",
+            "ws://127.0.0.1:9123/agent",
+            "ws://[::1]:9000/agent",
+        ] {
+            assert!(parse_agent_url(endpoint).is_ok(), "{endpoint}");
+        }
+        for endpoint in [
+            "wss://attacker.example/agent",
+            "wss://agent.deepgram.com/v1/listen",
+            "wss://agent.deepgram.com:444/v1/agent/converse",
+            "ws://agent.deepgram.com/v1/agent/converse",
+            "wss://user:pass@agent.deepgram.com/v1/agent/converse",
+            "wss://agent.deepgram.com/v1/agent/converse?key=value",
+        ] {
+            assert!(parse_agent_url(endpoint).is_err(), "{endpoint}");
+        }
     }
 
     #[test]

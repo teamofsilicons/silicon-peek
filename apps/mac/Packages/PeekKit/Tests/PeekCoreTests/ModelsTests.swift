@@ -161,15 +161,15 @@ struct ModelsTests {
                                                         from: .right, to: .bottom)])
     }
 
-    @Test("Google voices accept custom IDs and reject malformed input")
+    @Test("ElevenLabs voices accept custom IDs and reject malformed input")
     func voices() {
-        for voice in ["Kore", "Puck", "voice_custom-123", "aura-2-thalia-en"] {
+        for voice in ["JBFqnCBsd6RMkjVDRZzb", "DtsPFCrhbCbbJkwZsb3d", "voice_custom-123"] {
             #expect(DefaultVoices.isValidVoice(voice))
         }
-        for voice in ["", "bad voice", "Kore/../../secret", "é", String(repeating: "a", count: 129)] {
+        for voice in ["", "bad voice", "George/../../secret", "é", String(repeating: "a", count: 129)] {
             #expect(!DefaultVoices.isValidVoice(voice))
         }
-        #expect(DefaultVoices.byLanguage.values.allSatisfy { $0 == "Kore" })
+        #expect(DefaultVoices.byLanguage.values.allSatisfy { $0 == "JBFqnCBsd6RMkjVDRZzb" })
     }
 
     @Test("launch arguments: --after-update, --launched-by, AppKit pairs skipped")

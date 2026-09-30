@@ -87,7 +87,7 @@ struct GeneralSettingsView: View {
                 HStack(alignment: .firstTextBaseline) {
                     SettingsFootnote(
                         "Preview bubbles at any position with sample speech, shows and asks, using the real drawing runtime. "
-                            + "Nothing is sent to peekd, IAM, Ting, Google or OpenAI.")
+                            + "Nothing is sent to peekd, IAM, Ting, Deepgram or OpenAI.")
                     Spacer()
                     Button("Open Simulation…", action: openSimulation)
                 }

@@ -46,7 +46,7 @@ pub struct Config {
     pub schema: u32,
     /// This home's telemetry (default on).
     pub telemetry: bool,
-    /// Default Gemini TTS voice; `null` picks Kore.
+    /// Default `ElevenLabs` TTS voice; `null` picks George.
     pub voice: Option<String>,
     /// Default speaking style, accent, pace and delivery instructions.
     pub voice_instructions: Option<String>,
@@ -170,7 +170,7 @@ impl Config {
                         check_voice(s)?;
                         Some(s.clone())
                     }
-                    _ => return Err(bad("a Gemini voice ID or null")),
+                    _ => return Err(bad("an ElevenLabs voice ID or null")),
                 };
             }
             "voice_instructions" => {
@@ -386,14 +386,14 @@ mod tests {
     fn merge_validates_every_key_and_null_resets() -> Result<()> {
         let mut c = Config::default();
         let patch = Config::parse_patch(
-            r#"{"telemetry":false,"voice":"Kore","voice_instructions":"Warm, calm. <indian accent>Anuv Jain</indian accent>","language":"EN","notify":["show_dismissed","speech_finished"],"api_url":"http://127.0.0.1:9/","delivery_max_age_hours":24,"position":3,"drawing":"/tmp/logo.js"}"#,
+            r#"{"telemetry":false,"voice":"JBFqnCBsd6RMkjVDRZzb","voice_instructions":"Warm, calm. [Indian accent] Anuv Jain","language":"EN","notify":["show_dismissed","speech_finished"],"api_url":"http://127.0.0.1:9/","delivery_max_age_hours":24,"position":3,"drawing":"/tmp/logo.js"}"#,
         )?;
         c.merge(&patch)?;
         assert!(!c.telemetry);
-        assert_eq!(c.voice.as_deref(), Some("Kore"));
+        assert_eq!(c.voice.as_deref(), Some("JBFqnCBsd6RMkjVDRZzb"));
         assert_eq!(
             c.voice_instructions.as_deref(),
-            Some("Warm, calm. <indian accent>Anuv Jain</indian accent>")
+            Some("Warm, calm. [Indian accent] Anuv Jain")
         );
         assert_eq!(c.sync_payload().voice_instructions, c.voice_instructions);
         assert_eq!(c.language.as_deref(), Some("en"));
@@ -454,11 +454,12 @@ mod tests {
 
     #[test]
     fn stored_configs_load_leniently_for_repair() {
-        let stored = json!({"schema":1,"telemetry":"maybe","voice":"aura-2-thalia-en","future":1});
+        let stored =
+            json!({"schema":1,"telemetry":"maybe","voice":"JBFqnCBsd6RMkjVDRZzb","future":1});
         let (c, invalid) = Config::from_stored(stored.as_object().unwrap_or(&Map::new()));
         assert_eq!(invalid, vec!["telemetry".to_owned()]);
         assert!(c.telemetry, "an invalid key falls back to its default");
-        assert_eq!(c.voice.as_deref(), Some("aura-2-thalia-en"));
+        assert_eq!(c.voice.as_deref(), Some("JBFqnCBsd6RMkjVDRZzb"));
         assert_eq!(c.extra.get("future"), Some(&json!(1)));
     }
 

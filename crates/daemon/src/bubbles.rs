@@ -82,7 +82,7 @@ pub fn now_ms() -> i64 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StoredSpeechStatus {
-    /// Planned; streaming from Gemini when shown.
+    /// Planned; streaming from `ElevenLabs` when shown.
     Pending,
     /// Served from the local TTS cache (kept once played).
     Cached,
@@ -90,7 +90,7 @@ pub enum StoredSpeechStatus {
     Skipped,
     /// Legacy status for speech unsupported by an older provider.
     UnsupportedLanguage,
-    /// Streamed from Gemini and played.
+    /// Streamed from `ElevenLabs` and played.
     Played,
     /// TTS failed before any audio played.
     Failed,
@@ -1590,7 +1590,7 @@ impl Shared {
                 key: key.clone(),
                 home: send.home.clone(),
                 model: if model.starts_with("aura-") {
-                    "Kore".to_owned()
+                    "JBFqnCBsd6RMkjVDRZzb".to_owned()
                 } else {
                     model.clone()
                 },

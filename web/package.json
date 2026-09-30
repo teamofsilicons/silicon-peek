@@ -1,7 +1,7 @@
 {
   "name": "@teamofsilicons/peek-web",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Landing page and documentation for peek, prerendered for https://peek.teamofsilicons.com.",
   "license": "MIT",
   "type": "module",

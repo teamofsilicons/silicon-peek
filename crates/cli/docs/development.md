@@ -7,10 +7,10 @@ peek is open source: https://github.com/teamofsilicons/silicon-peek. This page e
 | Component | Language | Runs | Owns |
 |---|---|---|---|
 | **Peek.app** (`ai.tos.peek`) | Swift 6, SwiftUI + AppKit | one per macOS user, `~/Applications/Peek.app`, menu-bar only | the 8 position panels, the glass and drawing compositor, one QuickJS VM per drawing, audio playback and microphone capture, hotkeys, backdrop sampling, Settings, Simulation. **No tokens and no network**: everything goes through peekd. |
-| **peekd** (`Contents/Helpers/peekd`) | Rust | one per macOS user, a launchd agent registered by the app | positions, the send queues and scheduled sends, expiry, asks and history, the delivery outbox, streamed Google TTS playback, OpenAI transcription requests, per-home session refresh, the telemetry relay, Peek.app self-update, the stale-CLI watchdog |
+| **peekd** (`Contents/Helpers/peekd`) | Rust | one per macOS user, a launchd agent registered by the app | positions, the send queues and scheduled sends, expiry, asks and history, the delivery outbox, streamed ElevenLabs TTS playback, OpenAI transcription requests, per-home session refresh, the telemetry relay, Peek.app self-update, the stale-CLI watchdog |
 | **peek CLI** (`peek`) | Rust | one copy per Silicon home (installed by Honeycomb), plus an optional Carbon copy | the IAM app contract (`iam`, `login`, `status`, `logout`, `config`), the per-home store `$SILICON_HOME/.peek/`, input validation, reading image and drawing bytes |
 | **silicon-peek-client** | Rust library | linked into the CLI, peekd and the server | a stateless HTTP client for the backend, all wire types (IPC, show and ask schemas and validators, delivery bodies, Ting data), error types. Feature `runtime` adds the store, session refresh, locks and the IPC client. |
-| **peek-server** | Rust (axum, SQLite) | `https://backend.peek.teamofsilicons.com` | the IAM app secret, SLT exchange, refresh and revoke, bearer introspection, Ting proofs and sends, Ting enrollment, the Google TTS key and SSE relay, the OpenAI transcription key and completed-recording relay, legacy org key storage, drawing copies, bug reports, the IAM webhook, the Honeycomb lifecycle participant, the telemetry gateway |
+| **peek-server** | Rust (axum, SQLite) | `https://backend.peek.teamofsilicons.com` | the IAM app secret, SLT exchange, refresh and revoke, bearer introspection, Ting proofs and sends, Ting enrollment, the Deepgram key and temporary TTS token grants, the OpenAI transcription key and completed-recording relay, legacy org key storage, drawing copies, bug reports, the IAM webhook, the Honeycomb lifecycle participant, the telemetry gateway |
 | **Website and docs** | SolidJS + Vite | `https://peek.teamofsilicons.com` | the landing page, `/docs`, `/install.sh`, `/llms.txt` |
 
 ```text
@@ -27,8 +27,8 @@ peek is open source: https://github.com/teamofsilicons/silicon-peek. This page e
                            │ HTTPS, Bearer oat_ + X-Org-ID
                            ▼
                   peek-server (service keys)
-                   ├─ Google Gemini: /api/v1/speech/speak → /v1beta/interactions
-                   │    SSE streamed to peekd → incremental PCM to Peek.app
+                   ├─ TTS access: /api/v1/speech/token → Deepgram /v1/auth/grant
+                   │    temporary JWT → peekd connects directly to Voice Agent → ElevenLabs v4
                    ├─ OpenAI gpt-transcribe: /api/v1/speech/listen → /v1/audio/transcriptions
                    │    completed WAV → final transcript
                    ├─ IAM, Space Station, GitHub
@@ -39,7 +39,7 @@ Design choices that shape everything:
 
 - **The helper lives inside the app**, not in the Honeycomb package, so there is one stable path per macOS user. Honeycomb deletes package directories on every update, and every Silicon home has its own package copy.
 - **Client custody of tokens.** Each Silicon's IAM session lives in its own home; the backend stores none. See [IAM and sessions](iam.md).
-- **Google TTS and OpenAI transcription are driven by peekd.** Google audio events stream through Peek; the helper decodes base64 PCM chunks and sends them to the app for playback. Completed recordings go through the backend to OpenAI; only final transcripts return to the UI. Neither relay stores or logs content. See [Speech tokens and the relay](#speech-tokens-and-the-relay).
+- **ElevenLabs TTS and OpenAI transcription are driven by peekd.** The helper gets a temporary token from Peek, streams ElevenLabs audio directly from Deepgram, and sends PCM chunks to the app for playback. Completed recordings go through the backend to OpenAI; only final transcripts return to the UI. TTS content never reaches the Peek backend, and the OpenAI relay never stores or logs content. See [Speech tokens and the relay](#speech-tokens-and-the-relay).
 - **No live transcript.** Speech-to-text runs once, after the Carbon stops recording.
 - **Validation runs in the app**, with the same QuickJS and renderer as the screen, so a drawing that validates behaves identically live.
 
@@ -74,7 +74,7 @@ cargo build -p silicon-peek-daemon           # target/debug/peekd (macOS only)
 cargo build -p silicon-peek                  # target/debug/peek-server
 ```
 
-Tests never need keys or the network. The backend, IAM, Ting, Google and OpenAI are replaced by `wiremock` servers, stores live in temporary directories, and the helper's socket is overridden with `PEEK_DAEMON_SOCKET`. Never point a test at your real `~/.peek`, `~/.silicon-iam` or `~/Library/Application Support/Peek`. To run the real binaries by hand, use the [isolated run mode](#isolated-run-mode).
+Tests never need keys or the network. Local HTTP fakes replace the backend, IAM, Ting and OpenAI; a local WebSocket fake supplies the Deepgram voice stream. Stores live in temporary directories, and the helper's socket is overridden with `PEEK_DAEMON_SOCKET`. Never point a test at your real `~/.peek`, `~/.silicon-iam` or `~/Library/Application Support/Peek`. To run the real binaries by hand, use the [isolated run mode](#isolated-run-mode).
 
 Peek.app (Xcode 26.4, macOS SDK 26.4, xcodegen; QuickJS-ng v0.17.0 is vendored with a pinned hash):
 
@@ -156,17 +156,17 @@ iso target/debug/peek register side 3
 
 Stop everything with `kill %1 %2 %3 %4` (or by pid) and delete `$R` when you are done.
 
-**Real speech in an isolated run.** Set `PEEK_GEMINI_API_KEY` and `PEEK_OPENAI_API_KEY` in the server's process environment before starting it; keep test phrases short because requests are billed:
+**Real speech in an isolated run.** Set `PEEK_DEEPGRAM_API_KEY` and `PEEK_OPENAI_API_KEY` in the server's process environment before starting it; keep test phrases short because requests are billed:
 
 ```sh
-PEEK_GEMINI_BASE_URL=https://generativelanguage.googleapis.com \
+PEEK_ELEVENLABS_AGENT_URL=wss://agent.deepgram.com/v1/agent/converse \
 PEEK_OPENAI_BASE_URL=https://api.openai.com \
 cargo run -p silicon-peek --bin peek-server
 ```
 
-Only `PEEK_GEMINI_API_KEY` is needed for TTS; the OpenAI key enables microphone transcription. Test contexts use the separate `PEEK_GEMINI_TEST_API_KEY` and `PEEK_OPENAI_TEST_API_KEY`, never production-key fallback. Do not put keys into tracked files, fixtures or logs. Google TTS and OpenAI transcription always use Peek's authenticated relay; neither exposes provider credentials to clients.
+TTS needs a `PEEK_DEEPGRAM_API_KEY` with Member permissions or higher to grant temporary tokens; the OpenAI key enables microphone transcription. Test contexts use the separate `PEEK_DEEPGRAM_TEST_API_KEY` and `PEEK_OPENAI_TEST_API_KEY`, never production-key fallback. Do not put keys into tracked files, fixtures or logs. Peek grants a short-lived token for direct TTS and relays OpenAI transcription; neither path exposes a long-lived provider API key to clients.
 
-For `scripts/e2e/run-local.sh` or `scripts/e2e/e2e.py`, export `PEEK_GEMINI_API_KEY` for TTS and `PEEK_OPENAI_API_KEY` for transcription before starting. These scripts pass the keys only to the isolated server, without saving them in `env.sh`, `app.env`, logs or stack metadata; the isolated server does not load the repository's `.env`. `--no-stt` skips transcription while keeping configured Gemini TTS available.
+For `scripts/e2e/run-local.sh` or `scripts/e2e/e2e.py`, export `PEEK_DEEPGRAM_API_KEY` for TTS and `PEEK_OPENAI_API_KEY` for transcription before starting. These scripts pass the keys only to the isolated server, without saving them in `env.sh`, `app.env`, logs or stack metadata; the isolated server does not load the repository's `.env`. `--no-stt` skips transcription while keeping configured ElevenLabs TTS available.
 
 ## The local IPC protocol (version 1)
 
@@ -271,7 +271,7 @@ peekd's database is at schema 2 since 0.1.2: `sends` gained `expires_at`, `queue
 
 | Method and path | Auth | Purpose |
 |---|---|---|
-| `GET /healthz`, `GET /readyz` | – | liveness (`{"status":"ok","service":"peek","version"}`); readiness of the databases, IAM, Ting, Google TTS and OpenAI transcription configuration |
+| `GET /healthz`, `GET /readyz` | – | liveness (`{"status":"ok","service":"peek","version"}`); readiness of the databases, IAM, Ting, ElevenLabs TTS and OpenAI transcription configuration |
 | `GET /api/v1/iam` | – (test key optional) | discovery: `app_id`, `api_version`, URLs, `testing_environment{id,name,generation}`, `compatibility` |
 | `POST /api/v1/auth/login` | – | `{"slt"}` → session |
 | `POST /api/v1/auth/refresh` | – | `{"refresh_token"}` → session |
@@ -279,8 +279,7 @@ peekd's database is at schema 2 since 0.1.2: `sends` gained `expires_at`, `queue
 | `GET /api/v1/auth/me` | Bearer | the introspected identity, display name, org role, scopes, Ting enrollment |
 | `POST /api/v1/ting/recipient` | Bearer | enroll as a Ting recipient |
 | `POST /api/v1/deliveries` | Bearer | deliver one event through Ting |
-| `POST /api/v1/speech/token` | Bearer | `{"purpose":"tts"\|"stt"}` → compatibility discovery: both purposes return `proxy` without credentials (below) |
-| `POST /api/v1/speech/speak` | Bearer | Google TTS: `{"text","model","voice_instructions"?,"language"?,"sample_rate"?}` → Gemini audio SSE, streamed |
+| `POST /api/v1/speech/token` | Bearer | `{"purpose":"tts"\|"stt"}` → TTS: temporary token with `provider:"elevenlabs"`, `mode:"direct"`; STT: `provider:"openai"`, `mode:"proxy"` without credentials (below) |
 | `POST /api/v1/speech/listen` | Bearer | completed recording (at most 4 MiB) → final OpenAI transcript in Peek JSON |
 | `PUT`/`GET`/`DELETE /api/v1/drawings/current` | Bearer | the Silicon's drawing copy |
 | `GET`/`PUT`/`DELETE /api/v1/orgs/{org}/byo/deepgram` | Bearer (writes: org owner or admin) | legacy org Deepgram key management; unused by current speech |
@@ -293,11 +292,15 @@ peekd's database is at schema 2 since 0.1.2: `sends` gained `expires_at`, `queue
 
 ### Speech tokens and the relay
 
-**TTS:** `POST /api/v1/speech/speak` takes the Silicon's Bearer session and an `Idempotency-Key`. Send `text` (1–2000 characters), `model` (the Google voice name or custom ID, for example `Kore`; this legacy wire field names the voice, not the Gemini model), optional `voice_instructions` (1–2000 characters), optional `language`, and `sample_rate` (24000). Google voice identifiers allow at most 128 ASCII letters, digits, underscores and hyphens. Legacy Aura-2 voice IDs migrate to `Kore`.
+**TTS:** The helper calls `POST /api/v1/speech/token` with `{"purpose":"tts"}`, the Silicon's Bearer session and an `Idempotency-Key`. The backend uses Deepgram's `POST /v1/auth/grant` and returns `provider: "elevenlabs"`, `mode: "direct"`, `access_token`, `expires_in`, `key_source: "peek"` and `base_url: "wss://agent.deepgram.com/v1/agent/converse"`. The helper keeps the temporary token only in memory and opens that WebSocket with `Authorization: Bearer <token>`. No TTS text or audio goes through the Peek backend; there is no `/api/v1/speech/speak` route.
 
-The backend pins `gemini-3.8-flash-tts` and calls Google's `/v1beta/interactions` with `stream: true`, `store: false` and `response_format: {"type":"audio","mime_type":"audio/l16","sample_rate":24000}`. Delivery instructions and language hints become `speech_metadata.style`, and paired accent spans are split into separately styled text segments. The server forwards Google's SSE as it arrives without assembling or decoding the audio. peekd incrementally decodes audio deltas to 24 kHz mono signed 16-bit little-endian PCM, forwards them over IPC and checks the stream's completion event. It caches only a successfully completed result; changing the voice, instructions or language changes the cache key.
+The helper pins `eleven_v4`, configures `agent.speak.provider` with `type: "eleven_labs"`, `model_id` and `voice_id`, and requests 24 kHz mono signed 16-bit little-endian PCM with no container. After `SettingsApplied`, it sends the requested speech using `InjectAgentMessage`. Instructions become a leading audio cue; native square-bracket cues remain inline. Angle-tag markup is rejected. The normalized primary language is passed as `language_code` when known. The helper sets `mip_opt_out: true` and `flags.history: false`, forwards binary PCM to the app over IPC, and requires `AgentAudioDone` before it caches a completed stream. Voice, instructions and language are part of the cache identity. An early close fails synthesis.
 
-`PEEK_GEMINI_API_KEY` serves production; `PEEK_GEMINI_TEST_API_KEY` serves test contexts. The key stays on the backend. `POST /api/v1/speech/token` with `purpose: "tts"` reports `mode: "proxy"`; it never returns a Google credential. Peek adds no TTS concurrency cap; Google's project quotas govern upstream capacity. Client cancellation drops the upstream stream.
+Text over 300 characters is split at natural sentence boundaries once a piece reaches 90 characters, outside square-bracket cues, and queued in order. The original text is preserved, and the request's delivery instructions prefix every piece. Short messages stay together. This reduces the wait for long narration with sentence breaks; unbroken passages or long cues can still delay first audio, and inline delivery cues may not carry between pieces. The helper sends `KeepAlive` every 4 seconds throughout synthesis and waits for the queued messages and final `AgentAudioDone` before completing.
+
+Speech text and optional voice instructions are each limited to 1–2000 characters. Voice IDs allow 1–128 ASCII letters, digits, underscores and hyphens; George is `JBFqnCBsd6RMkjVDRZzb`. Replace old Google/Aura names with an ElevenLabs ID; there is no silent voice substitution. Cancellation closes the upstream connection. The helper allows 50 seconds for first audio, 35 seconds without audio during a stream, 180 seconds overall, and at most 20 MiB of PCM. Peek adds no TTS concurrency cap; provider account limits govern upstream capacity.
+
+`PEEK_DEEPGRAM_API_KEY` serves production; `PEEK_DEEPGRAM_TEST_API_KEY` serves test contexts, with no production fallback. The key needs Member permissions or higher. `PEEK_ELEVENLABS_AGENT_URL` accepts the canonical Voice Agent URL or a loopback WebSocket for local tests. `PEEK_DEEPGRAM_BASE_URL` controls token grants (default `https://api.deepgram.com`). `PEEK_DEEPGRAM_TOKEN_TTL_SECONDS` defaults to 30 and accepts 1–3600. The token only needs to be valid at the WebSocket handshake: an established connection can finish after token expiry. See [Deepgram's token authentication guide](https://developers.deepgram.com/guides/fundamentals/token-based-authentication).
 
 **STT:** `POST /api/v1/speech/listen` takes a completed recording as the raw body (`Content-Type: audio/wav`, at most 4 MiB; larger gives `413 payload_too_large`), the Silicon's Bearer session and an `Idempotency-Key`. The server calls OpenAI `/v1/audio/transcriptions` as multipart with `model: "gpt-transcribe"`, then returns a final, provider-neutral object:
 
@@ -311,7 +314,7 @@ The accepted query parameters remain `model` (omitted or `gpt-transcribe`), `lan
 
 `PEEK_OPENAI_API_KEY` serves production and `PEEK_OPENAI_TEST_API_KEY` serves test contexts, with no fallback between them. `POST /api/v1/speech/token` with `purpose: "stt"` remains compatibility discovery: it returns `provider: "openai"`, `mode: "proxy"`, `key_source: "peek"` and the Peek speech routing URL, without an access token. There is no direct provider path or Deepgram fallback. Existing org Deepgram keys remain manageable but are never selected for TTS or transcription.
 
-Token and relay calls share the request rate budget: 120 per minute per Silicon and 1,200 per minute per org (`429 rate_limited` with `Retry-After`). Neither relay stores or logs transcripts, instructions or audio. Provider failures become `speech_unavailable`; see [Troubleshooting](troubleshooting.md).
+Token and transcription relay calls share the request rate budget: 120 per minute per Silicon and 1,200 per minute per org (`429 rate_limited` with `Retry-After`). The backend never stores or logs transcripts or audio. Provider failures become `speech_unavailable`; see [Troubleshooting](troubleshooting.md).
 
 ## Build on top of peek
 

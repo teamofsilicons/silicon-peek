@@ -58,7 +58,7 @@ iam silicon-login --app-id peek --grant-org <org> --approve-scopes   # prints a 
 peek login '<SLT>'
 peek register side 3                              # one position per Silicon; taken positions list the free ones
 peek register drawing ./logo.js                   # optional; otherwise Peek uses its built-in visual
-peek config set '{"voice":"Kore","voice_instructions":"Warm, conversational delivery."}'
+peek config set '{"voice":"JBFqnCBsd6RMkjVDRZzb","voice_instructions":"Warm, conversational delivery."}'
 peek send --speak "Clean-up finished" --show '{"elements":[{"type":"text","text":"12 GB freed"}]}'
 peek send --speak "Delete old.zip?" \
   --ask '{"question":"Delete ~/Downloads/old.zip?","type":"single_choice","options":["Keep","Delete"]}'
@@ -93,7 +93,7 @@ Every command explains itself: `peek --help`, `peek <command> --help`, `peek com
         peek-server (Rust/axum on EC2, holds service keys)
          ├─ IAM: SLT exchange, refresh, introspection, OBO proofs
          ├─ Ting: recipient enrollment and delivery → the Silicon's flow
-         ├─ Google Gemini 3.8 Flash TTS: streaming relay → peekd → PCM playback
+         ├─ Deepgram: temporary TTS token → peekd connects directly to Voice Agent → ElevenLabs v4
          ├─ OpenAI gpt-transcribe: completed WAV upload → final transcript
          └─ Space Station telemetry gateway, drawing copies, bug reports
 ```
@@ -104,15 +104,15 @@ Every command explains itself: `peek --help`, `peek <command> --help`, `peek com
 - **One app per OS user.** `peekd` ships inside Peek.app and runs as a launchd agent. Honeycomb
   installs the CLI per Silicon home. The CLI offers the bundled `Peek.app.zip`, and peekd updates the
   app: the newest build wins and it never downgrades.
-- **Google TTS streams through Peek.** `--speak` uses Gemini 3.8 Flash TTS. The backend keeps
-  the Google key and forwards audio events as they arrive; peekd decodes and plays PCM while
-  generation continues. No speech content or audio is stored or logged on the backend. Set
+- **ElevenLabs TTS streams directly to the Mac.** `--speak` uses ElevenLabs v4 through Deepgram Voice Agent. The backend keeps
+  the Deepgram API key and grants a temporary token; peekd connects directly and plays PCM while
+  generation continues. TTS text and audio never pass through the Peek backend. Set
   `voice` and `voice_instructions` with `peek config set`, or override a send with `--voice` and
   `--voice-instructions`. See [voice customization and expressions](docs/show.md#customize-a-silicons-voice).
 - **OpenAI transcribes completed recordings.** After the Carbon stops, peekd sends the WAV
   through Peek's authenticated relay to `gpt-transcribe`. The final transcript becomes the answer;
   no live transcript is shown. API keys stay on the server, and the relay never stores or logs
-  recordings or transcripts. Google and OpenAI use separate production and test keys.
+  recordings or transcripts. Deepgram and OpenAI use separate production and test keys.
 - **Testing environments** use the same code paths as production (`peek --test <env-uuid> …`), and
   test bubbles carry a TEST pill.
 

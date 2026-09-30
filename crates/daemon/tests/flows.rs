@@ -13,7 +13,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{DRAWING, Harness, Home, Validate, eventually, pcm, query_one, sse_audio};
+use common::{DRAWING, Harness, Home, Validate, agent::ResponsePlan, eventually, pcm, query_one};
 use serde_json::{Value, json};
 use silicon_peek_client::{
     ErrorCode,
@@ -80,18 +80,7 @@ async fn ready_home(h: &Harness, actor: &str, side: u64) -> (Home, common::FakeU
 async fn send_shows_the_bubble_and_streams_tts_to_the_ui() {
     let h = Harness::start().await;
     let audio = pcm(150_000);
-    Mock::given(method("POST"))
-        .and(path("/api/v1/speech/speak"))
-        .and(header("authorization", "Bearer oat_sicleanup"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .insert_header("dg-request-id", "dg-1")
-                .set_body_raw(sse_audio(&audio), "text/event-stream"),
-        )
-        .expect(1)
-        .mount(&h.server)
-        .await;
+    h.agent.audio(audio.clone());
     let (home, ui) = ready_home(&h, "si:cleanup", 3).await;
     // Sends without a side or drawing fail with the exact spec errors.
     let lonely = h.home("si:lonely");
@@ -114,7 +103,7 @@ async fn send_shows_the_bubble_and_streams_tts_to_the_ui() {
     assert_eq!(r.slot.get(), 3);
     let speech = r.speech.unwrap();
     assert_eq!(speech.status, SpeechStatus::Pending);
-    assert_eq!(speech.model.as_deref(), Some("Kore"));
+    assert_eq!(speech.model.as_deref(), Some("JBFqnCBsd6RMkjVDRZzb"));
     assert_eq!(speech.chars, u32::try_from(text.chars().count()).unwrap());
 
     let show = ui.expect("peek.show").await;
@@ -181,7 +170,7 @@ async fn send_shows_the_bubble_and_streams_tts_to_the_ui() {
     .await
     .unwrap();
 
-    // The same text again is served from the TTS cache: no second Gemini call.
+    // The same text again is served from the TTS cache: no second ElevenLabs call.
     let mut op = send_op();
     op.speak = Some(text.into());
     let (r2, _) = h.call(&home, &op, vec![]).await.unwrap();
@@ -253,12 +242,7 @@ async fn send_shows_the_bubble_and_streams_tts_to_the_ui() {
 #[tokio::test]
 async fn multilingual_speech_and_tts_failures_fall_back_to_the_pill() {
     let h = Harness::start().await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/speech/speak"))
-        .respond_with(ResponseTemplate::new(402).set_body_json(json!({"error":{"code":"speech_unavailable","message":"Speech quota exhausted","retryable":false}})))
-        .expect(2)
-        .mount(&h.server)
-        .await;
+    h.agent.respond(vec![ResponsePlan::Reject(403)]);
     let (home, ui) = ready_home(&h, "si:cleanup", 1).await;
     let mut op = send_op();
     op.speak = Some("बिल्ड पूरा हो गया है और सभी परीक्षण सफल रहे हैं, अब हम आगे बढ़ सकते हैं।".into());
@@ -279,7 +263,7 @@ async fn multilingual_speech_and_tts_failures_fall_back_to_the_pill() {
     .await
     .unwrap();
 
-    // A non-retryable Gemini failure before any audio → tts.error, one call.
+    // A non-retryable ElevenLabs failure before any audio → tts.error, one call.
     let mut op = send_op();
     op.speak = Some("The build finished and every test passed.".into());
     let (r, _) = h.call(&home, &op, vec![]).await.unwrap();
@@ -335,6 +319,7 @@ async fn multilingual_speech_and_tts_failures_fall_back_to_the_pill() {
             .is_some(),
         "warnings survive re-serialization (what `peek history --json` prints)"
     );
+    assert_eq!(h.agent.count(), 2, "fatal provider errors are not retried");
 }
 
 #[tokio::test]
@@ -375,25 +360,13 @@ async fn a_stalled_token_mint_fails_within_the_first_audio_budget() {
 #[tokio::test]
 async fn tts_retries_before_audio_but_never_after() {
     let h = Harness::start().await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/speech/speak"))
-        .respond_with(ResponseTemplate::new(503).set_body_json(
-            json!({"error":{"code":"speech_unavailable","message":"Busy","retryable":true}}),
-        ))
-        .up_to_n_times(1)
-        .expect(1)
-        .mount(&h.server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/speech/speak"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_raw(sse_audio(&pcm(4000)), "text/event-stream"),
-        )
-        .expect(1)
-        .mount(&h.server)
-        .await;
+    h.agent.respond(vec![
+        ResponsePlan::Reject(503),
+        ResponsePlan::Audio {
+            bytes: pcm(4000),
+            done: true,
+        },
+    ]);
     let (home, ui) = ready_home(&h, "si:cleanup", 1).await;
     let mut op = send_op();
     op.speak = Some("Retry me please, the first attempt fails.".into());
@@ -401,6 +374,7 @@ async fn tts_retries_before_audio_but_never_after() {
     let (_, bytes, total) = ui.tts_stream(r.send_id.as_str()).await;
     assert_eq!(bytes.len(), 4000);
     assert_eq!(total, 2000);
+    assert_eq!(h.agent.count(), 2);
     assert!(
         ui.try_expect("tts.error", Duration::from_millis(200))
             .await

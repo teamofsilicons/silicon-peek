@@ -48,7 +48,7 @@ public struct SimulationDependencies {
     public var makeInputHub:
         @MainActor (any ImageProviding, any SpeechPlaying, any MicRecording, any BackdropSampling) -> any InputHubbing
     public var makePresenter: @MainActor (SimulationPresenterParts) -> any SimulationPresenter
-    /// Pause between streamed PCM chunks. peekd forwards decoded Google audio at network speed, faster than real time.
+    /// Pause between streamed PCM chunks. peekd forwards decoded ElevenLabs audio at network speed, faster than real time.
     public var chunkInterval: Duration = .milliseconds(40)
 
     public init(paths: PeekPaths, assetsDirectory: URL? = nil, baseSettings: @escaping @MainActor () -> PeekSettings,

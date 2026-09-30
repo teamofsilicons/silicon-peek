@@ -24,7 +24,7 @@ peek
 │   └── drawing [FILE.js] [--check] [--preview <OUT.png>] [--dump-frame <N>]
 ├── unregister                                     release the position, delete the drawing, cancel queued and scheduled sends
 ├── send [--speak <TEXT>] [--show <JSON|@FILE|->] [--ask <JSON|@FILE|->]
-│        [--voice <GOOGLE_VOICE>] [--voice-instructions <TEXT>] [--lang <bcp47>] [--duration <SECS>]
+│        [--voice <VOICE_ID>] [--voice-instructions <TEXT>] [--lang <bcp47>] [--duration <SECS>]
 │        [--expires-in <DURATION> | --expires-at <DATETIME>] [--in <DURATION> | --at <DATETIME>] [--tz <IANA>]
 │        [--replace] [--notify speech_finished,show_dismissed,shown] [--wait[=<SECS>]]
 ├── queue                                          the send on screen and the ones waiting behind it (at most 5)
@@ -195,9 +195,9 @@ Prints `{"authenticated":false,"remote_revocation":"confirmed"|"pending"}` and e
 Configuration for this home, stored in `$SILICON_HOME/.peek/config.json`.
 
 ```sh
-peek config set '{"notify":["speech_finished"],"voice":"Kore"}'
-peek config show --json      # {"schema":1,"telemetry":true,"voice":"Kore","voice_instructions":null,"language":null,"notify":["speech_finished"],"api_url":null,"delivery_max_age_hours":168,"position":null,"drawing":null}
-peek config get voice --json # {"key":"voice","value":"Kore"}
+peek config set '{"notify":["speech_finished"],"voice":"JBFqnCBsd6RMkjVDRZzb"}'
+peek config show --json      # {"schema":1,"telemetry":true,"voice":"JBFqnCBsd6RMkjVDRZzb","voice_instructions":null,"language":null,"notify":["speech_finished"],"api_url":null,"delivery_max_age_hours":168,"position":null,"drawing":null}
+peek config get voice --json # {"key":"voice","value":"JBFqnCBsd6RMkjVDRZzb"}
 peek config unset voice
 peek config telemetry off
 ```
@@ -207,8 +207,8 @@ peek config telemetry off
 | Key | Type / validation | Default | Effect |
 |---|---|---|---|
 | `telemetry` | bool | `true` | this home's telemetry |
-| `voice` | Google voice name or ID, 1–128 ASCII letters, digits, `_` or `-`, or null | null (`Kore`) | default TTS voice; legacy Aura-2 IDs use `Kore` |
-| `voice_instructions` | string, 1–2000 characters, or null | null | delivery directions sent as Google style metadata, separate from the spoken text |
+| `voice` | ElevenLabs voice ID, 1–128 ASCII letters, digits, `_` or `-`, or null | null (George) | default TTS voice; replace legacy Google/Aura names with an ElevenLabs ID |
+| `voice_instructions` | string, 1–2000 characters, or null | null | delivery directions converted into a leading audio cue; best-effort performance |
 | `language` | BCP 47 primary subtag (2–3 letters) or null | null (detect) | fallback TTS language hint when Peek detection is ambiguous |
 | `notify` | array ⊆ `["speech_finished","show_dismissed","shown"]` | `[]` | default `--notify`. A helper older than 0.1.2 does not know `shown`; it is then left out, with a hint on stderr. |
 | `api_url` | https URL or null | null | same as `--api` |
@@ -301,12 +301,12 @@ Speaks, shows or asks on the Carbon's screen. Returns immediately. The send join
 
 | Flag | Meaning |
 |---|---|
-| `--speak <TEXT>` | 1–2000 characters, streamed with Google Gemini 3.8 Flash TTS. |
+| `--speak <TEXT>` | 1–2000 characters, streamed with ElevenLabs v4 through Deepgram Voice Agent. |
 | `--show <JSON\|@FILE\|->` | 1–3 text or image elements. See [Speak and show](show.md). |
 | `--ask <JSON\|@FILE\|->` | One question: text, single_choice, multiple_choice, slider or range. See [Ask a question](ask.md). |
-| `--voice <GOOGLE_VOICE>` | Google voice name or custom ID. Overrides config `voice`, then the Carbon's per-language setting, then `Kore`. Needs `--speak`. |
-| `--voice-instructions <TEXT>` | 1–2000 characters of delivery directions, overriding config `voice_instructions`. Needs `--speak`. See [voice customization, accent spans and expression tags](show.md#customize-a-silicons-voice). |
-| `--lang <bcp47>` | Supplies a language hint to Gemini. Any BCP 47 tag works; its primary subtag is used (`es-MX` supplies `es`). Needs `--speak`. |
+| `--voice <VOICE_ID>` | ElevenLabs voice ID. Overrides config `voice`, then the Carbon's per-language setting, then George (`JBFqnCBsd6RMkjVDRZzb`). Needs `--speak`. |
+| `--voice-instructions <TEXT>` | 1–2000 characters of delivery directions, overriding config `voice_instructions`. Needs `--speak`. See [voice customization, accent cues and expression tags](show.md#customize-a-silicons-voice). |
+| `--lang <bcp47>` | Supplies a language hint to ElevenLabs. BCP 47 tags are normalized to their primary subtag (`es-MX` supplies `es`). Needs `--speak`. |
 | `--duration <SECS>` | 1–120. How long a show stays when there is no speech, or after the speech ends. Without it, a bubble with speech slides back 1.5 s after the speech ends; the text-length default applies only to a show without speech. Needs `--show` or `--speak`; not with `--ask`. |
 | `--expires-in <DURATION>` | Drop the send if it has not finished in time: `90s`, `15m`, `2h`, `1d`, `1h30m`, or plain seconds such as `600`. 10 s to 7 days, counted from when the helper receives the send. Any kind; see [Expiry](#expiry). |
 | `--expires-at <DATETIME>` | The same deadline as a date-time, 10 s to 7 days ahead: `2026-09-27T18:00`, `"2026-09-27 18:00"`, `18:00`, or with `Z` or `+05:30`. Not with `--expires-in`. |
@@ -345,7 +345,7 @@ With `--json` it prints:
  "queue_position":0|1|2|3|4|5|null,"waiting":2|null,"expires_at":"2026-09-27T12:45:00.000Z"|null,
  "schedule_id":"sch_0192…"|null,"due_at":"2026-09-27T12:30:00.000Z"|null,"tz":"Asia/Kolkata"|null,
  "replaced_send_id":"snd_0192…"|null,
- "speech":{"status":"pending"|"cached"|"skipped"|"unsupported_language","model":"Kore","chars":42}|null,
+ "speech":{"status":"pending"|"cached"|"skipped"|"unsupported_language","model":"JBFqnCBsd6RMkjVDRZzb","chars":42}|null,
  "warnings":[{"code":"carbon_away","message":"…"}]}
 ```
 
@@ -378,7 +378,7 @@ scheduled snd_0192… for 2026-09-27 18:00 IST (Asia/Kolkata) (in 5h 48m); sched
 | `carbon_paused` | The Carbon paused all peeks in Peek.app. The send waits in your queue and is shown when they resume. |
 | `ting_not_enrolled` | This Silicon is not a Ting recipient for peek, so answers cannot be delivered; they wait on the Mac. Run `peek ting enroll`. |
 | `isi_ignored` | `$ISI` was invalid and was dropped from this send (no `metadata.isi` in its events). |
-| `speak_language_unsupported` | Compatibility warning from older helpers using the former language list; update Peek.app. Current Gemini speech uses Google language detection. |
+| `speak_language_unsupported` | Compatibility warning from older helpers using the former language list; update Peek.app. Current speech accepts multilingual voices and language hints. |
 | `timezone_fallback_utc` | The Mac's time zone could not be read, so an `--at` or `--expires-at` without an offset was read as UTC. Add an offset or `--tz`. |
 
 With `--wait`, the command prints the final answer instead. Whatever it prints replaces the Ting event for that ask, so each outcome reaches you through exactly one channel:
@@ -670,7 +670,7 @@ peek status --json
 
 ## peek org byo deepgram
 
-These commands manage previously saved Deepgram keys for compatibility. **Current speech uses Google TTS and OpenAI transcription; these keys and endpoints do not affect either provider.** Operators configure their server-side Google and OpenAI keys instead.
+These commands manage previously saved Deepgram keys for compatibility. **Current speech uses ElevenLabs TTS through Peek's server-owned Deepgram account and OpenAI transcription; these org keys and endpoints do not affect either provider.** Operators configure the server-side Deepgram key for ElevenLabs TTS and the OpenAI transcription key instead.
 
 ```sh
 peek --org tos org byo deepgram show --json

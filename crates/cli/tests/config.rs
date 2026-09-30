@@ -55,14 +55,14 @@ async fn config_set_merges_and_prints_the_result() {
         .run(&[
             "config",
             "set",
-            r#"{"notify":["show_dismissed","speech_finished"],"voice":"Kore","voice_instructions":"Warm, calm, Indian accent.","language":"EN","delivery_max_age_hours":24}"#,
+            r#"{"notify":["show_dismissed","speech_finished"],"voice":"JBFqnCBsd6RMkjVDRZzb","voice_instructions":"Warm, calm, Indian accent.","language":"EN","delivery_max_age_hours":24}"#,
         ])
         .await;
     assert_eq!(run.code, 0, "{}", run.stderr);
     let show = env.run(&["config", "show", "--json"]).await.json();
     assert_eq!(
         show,
-        json!({"schema":1,"telemetry":true,"voice":"Kore","voice_instructions":"Warm, calm, Indian accent.","language":"en",
+        json!({"schema":1,"telemetry":true,"voice":"JBFqnCBsd6RMkjVDRZzb","voice_instructions":"Warm, calm, Indian accent.","language":"en",
                "notify":["speech_finished","show_dismissed"],"api_url":null,"delivery_max_age_hours":24,"position":null,"drawing":null})
     );
     let reset = env

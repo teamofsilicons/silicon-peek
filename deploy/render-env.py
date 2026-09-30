@@ -49,6 +49,12 @@ def _https_origin(value: str) -> str | None:
     return None
 
 
+def _wss_url(value: str) -> str | None:
+    if value != "wss://agent.deepgram.com/v1/agent/converse":
+        return "must be wss://agent.deepgram.com/v1/agent/converse"
+    return None
+
+
 def _origins(value: str) -> str | None:
     for origin in value.split(","):
         problem = _https_origin(origin.strip())
@@ -135,13 +141,11 @@ SPEC: dict[str, tuple[bool, bool, Callable[[str], str | None]]] = {
     "PEEK_HONEYCOMB_SERVICE_TOKEN": (False, True, _pattern(r"[\x21-\x7e]{32,512}", "32-512 visible ASCII characters")),
     "PEEK_ENCRYPTION_KEY": (True, True, HEX64),
     # Current speech providers; production and testing use separate credentials.
-    "PEEK_GEMINI_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "a Gemini API key")),
-    "PEEK_GEMINI_TEST_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "a Gemini API key")),
-    "PEEK_GEMINI_BASE_URL": (False, False, _https_origin),
+    "PEEK_ELEVENLABS_AGENT_URL": (False, False, _wss_url),
     "PEEK_OPENAI_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "an OpenAI API key")),
     "PEEK_OPENAI_TEST_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "an OpenAI API key")),
     "PEEK_OPENAI_BASE_URL": (False, False, _https_origin),
-    # Legacy Deepgram configuration does not select the current speech providers.
+    # Deepgram mints direct ElevenLabs TTS connection tokens; org BYO keys remain inactive.
     "PEEK_DEEPGRAM_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "a Deepgram API key")),
     "PEEK_DEEPGRAM_TEST_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "a Deepgram API key")),
     "PEEK_DEEPGRAM_BASE_URL": (True, False, _https_origin),
@@ -187,7 +191,7 @@ SPEC: dict[str, tuple[bool, bool, Callable[[str], str | None]]] = {
 # out entirely (the server then uses its default), so an existing secret keeps rendering.
 MAY_BE_ABSENT = frozenset({
     "PEEK_BYO_DEEPGRAM_HOSTS",
-    "PEEK_GEMINI_API_KEY", "PEEK_GEMINI_TEST_API_KEY", "PEEK_GEMINI_BASE_URL",
+    "PEEK_ELEVENLABS_AGENT_URL",
     "PEEK_OPENAI_API_KEY", "PEEK_OPENAI_TEST_API_KEY", "PEEK_OPENAI_BASE_URL",
 })
 

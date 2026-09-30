@@ -170,7 +170,7 @@ struct SpeechPlayerTests {
 
     @Test("a failure before any audio shows the text instead (once); after audio started it plays out")
     func failures() {
-        let error = IPCErrorBody(code: "speech_failed", message: "Gemini answered 503", retryable: true)
+        let error = IPCErrorBody(code: "speech_failed", message: "ElevenLabs answered 503", retryable: true)
         begin()
         chunk(Signal.silence(frames: 1200))
         player.handle(.failure(TTSErrorEvent(sendID: "snd_1", error: error)))

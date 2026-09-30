@@ -9,8 +9,8 @@ use serde_json::json;
 use super::{Lines, check_text, limits};
 use crate::error::{Error, ErrorCode, Result};
 
-/// Legacy Aura-2 language list retained for client API compatibility.
-pub const TTS_LANGUAGES: [&str; 7] = ["en", "es", "de", "fr", "nl", "it", "ja"];
+/// George, Peek's default multilingual `ElevenLabs` voice.
+pub const DEFAULT_TTS_VOICE: &str = "JBFqnCBsd6RMkjVDRZzb";
 
 /// Opt-in notifications (`--notify`, config `notify`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -89,7 +89,8 @@ pub fn check_speak(text: &str) -> Result<()> {
         } else {
             e
         }
-    })
+    })?;
+    check_speech_markup(text)
 }
 
 /// Validates an ISI (from `$ISI`): 1–160 characters, no control characters.
@@ -107,9 +108,8 @@ pub fn check_isi(isi: &str) -> Result<()> {
     )
 }
 
-/// Validates a Gemini prebuilt or custom voice ID (1–128 ASCII letters,
-/// digits, underscores or hyphens). Legacy Aura IDs remain readable so
-/// peekd can replace an old configured voice with the Gemini default.
+/// Validates an `ElevenLabs` voice ID (1–128 ASCII letters, digits,
+/// underscores or hyphens). The provider checks voice availability.
 ///
 /// # Errors
 /// `invalid_input` with an example.
@@ -121,8 +121,8 @@ pub fn check_voice(voice: &str) -> Result<()> {
     {
         Ok(())
     } else {
-        Err(Error::invalid_input("voice must be a Gemini voice ID of 1–128 ASCII letters, digits, underscores or hyphens")
-            .with_hint("use a prebuilt voice such as Kore, Puck or Aoede, or your Google custom voice ID"))
+        Err(Error::invalid_input("voice must be an ElevenLabs voice ID of 1–128 ASCII letters, digits, underscores or hyphens")
+            .with_hint("use George: JBFqnCBsd6RMkjVDRZzb, or another ElevenLabs voice ID"))
     }
 }
 
@@ -138,21 +138,30 @@ pub fn check_voice_instructions(instructions: &str) -> Result<()> {
         limits::SPEAK_MAX_CHARS,
         ErrorCode::InvalidInput,
         Lines::Multi,
-    )
+    )?;
+    check_speech_markup(instructions)
 }
 
-/// The language of an Aura-2 voice (`aura-2-thalia-en` → `en`).
-#[must_use]
-pub fn voice_language(voice: &str) -> Option<&str> {
-    voice
-        .strip_prefix("aura-2-")?
-        .rsplit_once('-')
-        .map(|(_, l)| l)
+fn check_speech_markup(text: &str) -> Result<()> {
+    let has_tag = text.split('<').skip(1).any(|tail| {
+        tail.split_once('>').is_some_and(|(tag, _)| {
+            tag.trim_start_matches('/')
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphabetic)
+        })
+    });
+    if has_tag {
+        Err(Error::invalid_input("ElevenLabs speech does not support angle-bracket or scoped tags")
+            .with_hint("use native square-bracket cues such as [Indian accent] Anuv Jain, or --voice-instructions; cues do not have closing tags"))
+    } else {
+        Ok(())
+    }
 }
 
 /// Validates a BCP 47 language tag and returns its primary subtag,
 /// lowercased (`EN` → `en`, `es-MX` → `es`, `zh-Hant-TW` → `zh`).
-/// Gemini voices are multilingual; use voice instructions for an accent.
+/// `ElevenLabs` voices are multilingual; use voice instructions for an accent.
 ///
 /// # Errors
 /// `invalid_input` unless the primary subtag is 2–3 ASCII letters and every
@@ -481,6 +490,15 @@ mod tests {
         assert!(e.is_some_and(|e| *e.code() == ErrorCode::SpeakTooLong));
         assert!(check_speak("").is_err());
         assert!(check_speak("line one\nline two").is_ok());
+        assert!(check_speak("[Indian accent] Anuv Jain [laughs]").is_ok());
+        assert!(check_speak("1 < 2 and 3 > 2").is_ok());
+        for markup in [
+            "<indian accent>Anuv Jain</indian accent>",
+            "<whisper>hello</whisper>",
+        ] {
+            assert!(check_speak(markup).is_err());
+            assert!(check_voice_instructions(markup).is_err());
+        }
     }
 
     #[test]
@@ -495,19 +513,14 @@ mod tests {
 
     #[test]
     fn voices_and_languages() {
-        assert!(check_voice("Kore").is_ok());
+        assert!(check_voice("JBFqnCBsd6RMkjVDRZzb").is_ok());
         assert!(check_voice("custom_voice-123").is_ok());
-        assert!(check_voice("aura-2-thalia-en").is_ok());
+        assert!(check_voice("DtsPFCrhbCbbJkwZsb3d").is_ok());
         assert!(check_voice("").is_err());
         assert!(check_voice("not a voice").is_err());
         assert!(check_voice("voice?key=secret").is_err());
         assert!(check_voice(&"x".repeat(129)).is_err());
-        assert_eq!(voice_language("aura-2-celeste-es"), Some("es"));
-        assert_eq!(voice_language("custom-voice"), None);
-        assert!(
-            check_voice_instructions("Warm, calm.\n<indian accent>Anuv Jain</indian accent>")
-                .is_ok()
-        );
+        assert!(check_voice_instructions("Warm, calm.\n[Indian accent] Anuv Jain").is_ok());
         assert!(check_voice_instructions(&"é".repeat(2000)).is_ok());
         assert!(check_voice_instructions(&"é".repeat(2001)).is_err());
         assert!(check_voice_instructions("").is_err());

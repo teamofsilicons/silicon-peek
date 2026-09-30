@@ -17,63 +17,100 @@ Both return immediately with `{"send_id":"snd_…","status":"showing",…}` (`qu
 | Rule | Value |
 |---|---|
 | Length | 1–2000 characters (Unicode scalar values), including inline tags. Longer fails with `speak_too_long`, exit 2. |
-| Engine | Google Gemini 3.8 Flash TTS (`gemini-3.8-flash-tts`), streamed through the Peek backend to the Mac as 24 kHz mono PCM ([Privacy](privacy.md)). Playback begins while Google is still generating audio. |
-| Language | `--lang` supplies a language hint, otherwise Peek uses reliable detection and then config `language` as a fallback. Without a hint, Google detects the transcript's language. |
-| Voice | `--voice`, then config `voice`, then the Carbon's per-language setting, then `Kore`. Use a Google prebuilt voice name or a custom voice ID available to Peek's Google project. |
-| Delivery | `--voice-instructions`, then config `voice_instructions`, 1–2000 characters. Natural-language directions control delivery without being read aloud. |
+| Engine | ElevenLabs v4 (`eleven_v4`) through Deepgram Voice Agent, streamed directly to the Mac as 24 kHz mono PCM ([Privacy](privacy.md)). Playback starts as audio arrives. |
+| Language | `--lang` selects a language hint; otherwise Peek uses reliable local detection and then config `language` as a fallback. Peek sends the normalized primary language to the provider (`pt-BR` becomes `pt`). A language hint does not select an accent or translate the text. |
+| Voice | `--voice`, then config `voice`, then the Carbon's per-language setting, then George (`JBFqnCBsd6RMkjVDRZzb`). Use an ElevenLabs voice ID available through Peek's provider account. |
+| Delivery | `--voice-instructions`, then config `voice_instructions`, 1–2000 characters. Peek translates these directions into audio cues; adherence is best effort. |
 
 ### Customize a Silicon's voice
 
-A Silicon can save the Carbon's preferences from the CLI, then adjust individual messages:
+A Silicon can save the Carbon's preferences from the CLI, then adjust individual messages. George is the default male voice, suitable as the starting voice for a DJ:
 
 ```sh
 # Persist this Silicon's voice and delivery defaults.
-peek config set '{"voice":"Kore","voice_instructions":"Warm, conversational delivery; relaxed pace and gentle emphasis."}'
+peek config set '{"voice":"JBFqnCBsd6RMkjVDRZzb","voice_instructions":"Warm, conversational male DJ; relaxed pace and gentle emphasis."}'
 
 # Override those instructions for this message only.
-peek send --speak 'The build passed. <short pause> All tests are green! <chuckle>' \
-  --voice Puck --voice-instructions 'Sound delighted; keep the pace brisk.'
+peek send --speak 'The build passed. [short pause] All tests are green! [chuckles]' \
+  --voice JBFqnCBsd6RMkjVDRZzb --voice-instructions 'Delighted, with a brisk delivery.'
 
 # Clear saved instructions.
 peek config unset voice_instructions
 ```
 
-Choose `--voice` for the speaker; use `--voice-instructions` for the performance. Directions can describe emotion, pacing, pitch, emphasis, volume, or a delivery such as whispering. Keep them concise. Peek sends them separately as Google's `speech_metadata.style`; ordinary directions written into `--speak` may be spoken as words.
+Choose `--voice` for the speaker; use `--voice-instructions` for the performance. Describe the sound you want in a short phrase: warm, curious, restrained, whispering, or slowly and clearly. Peek converts the instructions into a leading square-bracket audio cue. Plain directions written as ordinary words in `--speak` may be spoken aloud. Audio cues are model prompts, so a particular emotion, pace or pronunciation is not guaranteed.
 
-For a persistent regional accent or a distinctive persona, select a suitable regional voice or a custom `voice_...` ID. Google documents [voice design](https://ai.google.dev/gemini-api/docs/voice-design) separately; Peek accepts an existing ID and does not create voices. The voice must be accessible to the Google project used by the Peek server. Google's [voice options and prompting guide](https://ai.google.dev/gemini-api/docs/speech-generation#voice-options) explain voice selection.
+For a consistent accent, start with a voice whose accent fits the intended language. An accent cue can request a variation, but does not create a new voice. ElevenLabs v4 aims for native pronunciation in the target language when it differs from the reference voice's language, so a voice's original accent does not necessarily carry into another language. See [ElevenLabs v4's accent and voice controls](https://elevenlabs.io/docs/overview/capabilities/text-to-speech/eleven-v4).
 
-### Accent spans
+### Voices
 
-For a local pronunciation hint, write `<indian accent>Anuv Jain</indian accent>`:
+These 17 voices have been checked to produce audio through Peek's Deepgram-to-ElevenLabs v4 route. The group helps choose a starting voice; it does not restrict the languages that the voice can speak. A successful synthesis check is not a guarantee of accent or pronunciation quality. Voice availability can change with the provider account.
+
+| Voice | Voice ID (`--voice`) | Starting group |
+|---|---|---|
+| **George (default, male)** | `JBFqnCBsd6RMkjVDRZzb` | Multilingual |
+| Piper | `DtsPFCrhbCbbJkwZsb3d` | Multilingual |
+| Mark | `UgBBYS2sOqTuMpoF3BR0` | Multilingual |
+| Jessica | `cgSgspJ2msm6clMCkdW9` | English |
+| Daniel | `onwK4e9ZLuTAKqWW03F9` | English |
+| Brian | `jBlmi27XRORxjPquUeCh` | Spanish |
+| Aria Bloom | `TC0Zp7WVFzhA8zpTlRqV` | Spanish |
+| Jennifer | `D6MRWCKoavI2xUJXmaCb` | Dutch |
+| Jerry | `gdTrLNuwWUaxC0z5n1j7` | Dutch |
+| Alexandre Boutin | `IPgYtHTNLjC7Bq7IPHrm` | French |
+| Mademoiselle French | `F1toM6PcP54s45kOOAyV` | French |
+| Ben | `aTTiK3YzK3dXETpuDE2h` | German |
+| Doreen Pelz | `mDRP1h6KfUD1XAUJxqr0` | German |
+| Aida | `CiwzbDpaN3pQXjTgx3ML` | Italian |
+| Archer - Conversational | `Fahco4VZzobUeiPqni1S` | Italian |
+| Hinata | `j210dv0vWm7fCknyQpbA` | Japanese |
+| Morioki | `8EkOjt4xTPGMclNlh1pk` | Japanese |
+
+An existing voice ID outside this list may work when available to the provider account; Peek does not create or clone voices. The voice ID allows 1–128 ASCII letters, digits, underscores and hyphens. Previously configured Google or Aura voice names must be replaced with an ElevenLabs ID. Peek does not silently substitute another voice.
+
+### Accents and pronunciation
+
+Put the accent cue before the words it should influence:
 
 ```sh
-peek send --speak 'Now playing <indian accent>Anuv Jain</indian accent>.'
+peek send --speak '[strong Indian accent] Anuv Jain.'
 ```
 
-This paired accent syntax is **Peek's shorthand**. Peek removes the wrapper from the spoken text and applies its accent instruction to that span through Google's style metadata. It is not a native Google tag or a guarantee of an exact accent. Voice, language and phrasing affect the result; use a regional or custom voice when a consistent accent matters. Keep spans paired and do not nest them.
+The older Peek shorthand `<indian accent>Anuv Jain</indian accent>` is no longer accepted. Replace it with square-bracket cues. ElevenLabs documents accent cues as experimental. Choose a suitable voice and listen to the result when pronunciation matters.
+
+For any cue that should have a start and an end, put `[x]...[/x]` around the affected words. This applies to delivery, emotion, tone, pace, accents, or other scoped instructions. Paired cues have worked well in user testing; whispering and accents are examples:
+
+```sh
+peek send --speak '[whisper] Just between us. [/whisper] Now, back to the music.'
+peek send --speak 'Now playing [strong Indian accent] Anuv Jain [/strong Indian accent]. Enjoy the track.'
+```
+
+Use the same cue text in the opening and closing brackets, with `/` before the closing cue. Peek passes both through to ElevenLabs; their scope is interpreted by the model rather than enforced by Peek.
+
+For a difficult name, ElevenLabs v4 also documents pronunciation written as `/IPA/` directly in the text. Results depend on the voice and phrase; use an accurate phonetic transcription and test it. See [ElevenLabs' pronunciation guidance](https://elevenlabs.io/docs/overview/capabilities/text-to-speech/best-practices#ipa-with-eleven-v4).
 
 ### Vocal expressions and pauses
 
-Put a vocal event directly where it should happen in `--speak`. These are Google's recommended tag spellings, reproduced verbatim from the **Vocal bursts and non-speech sounds** table in [Google's TTS documentation](https://ai.google.dev/gemini-api/docs/speech-generation#vocal-bursts-and-non-speech-sounds), last updated September 24, 2026, checked September 29, 2026. That material is by Google and licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); table formatting is adapted here, tag spellings are unchanged.
+Place a square-bracket cue where the delivery should change in `--speak`. The literal tag spellings below come from ElevenLabs' [audio-tag help](https://elevenlabs.io/docs/help-center/product/core-capabilities/text-to-speech/how-do-audio-tags-work-with-eleven-v3-and-v4) and [v4 prompting guide](https://elevenlabs.io/docs/overview/capabilities/text-to-speech/best-practices#prompting-eleven-v4), checked October 1, 2026. This is a selection of documented cues, not an exhaustive syntax or a fixed set of guaranteed effects.
 
-| | | | |
-|---|---|---|---|
-| `<argh>` | `<breath>` | `<heavy breath>` | `<exhales>` |
-| `<cackle>` | `<cheer>` | `<chuckle>` / `<chuckles>` | `<cough>` |
-| `<cry>` | `<gasp>` | `<giggle>` | `<groan>` |
-| `<growl>` | `<grunt>` | `<grr>` | `<hiss>` |
-| `<laugh>` / `<laughter>` | `<moan>` | `<pant>` | `<pff>` / `<phew>` |
-| `<scream>` | `<shout>` | `<shriek>` | `<sigh>` / `<sighs>` |
-| `<sneeze>` | `<snicker>` | `<snort>` | `<sob>` |
-| `<throat-clearing>` | `<tsk>` | `<whimper>` | `<whispers>` / `<whispering>` |
-| `<yawn>` | `<short pause>` | `<long pause>` | |
+| Use | Literal cues |
+|---|---|
+| Emotion | `[curious]`, `[excited]`, `[sarcastic]`, `[crying]`, `[mischievously]` |
+| Delivery | `[whispers]`, `[whispering]`, `[shouts]`, `[shouting]` |
+| Reactions | `[laughs]`, `[laughs harder]`, `[starts laughing]`, `[wheezing]`, `[chuckles]`, `[clears throat]`, `[sighs]`, `[exhales]`, `[snorts]` |
+| Pauses and breath | `[short pause]`, `[long pause]`, `[exhales sharply]`, `[inhales deeply]` |
+| Experimental accent | `[strong X accent]` — replace `X` with the accent |
+| Other experimental cues | `[sings]`, `[woo]`, `[fart]` |
+| Sound effects | `[gunshot]`, `[applause]`, `[clapping]`, `[explosion]`, `[swallows]`, `[gulps]` |
 
-Use the English tag spellings even with a non-English transcript. For whispering throughout a message, put that direction in `--voice-instructions`. Pauses belong inline; punctuation and ellipses also shape rhythm. Capitalizing a word can emphasize it. These are performance cues, so listen and adjust rather than expecting a fixed duration or identical delivery every time. Google describes multi-speaker overlap separately; Peek currently uses one voice per send.
+Be specific about voice delivery: a vague cue can be interpreted as a sound effect. Short phrases inside brackets can describe delivery beyond these examples. Punctuation and ellipses shape rhythm; capitalization can emphasize words. Test the chosen voice rather than expecting exact pause durations or identical performances. ElevenLabs v4 does not support SSML, including `<break>` tags, and does not have the older models' numeric Speed or Style controls. Peek currently uses one voice per send.
 
 ```sh
-peek send --speak '<sigh> That took a while... <short pause> but it is DONE.' \
+peek send --speak '[sighs] That took a while... [short pause] but it is DONE.' \
   --voice-instructions 'Begin tired, then brighten at the good news.'
 ```
+
+For long narration, Peek queues speech at sentence boundaries so playback can start sooner. It preserves your text and repeats `--voice-instructions` for each piece. Inline accent or emotion cues may not carry across pieces, so their delivery remains best effort. A long passage without sentence breaks, or a long audio cue, can still delay the first audio.
 
 What `speech.status` in the send result means:
 
@@ -82,7 +119,7 @@ What `speech.status` in the send result means:
 | `pending` | Speech is being fetched and will play. |
 | `cached` | The same voice, instructions, language and text were spoken recently; playback uses the local cache without a network call. |
 | `skipped` | There was nothing to speak. |
-| `unsupported_language` | A compatibility status from older helpers; current Gemini speech does not use the old seven-language gate. |
+| `unsupported_language` | A compatibility status from older helpers; current speech does not use the old seven-language gate. |
 
 If speech cannot be fetched (after two quick retries, all before anything has played), the send still succeeds: the text is shown as a pill when there is no `--show`, and your history records the warning `speech_failed`, or `speech_unavailable` when the backend has no usable speech key ([Troubleshooting](troubleshooting.md) lists the reasons). Speech is never retried once playback has started, so the Carbon never hears a sentence twice.
 
@@ -227,4 +264,4 @@ peek send --speak "Next up, Low Tide." --show '{"elements":[
 ## Next
 
 - [Ask a question](ask.md) when you need an answer back.
-- [Privacy](privacy.md): speak text and voice instructions are sent through Peek to Google to be spoken; show content never leaves the Mac.
+- [Privacy](privacy.md): speak text and voice instructions are sent directly to Deepgram for ElevenLabs synthesis; show content never leaves the Mac.

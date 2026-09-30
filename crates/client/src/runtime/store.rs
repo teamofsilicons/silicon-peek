@@ -642,12 +642,12 @@ mod tests {
         .map_err(|e| Error::internal(e.to_string()))?;
         assert!(store.read_config().is_err());
         let e = store
-            .merge_config(r#"{"voice":"aura-2-thalia-en"}"#)
+            .merge_config(r#"{"voice":"JBFqnCBsd6RMkjVDRZzb"}"#)
             .err()
             .ok_or_else(|| Error::internal("expected error"))?;
         assert_eq!(*e.code(), ErrorCode::StoreCorrupt);
         assert!(e.message().contains("telemetry"));
-        let c = store.merge_config(r#"{"telemetry":null,"voice":"aura-2-thalia-en"}"#)?;
+        let c = store.merge_config(r#"{"telemetry":null,"voice":"JBFqnCBsd6RMkjVDRZzb"}"#)?;
         assert!(c.telemetry);
         assert_eq!(store.read_config()?, c);
         Ok(())

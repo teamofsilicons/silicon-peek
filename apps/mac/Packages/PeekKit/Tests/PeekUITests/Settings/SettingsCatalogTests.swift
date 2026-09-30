@@ -4,16 +4,16 @@ import Testing
 
 @testable import PeekUI
 
-@Suite("Settings catalogs: Google voices and STT languages")
+@Suite("Settings catalogs: ElevenLabs voices and STT languages")
 struct SettingsCatalogTests {
-    @Test("all 30 Google voices work in every language preference")
+    @Test("all 17 ElevenLabs voices work in every language preference")
     func voices() throws {
-        #expect(VoiceCatalog.all.count == 30)
-        #expect(Set(VoiceCatalog.all.map(\.id)).count == 30)
+        #expect(VoiceCatalog.all.count == 17)
+        #expect(Set(VoiceCatalog.all.map(\.id)).count == 17)
         #expect(VoiceCatalog.languages.contains("hi"))
         for language in VoiceCatalog.languages {
-            #expect(VoiceCatalog.defaultVoice(for: language) == "Kore")
-            #expect(VoiceCatalog.voices(for: language).first?.id == "Kore")
+            #expect(VoiceCatalog.defaultVoice(for: language) == "JBFqnCBsd6RMkjVDRZzb")
+            #expect(VoiceCatalog.voices(for: language).first?.id == "JBFqnCBsd6RMkjVDRZzb")
             #expect(!VoiceCatalog.languageName(language).isEmpty)
             for voice in VoiceCatalog.voices(for: language) {
                 var settings = PeekSettings()
@@ -21,8 +21,8 @@ struct SettingsCatalogTests {
                 #expect(settings.voiceDefaults[language] == voice.id)
             }
         }
-        #expect(VoiceCatalog.voice(id: "Kore")?.label == "Kore · Firm")
-        #expect(VoiceCatalog.voice(id: "Puck")?.note == "Upbeat")
+        #expect(VoiceCatalog.voice(id: "JBFqnCBsd6RMkjVDRZzb")?.label == "George")
+        #expect(VoiceCatalog.voice(id: "DtsPFCrhbCbbJkwZsb3d")?.name == "Piper")
         #expect(VoiceCatalog.voice(id: "aura-2-thalia-en") == nil)
     }
 

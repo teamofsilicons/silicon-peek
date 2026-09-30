@@ -51,7 +51,6 @@ pub fn router(state: AppState) -> Router {
         .route(paths::TING_RECIPIENT, post(routes::ting::enroll))
         .route(paths::DELIVERIES, post(routes::ting::deliver))
         .route(paths::SPEECH_TOKEN, post(routes::speech::token))
-        .route(paths::SPEECH_SPEAK, post(routes::speech::speak))
         .route(
             paths::SPEECH_LISTEN,
             post(routes::speech::listen)

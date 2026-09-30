@@ -330,7 +330,7 @@ pub fn notes(path: &str) -> String {
             "iam",
         ),
         "peek config" => (
-            "Examples:\n  peek config set '{\"notify\":[\"speech_finished\"],\"voice\":\"Kore\"}'\n  \
+            "Examples:\n  peek config set '{\"notify\":[\"speech_finished\"],\"voice\":\"JBFqnCBsd6RMkjVDRZzb\"}'\n  \
              peek config set '{\"position\":3,\"drawing\":\"./logo.js\"}'\n  \
              peek config show --json\n  peek config get voice\n  peek config unset voice\n  peek config telemetry off\n\n\
              Next:\n  peek send --speak \"…\"     uses configured defaults",
@@ -457,7 +457,7 @@ pub fn notes(path: &str) -> String {
         | "peek org byo deepgram set"
         | "peek org byo deepgram show"
         | "peek org byo deepgram delete" => (
-            "Legacy key management only: current speech uses Google TTS and OpenAI transcription.\n\n\
+            "Legacy key management only: current speech uses ElevenLabs v4 TTS through Deepgram and OpenAI transcription.\n\n\
              Examples:\n  peek --org tos org byo deepgram show --json\n  peek --org tos org byo deepgram delete\n\n\
              Stored Deepgram keys do not affect either speech provider.",
             "privacy",

@@ -1,7 +1,7 @@
 import PeekCore
 import SwiftUI
 
-/// Settings › Voice: the default Google voice per language, and the speech-to-text language.
+/// Settings › Voice: the default ElevenLabs voice per language, and the speech-to-text language.
 struct VoiceSettingsView: View {
     let model: SettingsModel
 
@@ -23,7 +23,7 @@ struct VoiceSettingsView: View {
                 }
             } footer: {
                 SettingsFootnote(
-                    "Peek streams speech with Google Gemini. These voices work across languages. A Silicon can customize "
+                    "Peek streams ElevenLabs v4 speech through Deepgram. These voices work across languages. A Silicon can customize "
                         + "the voice and delivery through Peek CLI; its voice choice overrides these defaults.")
             }
 

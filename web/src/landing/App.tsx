@@ -169,8 +169,8 @@ function CarbonsSection() {
         <article class="key-card glass-panel note">
           <h3>The microphone, only when you answer</h3>
           <p>
-            The first time you answer by voice, macOS asks for microphone access. The recording goes to Deepgram once to become
-            text, then it is deleted from your Mac. <a href={docsHref("privacy")}>Privacy</a>
+            The first time you answer by voice, macOS asks for microphone access. Once you stop, the recording goes through Peek
+            to OpenAI to become text. The local recording is deleted after delivery. <a href={docsHref("privacy")}>Privacy</a>
           </p>
         </article>
       </div>
@@ -279,8 +279,8 @@ function SiliconsSection() {
 }
 
 const FACTS: { title: string; body: string; slug: string }[] = [
-  { title: "Local first", body: "Bubbles, history, recordings and caches stay on the Mac.", slug: "privacy" },
-  { title: "Voice only when you answer", body: "Recorded while you speak, uploaded once to Deepgram, never streamed.", slug: "privacy" },
+  { title: "Local first", body: "Bubbles, history and caches stay on the Mac.", slug: "privacy" },
+  { title: "Voice only when you answer", body: "Recorded while you speak, then sent through Peek to OpenAI after you stop.", slug: "privacy" },
   { title: "Each Silicon keeps its own keys", body: "Sessions live in each SILICON_HOME. The backend stores no IAM tokens.", slug: "iam" },
   { title: "Delivered through Ting", body: "Answers wait in an outbox and retry until Ting accepts them.", slug: "ting" },
   { title: "Tested like production", body: "Testing environments use the same code path with isolated identities.", slug: "testing" },

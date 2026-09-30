@@ -34,7 +34,7 @@ pub(crate) async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<R
         "missing"
     };
     let checks = ReadyChecks {
-        gemini: if config.gemini.api_key.is_some() {
+        elevenlabs: if config.deepgram.api_key.is_some() {
             "configured"
         } else {
             "missing"

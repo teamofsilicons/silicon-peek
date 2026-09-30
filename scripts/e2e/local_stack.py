@@ -12,7 +12,7 @@ e2e.py.
 Nothing touches the real user's state: peekd gets PEEK_SUPPORT_DIR,
 PEEK_CACHES_DIR, PEEK_DAEMON_SOCKET and PEEK_NO_SERVICES=1 (never launches
 Peek.app, never runs the updater or watchdog); the CLI environment written to
-<DIR>/env.sh adds SILICON_HOME and the install hooks. PEEK_GEMINI_API_KEY and
+<DIR>/env.sh adds SILICON_HOME and the install hooks. PEEK_DEEPGRAM_API_KEY and
 PEEK_OPENAI_API_KEY are passed through to peek-server only for TTS and STT;
 export them before starting (the isolated server does not read the repository's
 .env). The keys are never written to stack files or printed.
@@ -178,7 +178,7 @@ def start(root: Path | None = None, *, no_build: bool = False, stt: bool = True,
 
         openai_key = os.environ.get("PEEK_OPENAI_API_KEY", "").strip() if stt else ""
         state["openai"] = bool(openai_key)
-        state["gemini"] = bool(os.environ.get("PEEK_GEMINI_API_KEY", "").strip())
+        state["elevenlabs"] = bool(os.environ.get("PEEK_DEEPGRAM_API_KEY", "").strip())
         api = f"http://127.0.0.1:{ports['server']}"
         server_env = {
             **base_env(),
@@ -199,7 +199,7 @@ def start(root: Path | None = None, *, no_build: bool = False, stt: bool = True,
             "PEEK_HONEYCOMB_URL": "http://127.0.0.1:9",
             "PEEK_ENCRYPTION_KEY": secrets.token_hex(32),
             "PEEK_OPENAI_API_KEY": openai_key,
-            "PEEK_GEMINI_API_KEY": os.environ.get("PEEK_GEMINI_API_KEY", ""),
+            "PEEK_DEEPGRAM_API_KEY": os.environ.get("PEEK_DEEPGRAM_API_KEY", ""),
             "PEEK_TELEMETRY": "off",
             "PEEK_TELEMETRY_HOME": str(root / "server" / "telemetry"),
             "PEEK_GITHUB_ISSUES_TOKEN": "",
@@ -236,7 +236,7 @@ def write_env(stack: Stack) -> None:
 
 
 def print_summary(stack: Stack) -> None:
-    tts = "Gemini TTS" if stack.state.get("gemini") else "TTS disabled (no Gemini key)"
+    tts = "ElevenLabs TTS" if stack.state.get("elevenlabs") else "TTS disabled (no Deepgram key)"
     stt = "OpenAI STT" if stack.state.get("openai") else "STT disabled (no OpenAI key)"
     print(f"""peek local stack in {stack.root}
   peek-server  {stack.api}   ({tts}; {stt})

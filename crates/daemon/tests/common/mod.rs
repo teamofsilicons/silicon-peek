@@ -11,14 +11,12 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    fmt::Write as _,
     os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use silicon_peek_client::{
     Error, Result, Secret,
@@ -43,27 +41,13 @@ use wiremock::{
     matchers::{body_json, method, path},
 };
 
+pub mod agent;
+
 pub const FULL_SCOPE: &str = "obo:ting:subscriptions.register obo:ting:subscriptions.revoke obo:ting:tings.send self.identity.read self.membership.read self.profile.read";
 
 /// 100 000 bytes of PCM with a recognizable pattern.
 pub fn pcm(len: usize) -> Vec<u8> {
     (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect()
-}
-
-/// Gemini SSE audio events, intentionally split between PCM samples.
-pub fn sse_audio(audio: &[u8]) -> String {
-    let mut stream = String::new();
-    for chunk in audio.chunks(999) {
-        let _ = write!(
-            stream,
-            "data: {}\n\n",
-            json!({
-                "event_type": "step.delta", "delta": {"type": "audio", "data": STANDARD.encode(chunk)}
-            })
-        );
-    }
-    stream.push_str("data: {\"event_type\":\"interaction.completed\"}\n\ndata: [DONE]\n\n");
-    stream
 }
 
 pub fn fast_timings() -> Timings {
@@ -104,6 +88,7 @@ pub struct Harness {
     pub handle: Option<DaemonHandle>,
     pub server: MockServer,
     pub deepgram: MockServer,
+    pub agent: agent::Agent,
 }
 
 pub fn this_exe() -> PathBuf {
@@ -124,6 +109,7 @@ impl Harness {
         cfg.ui_executable = UiExecutableRule::Exact(this_exe());
         let server = MockServer::start().await;
         let deepgram = MockServer::start().await;
+        let agent = agent::Agent::start().await;
         tweak(&mut cfg, &server.uri());
         let handle = silicon_peek_daemon::start(cfg.clone()).await.unwrap();
         let h = Self {
@@ -132,6 +118,7 @@ impl Harness {
             handle: Some(handle),
             server,
             deepgram,
+            agent,
         };
         h.mount_defaults().await;
         h
@@ -160,7 +147,7 @@ impl Harness {
         rusqlite::Connection::open(self.cfg.support_dir.join("peekd.sqlite")).unwrap()
     }
 
-    /// Gemini TTS, `OpenAI` STT and drawing sync defaults.
+    /// `ElevenLabs` TTS, `OpenAI` STT and drawing sync defaults.
     pub async fn mount_defaults(&self) {
         Mock::given(method("POST"))
             .and(path("/api/v1/speech/token"))
@@ -175,8 +162,8 @@ impl Harness {
             .and(path("/api/v1/speech/token"))
             .and(body_json(json!({"purpose": "tts"})))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "provider": "gemini", "mode": "proxy", "expires_in": 3600,
-                "base_url": format!("{}/api/v1/speech", self.server.uri()),
+                "provider": "elevenlabs", "mode": "direct", "expires_in": 30,
+                "access_token": agent::JWT, "base_url": self.agent.url,
                 "key_source": "peek", "params": {"mip_opt_out": true, "tags": []}
             })))
             .with_priority(2)

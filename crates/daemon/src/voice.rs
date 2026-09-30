@@ -1,6 +1,6 @@
-//! Gemini voices are multilingual. Existing Aura preferences fall back to Kore.
+//! `ElevenLabs` v4 voices are multilingual. George is the default.
 
-use silicon_peek_client::ipc::cli::SpeechStatus;
+use silicon_peek_client::{ipc::cli::SpeechStatus, schema::send::DEFAULT_TTS_VOICE};
 use std::collections::BTreeMap;
 use whatlang::Lang;
 
@@ -9,7 +9,7 @@ use whatlang::Lang;
 pub struct VoicePlan {
     /// The speech is ready to synthesize.
     pub status: SpeechStatus,
-    /// Google voice name or custom voice ID.
+    /// `ElevenLabs` voice ID.
     pub model: Option<String>,
     /// Explicit or detected primary language, when known.
     pub language: Option<String>,
@@ -60,8 +60,7 @@ pub fn plan(
                 .and_then(|lang| overrides.get(lang))
                 .map(String::as_str)
         })
-        .filter(|voice| !voice.starts_with("aura-"))
-        .unwrap_or("Kore");
+        .unwrap_or(DEFAULT_TTS_VOICE);
     VoicePlan {
         status: SpeechStatus::Pending,
         model: Some(voice.to_owned()),
@@ -80,10 +79,10 @@ pub fn estimated_frames(chars: usize) -> u64 {
 mod tests {
     use super::*;
     #[test]
-    fn multilingual_voices_and_legacy_preferences() {
-        let overrides = BTreeMap::from([("hi".to_owned(), "Puck".to_owned())]);
+    fn multilingual_voice_preferences() {
+        let overrides = BTreeMap::from([("hi".to_owned(), "DtsPFCrhbCbbJkwZsb3d".to_owned())]);
         let p = plan("नमस्ते", None, Some("hi"), None, &overrides);
-        assert_eq!(p.model.as_deref(), Some("Puck"));
+        assert_eq!(p.model.as_deref(), Some("DtsPFCrhbCbbJkwZsb3d"));
         assert_eq!(p.status, SpeechStatus::Pending);
         assert_eq!(
             plan("hello", Some("voice_custom"), None, None, &overrides)
@@ -92,10 +91,8 @@ mod tests {
             Some("voice_custom")
         );
         assert_eq!(
-            plan("hello", Some("aura-2-thalia-en"), None, None, &overrides)
-                .model
-                .as_deref(),
-            Some("Kore")
+            plan("hello", None, None, None, &overrides).model.as_deref(),
+            Some(DEFAULT_TTS_VOICE)
         );
         assert_eq!(estimated_frames(14), 24_000);
     }

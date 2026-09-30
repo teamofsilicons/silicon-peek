@@ -2,12 +2,13 @@
 """End-to-end test of peek on one Mac: the REAL `peek` CLI (temp SILICON_HOME),
 the REAL peekd (isolated run) and the REAL peek-server (temp SQLite), with fake
 IAM and Ting services and a fake Peek.app speaking IPC v1 over peekd's socket.
-Speech uses real Gemini TTS and OpenAI STT through peek-server's relay.
+Speech uses real ElevenLabs TTS directly with a short-lived Deepgram JWT;
+OpenAI STT uses peek-server's relay.
 
     python3 scripts/e2e/e2e.py [--no-build] [--keep] [--no-stt]
 
-Export PEEK_GEMINI_API_KEY for TTS and PEEK_OPENAI_API_KEY for STT.
-Only peek-server receives these keys. Missing Gemini skips TTS; --no-stt
+Export PEEK_DEEPGRAM_API_KEY for TTS and PEEK_OPENAI_API_KEY for STT.
+Only peek-server receives these keys. Missing Deepgram skips TTS; --no-stt
 or a missing OpenAI key skips the STT round trip of the generated audio.
 
 Steps: login (fake SLT) → login status → register side 3 (ctrl+cmd+3) →
@@ -221,11 +222,11 @@ class Run:
             return e.code, {k.lower(): v for k, v in e.headers.items()}, e.read()
 
     def speak(self) -> bytes:
-        print("send --speak (real Gemini through the speech relay)")
+        print("send --speak (real ElevenLabs through a direct Deepgram connection)")
         t0 = time.monotonic()
-        r = self.peek("send", "--speak", SPEAK_TEXT, "--voice", "Kore", "--voice-instructions", "Warm and relaxed")
+        r = self.peek("send", "--speak", SPEAK_TEXT, "--voice", "JBFqnCBsd6RMkjVDRZzb", "--voice-instructions", "Warm and relaxed")
         check(r["speech"]["status"] in ("pending", "cached"), "send --speak queues speech")
-        check(r["speech"]["model"] == "Kore", "send --voice selects the Google voice")
+        check(r["speech"]["model"] == "JBFqnCBsd6RMkjVDRZzb", "send --voice selects the ElevenLabs voice")
         sid = r["send_id"]
         begin = self.ui.wait_event(lambda e: e.get("event") == "tts.begin" and e.get("send_id") == sid, 25, "tts.begin")
         check(begin["format"] == "s16le" and begin["sample_rate"] == 24000 and begin["channels"] == 1, "tts.begin: s16le 24 kHz mono")
@@ -510,7 +511,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--keep", action="store_true", help="keep the stack directory (logs) even on success")
-    parser.add_argument("--no-stt", action="store_true", help="skip OpenAI transcription; Gemini TTS still runs when configured")
+    parser.add_argument("--no-stt", action="store_true", help="skip OpenAI transcription; ElevenLabs TTS still runs when configured")
     args = parser.parse_args()
 
     root = Path(tempfile.mkdtemp(prefix="peek-e2e."))
@@ -527,10 +528,10 @@ def main() -> int:
         run.login()
         run.register()
         pcm = None
-        if stack.state.get("gemini"):
+        if stack.state.get("elevenlabs"):
             pcm = run.speak()
         else:
-            print("send --speak: SKIPPED (no Gemini key)")
+            print("send --speak: SKIPPED (no Deepgram key)")
         run.click_answer()
         run.presence(speech=pcm is not None)
         if pcm is not None and stack.state.get("openai"):

@@ -235,7 +235,7 @@ async fn backend_check(client: &Client) -> Check {
         ),
         Ok(Ok(ready))
             if ready.status == "ready"
-                && ready.checks.gemini == "configured"
+                && ready.checks.elevenlabs == "configured"
                 && ready.checks.openai == "configured" =>
         {
             check("backend", Status::Ok, format!("{api} is ready"), None)
@@ -244,23 +244,23 @@ async fn backend_check(client: &Client) -> Check {
             "backend",
             Status::Warn,
             format!(
-                "{} is ready; speech configuration: Gemini TTS {}, OpenAI STT {}",
-                api, ready.checks.gemini, ready.checks.openai
+                "{} is ready; speech configuration: ElevenLabs TTS {}, OpenAI STT {}",
+                api, ready.checks.elevenlabs, ready.checks.openai
             ),
             Some(
-                "operators: configure PEEK_GEMINI_API_KEY for speech and PEEK_OPENAI_API_KEY for transcription",
+                "operators: configure PEEK_DEEPGRAM_API_KEY for speech and PEEK_OPENAI_API_KEY for transcription",
             ),
         ),
         Ok(Ok(ready)) => check(
             "backend",
             Status::Fail,
             format!(
-                "{} is not ready (db {}, iam {}, ting {}, gemini {}, openai {})",
+                "{} is not ready (db {}, iam {}, ting {}, elevenlabs {}, openai {})",
                 api,
                 ready.checks.db,
                 ready.checks.iam_config,
                 ready.checks.ting_config,
-                ready.checks.gemini,
+                ready.checks.elevenlabs,
                 ready.checks.openai
             ),
             Some("an operator issue; retry later, or report it with peek report"),
@@ -793,7 +793,7 @@ mod tests {
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                     "status": "ready", "checks": {
                         "db": "ok", "iam_config": "ok", "ting_config": "ok",
-                        "gemini": "configured", "openai": openai, "deepgram": "missing"
+                        "elevenlabs": "configured", "openai": openai, "deepgram": "missing"
                     }
                 })))
                 .mount(&server)

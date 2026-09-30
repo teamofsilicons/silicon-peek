@@ -3,7 +3,7 @@
 //! One peekd runs per macOS account, shipped inside
 //! `Peek.app/Contents/Helpers/peekd` and registered by the app as a launchd
 //! agent. It owns the slot registry, the send queue, asks and history, the
-//! delivery outbox, Google TTS streamed to the UI, `OpenAI` STT once
+//! delivery outbox, `ElevenLabs` TTS streamed to the UI, `OpenAI` STT once
 //! per recording, per-home session refresh under each home's lock, the
 //! telemetry relay, Peek.app's self-update and the stale-CLI watchdog.
 //!
@@ -25,7 +25,7 @@ pub mod config;
 pub mod daemon;
 pub mod db;
 pub mod drawings;
-mod gemini;
+mod elevenlabs;
 pub mod homes;
 pub mod logging;
 pub mod matching;

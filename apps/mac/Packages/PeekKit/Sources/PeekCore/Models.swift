@@ -1010,12 +1010,12 @@ public struct SlotMove: Sendable, Equatable {
 
 // MARK: - Voices
 
-/// Common language preferences shown in Settings; Gemini voices are multilingual.
+/// Common language preferences shown in Settings; ElevenLabs voices are multilingual.
 public enum DefaultVoices {
     public static let supportedLanguages = ["en", "es", "de", "fr", "nl", "it", "ja", "hi", "pt", "zh", "ko", "ru", "ar"]
-    public static let byLanguage = Dictionary(uniqueKeysWithValues: supportedLanguages.map { ($0, "Kore") })
+    public static let byLanguage = Dictionary(uniqueKeysWithValues: supportedLanguages.map { ($0, "JBFqnCBsd6RMkjVDRZzb") })
 
-    /// Google prebuilt names and custom voice IDs; the provider checks availability.
+    /// ElevenLabs voice IDs; the provider checks availability.
     public static func isValidVoice(_ voice: String) -> Bool {
         (1...128).contains(voice.utf8.count) && voice.utf8.allSatisfy {
             (UInt8(ascii: "a")...UInt8(ascii: "z")).contains($0)

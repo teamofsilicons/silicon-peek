@@ -184,7 +184,7 @@ pub struct Timings {
     pub authority_sweep: Duration,
     /// TTS retry delays before any audio (§1.9.3: 250 ms → 1 s, + jitter).
     pub tts_retry: Vec<Duration>,
-    /// Budget to the first TTS audio byte (§1.9.3: 5 s).
+    /// Budget to the first TTS audio byte (including token issuance).
     pub tts_first_audio_budget: Duration,
     /// Longest silence inside a TTS body before it is abandoned.
     pub tts_idle: Duration,
@@ -251,8 +251,8 @@ impl Default for Timings {
             outbox_idle: s(30),
             authority_sweep: s(600),
             tts_retry: vec![ms(250), s(1)],
-            tts_first_audio_budget: s(20),
-            tts_idle: s(15),
+            tts_first_audio_budget: s(50),
+            tts_idle: s(35),
             stt_retry: vec![ms(250), s(1)],
             stt_budget: s(20),
             refresh_retry: vec![ms(500), s(2)],

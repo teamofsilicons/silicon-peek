@@ -39,8 +39,6 @@ pub mod routes {
     /// The speech proxy's base path (`{"mode":"proxy"}` token replies point
     /// `base_url` at `<public origin>` + this).
     pub const SPEECH_BASE: &str = "/api/v1/speech";
-    /// `POST` TTS through the speech proxy (streams Gemini audio events back).
-    pub const SPEECH_SPEAK: &str = "/api/v1/speech/speak";
     /// `POST` STT through the speech proxy (raw WAV in, `SpeechTranscript` JSON out).
     pub const SPEECH_LISTEN: &str = "/api/v1/speech/listen";
     /// `PUT`/`GET`/`DELETE` the Silicon's drawing copy.
@@ -118,9 +116,9 @@ pub struct ReadyChecks {
     /// Legacy Deepgram status.
     #[serde(default = "missing_provider_status")]
     pub deepgram: String,
-    /// Gemini speech synthesis: `configured` or `missing`.
+    /// `ElevenLabs` speech synthesis: `configured` or `missing`.
     #[serde(default = "missing_provider_status")]
-    pub gemini: String,
+    pub elevenlabs: String,
     /// `OpenAI` transcription: `configured` or `missing` (absent on older servers).
     #[serde(default = "missing_provider_status")]
     pub openai: String,
@@ -340,7 +338,7 @@ pub struct DeliveryResponse {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeechPurpose {
-    /// Text to speech (Gemini).
+    /// Text to speech (`ElevenLabs`).
     Tts,
     /// Speech to text (`OpenAI` gpt-transcribe).
     Stt,
@@ -381,8 +379,8 @@ pub enum SpeechProvider {
     /// Deepgram (legacy servers; current clients refuse this provider).
     #[default]
     Deepgram,
-    /// Google Gemini text to speech.
-    Gemini,
+    /// `ElevenLabs` v4 text to speech.
+    Elevenlabs,
     /// `OpenAI` completed-recording transcription.
     Openai,
 }
@@ -391,17 +389,18 @@ pub enum SpeechProvider {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeechMode {
-    /// Call Deepgram at `base_url` with `Authorization: Bearer <access_token>`
-    /// (a JWT minted with `POST /v1/auth/grant`).
+    /// Connect to Deepgram Voice Agent at `base_url` with a short-lived JWT
+    /// in `Authorization: Bearer <access_token>`.
     #[default]
     Direct,
-    /// Call peek-server's speech proxy (Gemini TTS or fallback STT) at
-    /// `base_url` (`/speak`, `/listen`) with the Silicon's own session.
+    /// Call peek-server's `OpenAI` STT proxy at `base_url` (`/listen`)
+    /// with the Silicon's own session.
     Proxy,
 }
 
-/// `POST /api/v1/speech/token` response. A direct token's JWT lives ≤ 60 s
-/// and is never logged; a proxy reply carries no credential at all.
+/// `POST /api/v1/speech/token` response. A direct JWT lives 30 seconds
+/// and is never logged. An established connection survives token expiry.
+/// `OpenAI` STT proxy replies carry no provider credential.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpeechToken {
     /// Speech provider. Absent means Deepgram (older servers).
@@ -415,7 +414,7 @@ pub struct SpeechToken {
     pub access_token: Option<Secret>,
     /// Seconds this answer (the JWT, or the proxy verdict) may be reused.
     pub expires_in: u64,
-    /// Direct: `https://api.deepgram.com` (or the org's base URL). Proxy:
+    /// Direct: `wss://agent.deepgram.com/v1/agent/converse`. Proxy:
     /// `<peek-server public origin>/api/v1/speech`.
     pub base_url: String,
     /// Which key serves the calls.
@@ -424,21 +423,21 @@ pub struct SpeechToken {
     pub params: SpeechParams,
 }
 
-/// Gemini linear16 output uses a fixed sample rate of 24000 Hz.
+/// `ElevenLabs` linear16 output uses a fixed sample rate of 24000 Hz.
 pub const SPEAK_SAMPLE_RATES: [u32; 1] = [24_000];
 
-/// `POST /api/v1/speech/speak` body (speech proxy).
+/// Speech inputs for the direct `ElevenLabs` Voice Agent connection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SpeechSpeakRequest {
     /// 1–2000 characters.
     pub text: String,
-    /// Gemini voice ID (for example `Kore`); the wire field remains `model`.
+    /// `ElevenLabs` voice ID (for example `JBFqnCBsd6RMkjVDRZzb`); the wire field remains `model`.
     pub model: String,
     /// Speaking style, accent, pace and delivery instructions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice_instructions: Option<String>,
-    /// Optional BCP 47 language hint; absent lets Gemini detect the language.
+    /// Optional BCP 47 language hint; absent lets `ElevenLabs` detect the language.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     /// linear16 sample rate (default 24000; one of [`SPEAK_SAMPLE_RATES`]).
@@ -890,32 +889,34 @@ mod tests {
     #[test]
     fn speech_tokens_in_both_modes() -> Result<(), serde_json::Error> {
         let direct: SpeechToken = serde_json::from_value(json!({
-            "access_token":"jwt","expires_in":60,"base_url":"https://api.deepgram.com",
+            "provider":"elevenlabs","mode":"direct","access_token":"jwt","expires_in":30,
+            "base_url":"wss://agent.deepgram.com/v1/agent/converse",
             "key_source":"peek","params":{"mip_opt_out":true,"tags":["peek","production"]}}))?;
         assert_eq!(direct.mode, SpeechMode::Direct);
-        assert_eq!(direct.provider, SpeechProvider::Deepgram);
+        assert_eq!(direct.provider, SpeechProvider::Elevenlabs);
         assert_eq!(
             direct.access_token.as_ref().map(Secret::expose),
             Some("jwt")
         );
         let proxy: SpeechToken = serde_json::from_value(json!({
-            "mode":"proxy","expires_in":600,"base_url":"http://127.0.0.1:8080/api/v1/speech",
+            "provider":"openai","mode":"proxy","expires_in":600,"base_url":"http://127.0.0.1:8080/api/v1/speech",
             "key_source":"org","params":{"mip_opt_out":true,"tags":["peek","testing"]}}))?;
         assert_eq!(proxy.mode, SpeechMode::Proxy);
+        assert_eq!(proxy.provider, SpeechProvider::Openai);
         assert!(proxy.access_token.is_none());
         let v = serde_json::to_value(&proxy)?;
         assert!(v.get("access_token").is_none());
         assert_eq!(v["mode"], "proxy");
         let speak = SpeechSpeakRequest {
             text: "hi".into(),
-            model: "Kore".into(),
+            model: "JBFqnCBsd6RMkjVDRZzb".into(),
             voice_instructions: None,
             language: None,
             sample_rate: None,
         };
         assert_eq!(
             serde_json::to_string(&speak)?,
-            r#"{"text":"hi","model":"Kore"}"#
+            r#"{"text":"hi","model":"JBFqnCBsd6RMkjVDRZzb"}"#
         );
         assert!(
             serde_json::from_value::<SpeechSpeakRequest>(json!({"text":"a","model":"m","voice":1}))
@@ -933,7 +934,7 @@ mod tests {
         assert!(serde_json::from_value::<SpeechTranscript>(json!({"results":{}})).is_err());
         let checks: ReadyChecks =
             serde_json::from_value(json!({"db":"ok","iam_config":"ok","ting_config":"ok"}))?;
-        assert_eq!(checks.gemini, "missing");
+        assert_eq!(checks.elevenlabs, "missing");
         assert_eq!(checks.openai, "missing");
         assert_eq!(serde_json::to_value(SpeechProvider::Openai)?, "openai");
         Ok(())

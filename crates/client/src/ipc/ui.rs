@@ -157,9 +157,9 @@ pub struct TtsBegin {
 }
 
 impl TtsBegin {
-    /// The Aura-2 stream format peekd requests.
+    /// The linear16 stream format peekd requests.
     #[must_use]
-    pub fn aura(send_id: SendId, est_frames: u64) -> Self {
+    pub fn linear16(send_id: SendId, est_frames: u64) -> Self {
         Self {
             send_id,
             format: "s16le".to_owned(),
@@ -779,7 +779,7 @@ mod tests {
     #[test]
     fn tts_events() -> Result<()> {
         let id = SendId::generate();
-        let begin = Event::new(&TtsBegin::aura(id.clone(), 48_000), vec![])?;
+        let begin = Event::new(&TtsBegin::linear16(id.clone(), 48_000), vec![])?;
         assert_eq!(begin.fields["format"], "s16le");
         assert_eq!(begin.fields["sample_rate"], 24000);
         let chunk = Event::new(

@@ -111,7 +111,12 @@ async fn new_flags_are_refused_by_an_older_peekd() {
     let env = logged_in();
     let d = legacy(&env);
     let in_an_hour = in_secs(3600);
-    let cases: [(&[&str], &str, &str); 6] = [
+    let cases: [(&[&str], &str, &str); 7] = [
+        (
+            &["send", "--speak", "x"],
+            "elevenlabs_tts",
+            "ElevenLabs v4 speech",
+        ),
         (
             &["send", "--show", SHOW, "--expires-in", "10m"],
             "expiry_all",
@@ -129,17 +134,17 @@ async fn new_flags_are_refused_by_an_older_peekd() {
             "--expires-in/--expires-at on --speak and --show",
         ),
         (
-            &["send", "--speak", "x", "--in", "5m"],
+            &["send", "--show", SHOW, "--in", "5m"],
             "schedule",
             "scheduled sends (--in/--at)",
         ),
         (
-            &["send", "--speak", "x", "--replace"],
+            &["send", "--show", SHOW, "--replace"],
             "replace",
             "--replace",
         ),
         (
-            &["send", "--speak", "x", "--notify", "shown"],
+            &["send", "--show", SHOW, "--notify", "shown"],
             "notify_shown",
             "--notify shown",
         ),
@@ -189,8 +194,8 @@ async fn new_flags_are_refused_by_an_older_peekd() {
             .iter()
             .all(|s| s.op != "send" && !s.op.starts_with("queue"))
     );
-    // A plain send and --expires-in on an ask (0.1.1 had it) still go out.
-    let run = env.run(&["send", "--speak", "plain", "--json"]).await;
+    // A plain visual send and --expires-in on an ask (0.1.1 had it) still go out.
+    let run = env.run(&["send", "--show", SHOW, "--json"]).await;
     assert_eq!(run.code, 0, "{}", run.stderr);
     let run = env
         .run(&[
@@ -227,7 +232,7 @@ async fn a_config_default_shown_is_dropped_for_an_older_peekd() {
         .await;
     assert_eq!(set.code, 0, "{}", set.stderr);
     let d = legacy(&env);
-    let run = env.run(&["send", "--speak", "hi"]).await;
+    let run = env.run(&["send", "--show", SHOW]).await;
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(
         run.stderr

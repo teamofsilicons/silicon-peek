@@ -79,7 +79,8 @@ async fn testing_headers_follow_the_hop_table() {
     Mock::given(method("POST"))
         .and(path("/api/v1/speech/token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "access_token":"jwt","expires_in":60,"base_url":"https://api.deepgram.com","key_source":"peek",
+            "provider":"elevenlabs","mode":"direct","access_token":"jwt","expires_in":30,
+            "base_url":"wss://agent.deepgram.com/v1/agent/converse","key_source":"peek",
             "params":{"mip_opt_out":true,"tags":["peek","testing"]}})))
         .mount(&server)
         .await;

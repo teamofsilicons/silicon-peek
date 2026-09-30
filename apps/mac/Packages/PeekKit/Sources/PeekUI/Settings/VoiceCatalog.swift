@@ -1,12 +1,12 @@
 import Foundation
 import PeekCore
 
-/// Google's prebuilt multilingual voices. Per-language preferences share this catalog.
+/// ElevenLabs v4 voices verified through Deepgram. Every voice is multilingual.
 public enum VoiceCatalog {
     public struct Voice: Hashable, Sendable, Identifiable {
         public let id: String
-        public let note: String
-        public var label: String { "\(id) · \(note)" }
+        public let name: String
+        public var label: String { name }
     }
 
     public static let languages = DefaultVoices.supportedLanguages
@@ -17,29 +17,35 @@ public enum VoiceCatalog {
 
     public static func voices(for language: String) -> [Voice] {
         all.sorted { lhs, rhs in
-            if (lhs.id == "Kore") != (rhs.id == "Kore") { return lhs.id == "Kore" }
-            return lhs.id < rhs.id
+            let preferred = defaultVoice(for: language)
+            if (lhs.id == preferred) != (rhs.id == preferred) { return lhs.id == preferred }
+            return lhs.name < rhs.name
         }
     }
 
     public static func voice(id: String) -> Voice? { all.first { $0.id == id } }
     public static func defaultVoice(for language: String) -> String? { DefaultVoices.byLanguage[language] }
 
-    // Google TTS prebuilt voice names and descriptors, checked 2026-09-29.
-    // https://ai.google.dev/gemini-api/docs/speech-generation#prebuilt-voices
-    // Table data © Google, CC BY 4.0: https://creativecommons.org/licenses/by/4.0/
+    // Deepgram playground voice IDs plus George, verified with eleven_v4.
     public static let all: [Voice] = [
-        ("Zephyr", "Bright"), ("Puck", "Upbeat"), ("Charon", "Informative"),
-        ("Kore", "Firm"), ("Fenrir", "Excitable"), ("Leda", "Youthful"),
-        ("Orus", "Firm"), ("Aoede", "Breezy"), ("Callirrhoe", "Easy-going"),
-        ("Autonoe", "Bright"), ("Enceladus", "Breathy"), ("Iapetus", "Clear"),
-        ("Umbriel", "Easy-going"), ("Algieba", "Smooth"), ("Despina", "Smooth"),
-        ("Erinome", "Clear"), ("Algenib", "Gravelly"), ("Rasalgethi", "Informative"),
-        ("Laomedeia", "Upbeat"), ("Achernar", "Soft"), ("Alnilam", "Firm"),
-        ("Schedar", "Even"), ("Gacrux", "Mature"), ("Pulcherrima", "Forward"),
-        ("Achird", "Friendly"), ("Zubenelgenubi", "Casual"), ("Vindemiatrix", "Gentle"),
-        ("Sadachbia", "Lively"), ("Sadaltager", "Knowledgeable"), ("Sulafat", "Warm"),
-    ].map { Voice(id: $0.0, note: $0.1) }
+        ("DtsPFCrhbCbbJkwZsb3d", "Piper"),
+        ("UgBBYS2sOqTuMpoF3BR0", "Mark"),
+        ("cgSgspJ2msm6clMCkdW9", "Jessica"),
+        ("onwK4e9ZLuTAKqWW03F9", "Daniel"),
+        ("jBlmi27XRORxjPquUeCh", "Brian"),
+        ("TC0Zp7WVFzhA8zpTlRqV", "Aria Bloom"),
+        ("D6MRWCKoavI2xUJXmaCb", "Jennifer"),
+        ("gdTrLNuwWUaxC0z5n1j7", "Jerry"),
+        ("IPgYtHTNLjC7Bq7IPHrm", "Alexandre Boutin"),
+        ("F1toM6PcP54s45kOOAyV", "Mademoiselle French"),
+        ("aTTiK3YzK3dXETpuDE2h", "Ben"),
+        ("mDRP1h6KfUD1XAUJxqr0", "Doreen Pelz"),
+        ("CiwzbDpaN3pQXjTgx3ML", "Aida"),
+        ("Fahco4VZzobUeiPqni1S", "Archer - Conversational"),
+        ("j210dv0vWm7fCknyQpbA", "Hinata"),
+        ("8EkOjt4xTPGMclNlh1pk", "Morioki"),
+        ("JBFqnCBsd6RMkjVDRZzb", "George"),
+    ].map { Voice(id: $0.0, name: $0.1) }
 }
 
 /// Choices for settings.json `stt_language` (BLUEPRINT §8.7).

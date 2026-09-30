@@ -33,7 +33,7 @@ fn send_ok(ask_id: Option<&str>) -> Handler {
             req,
             json!({"send_id": SendId::generate().to_string(),
                    "ask_id": ask, "slot": 3, "status": "showing",
-                   "speech": {"status": "pending", "model": "aura-2-thalia-en", "chars": 5},
+                   "speech": {"status": "pending", "model": "JBFqnCBsd6RMkjVDRZzb", "chars": 5},
                    "warnings": []}),
         )],
         _ => vec![daemon::err(
@@ -44,7 +44,7 @@ fn send_ok(ask_id: Option<&str>) -> Handler {
 }
 
 fn fake(env: &Env, handler: Handler) -> FakeDaemon {
-    daemon::start(&env.socket, handler)
+    daemon::start_v2(&env.socket, handler)
 }
 
 #[tokio::test]
@@ -176,7 +176,7 @@ async fn every_send_limit_is_refused_locally() {
                 "--show".into(),
                 text(1),
                 "--voice".into(),
-                "aura-2-thalia-en".into(),
+                "JBFqnCBsd6RMkjVDRZzb".into(),
             ],
             "conflicting_flags",
             2,
@@ -305,18 +305,18 @@ async fn send_uses_the_config_notify_default() {
 }
 
 #[tokio::test]
-async fn gemini_sends_merge_voice_defaults_and_preserve_markup() {
+async fn elevenlabs_sends_merge_voice_defaults_and_preserve_markup() {
     let env = logged_in();
     let d = daemon::start_v2(&env.socket, send_ok(None));
     let configured = env
         .run(&[
             "config",
             "set",
-            r#"{"voice":"Kore","voice_instructions":"Warm, Indian accent.","language":"hi"}"#,
+            r#"{"voice":"JBFqnCBsd6RMkjVDRZzb","voice_instructions":"Warm, Indian accent.","language":"hi"}"#,
         ])
         .await;
     assert_eq!(configured.code, 0, "{}", configured.stderr);
-    let text = "<indian accent>Anuv Jain</indian accent>";
+    let text = "[Indian accent] Anuv Jain";
     for options in [
         vec!["send", "--speak", text],
         vec![
@@ -324,7 +324,7 @@ async fn gemini_sends_merge_voice_defaults_and_preserve_markup() {
             "--speak",
             text,
             "--voice",
-            "Puck",
+            "DtsPFCrhbCbbJkwZsb3d",
             "--voice-instructions",
             "Whisper softly.",
         ],
@@ -334,13 +334,13 @@ async fn gemini_sends_merge_voice_defaults_and_preserve_markup() {
     }
     let sends: Vec<_> = d.seen().into_iter().filter(|s| s.op == "send").collect();
     assert_eq!(sends[0].fields["speak"], text);
-    assert_eq!(sends[0].fields["voice"], "Kore");
+    assert_eq!(sends[0].fields["voice"], "JBFqnCBsd6RMkjVDRZzb");
     assert_eq!(
         sends[0].fields["voice_instructions"],
         "Warm, Indian accent."
     );
     assert_eq!(sends[0].fields["lang"], "hi");
-    assert_eq!(sends[1].fields["voice"], "Puck");
+    assert_eq!(sends[1].fields["voice"], "DtsPFCrhbCbbJkwZsb3d");
     assert_eq!(sends[1].fields["voice_instructions"], "Whisper softly.");
 }
 
@@ -710,7 +710,7 @@ async fn config_set_and_logout_reach_peekd() {
         .run(&[
             "config",
             "set",
-            r#"{"voice":"aura-2-thalia-en","notify":["speech_finished"]}"#,
+            r#"{"voice":"JBFqnCBsd6RMkjVDRZzb","notify":["speech_finished"]}"#,
         ])
         .await;
     assert_eq!(set.code, 0, "{}", set.stderr);
@@ -727,7 +727,7 @@ async fn config_set_and_logout_reach_peekd() {
     // setting, so that environment opt-out reaches it.
     assert_eq!(
         seen[0].fields["config"],
-        json!({"voice": "aura-2-thalia-en", "language": null, "notify": ["speech_finished"], "telemetry": false,
+        json!({"voice": "JBFqnCBsd6RMkjVDRZzb", "language": null, "notify": ["speech_finished"], "telemetry": false,
                "env_opt_out": true})
     );
     assert_eq!(seen[1].fields["config"]["telemetry"], true);

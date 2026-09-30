@@ -3,7 +3,7 @@
 //! It holds the IAM app secret and nothing a Silicon owns: it exchanges SLTs,
 //! rotates and revokes app sessions (the tokens go straight back to the
 //! caller, BLUEPRINT D5), introspects every bearer live, mints Ting OBO proofs
-//! for enrollment and deliveries, relays Gemini TTS and `OpenAI` STT, keeps each
+//! for enrollment and deliveries, mints direct TTS credentials and relays `OpenAI` STT, keeps each
 //! Silicon's drawing copy, files bug reports, relays client telemetry to Space
 //! Station, receives IAM webhooks and acts as a Honeycomb lifecycle
 //! participant for testing environments.
@@ -22,9 +22,9 @@ mod auth;
 mod crypto;
 mod db;
 mod deepgram;
+mod elevenlabs;
 mod error;
 mod extract;
-mod gemini;
 mod github;
 mod honeycomb;
 mod iam;

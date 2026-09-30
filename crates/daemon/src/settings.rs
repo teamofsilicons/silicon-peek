@@ -47,7 +47,7 @@ pub struct Settings {
     pub telemetry: bool,
     /// Show bubbles of testing environments.
     pub show_test_peeks: bool,
-    /// Per-language TTS voice overrides (`{"en":"Puck"}`).
+    /// Per-language TTS voice overrides (`{"en":"DtsPFCrhbCbbJkwZsb3d"}`).
     pub voice_defaults: BTreeMap<String, String>,
     /// `auto` or a BCP 47 language for speech-to-text.
     pub stt_language: String,
@@ -244,7 +244,7 @@ impl Settings {
             "voice_defaults" => {
                 let obj = value.as_object().ok_or_else(|| {
                     Error::invalid_input(
-                        r#"setting `voice_defaults` must be an object like {"en":"Puck"}"#,
+                        r#"setting `voice_defaults` must be an object like {"en":"DtsPFCrhbCbbJkwZsb3d"}"#,
                     )
                 })?;
                 let mut next = BTreeMap::new();
@@ -256,11 +256,6 @@ impl Settings {
                     })?;
                     let language = normalize_language(lang)?;
                     check_voice(voice)?;
-                    let voice = if voice.starts_with("aura-") {
-                        "Kore"
-                    } else {
-                        voice
-                    };
                     next.insert(language, voice.to_owned());
                 }
                 self.voice_defaults = next;
@@ -374,13 +369,13 @@ mod tests {
         s.apply("hotkey_modifier", &json!("ctrl+cmd"))?;
         assert!(s.apply("hotkey_modifier", &json!("shift")).is_err());
         assert!(s.apply("hotkey_modifier", &json!("cmd+cmd")).is_err());
-        s.apply("voice_defaults", &json!({"en":"Puck"}))?;
+        s.apply("voice_defaults", &json!({"en":"DtsPFCrhbCbbJkwZsb3d"}))?;
         assert!(
             s.apply("voice_defaults", &json!({"en":"bad voice"}))
                 .is_err()
         );
         assert!(
-            s.apply("voice_defaults", &json!({"english":"Kore"}))
+            s.apply("voice_defaults", &json!({"english":"JBFqnCBsd6RMkjVDRZzb"}))
                 .is_err()
         );
         s.apply("stt_language", &json!("en-US"))?;

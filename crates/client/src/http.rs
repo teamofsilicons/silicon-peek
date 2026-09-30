@@ -22,8 +22,8 @@ use crate::{
     api::{
         ByoDeepgramRequest, ByoStatus, DeliveryResponse, Drawing, DrawingStored, Health,
         IamDiscovery, LoginRequest, LogoutRequest, Me, Ready, RefreshRequest, ReportRequest,
-        ReportResponse, SessionResponse, SpeechPurpose, SpeechSpeakRequest, SpeechToken,
-        SpeechTokenRequest, SpeechTranscript, TelemetryBatch, TingRecipient, headers, routes,
+        ReportResponse, SessionResponse, SpeechPurpose, SpeechToken, SpeechTokenRequest,
+        SpeechTranscript, TelemetryBatch, TingRecipient, headers, routes,
     },
     error::{Error, ErrorCode, ErrorObject, Origin, Result},
     identity::{ApiUrl, OrgId, TestingSecret},
@@ -409,7 +409,7 @@ impl Client {
     }
 
     /// `POST /api/v1/speech/token`: a credential-free proxy verdict for
-    /// Gemini TTS or `OpenAI` transcription.
+    /// `ElevenLabs` TTS or `OpenAI` transcription.
     ///
     /// # Errors
     /// `speech_unavailable` (with `details.reason`), server or transport errors.
@@ -421,40 +421,6 @@ impl Client {
         let body = SpeechTokenRequest { purpose };
         let r = self.bearer(self.post(routes::SPEECH_TOKEN, key, &body, true))?;
         self.json(routes::SPEECH_TOKEN, r).await
-    }
-
-    /// `POST /api/v1/speech/speak` (speech proxy): peek-server calls Gemini
-    /// TTS and streams 24 kHz linear16 audio back as it arrives. Returns the
-    /// response once the status is 200; the caller drains the body. `timeout`
-    /// bounds the whole exchange, body included.
-    ///
-    /// # Errors
-    /// `speech_unavailable` (with `details.reason`), `unauthenticated`,
-    /// `rate_limited`, server or transport errors.
-    pub async fn speech_speak(
-        &self,
-        request: &SpeechSpeakRequest,
-        key: &IdempotencyKey,
-        timeout: Duration,
-    ) -> Result<reqwest::Response> {
-        let r = self
-            .bearer(self.post(routes::SPEECH_SPEAK, key, request, true))?
-            .timeout(timeout);
-        let response = r
-            .send()
-            .await
-            .map_err(|e| self.transport(routes::SPEECH_SPEAK, &e))?;
-        if response.status().is_success() {
-            return Ok(response);
-        }
-        let (status, headers, bytes) = self.drain(routes::SPEECH_SPEAK, response).await?;
-        Err(decode_error(
-            &self.api,
-            routes::SPEECH_SPEAK,
-            status,
-            &headers,
-            &bytes,
-        ))
     }
 
     /// `POST /api/v1/speech/listen` (speech proxy): uploads recorded audio

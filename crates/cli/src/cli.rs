@@ -32,7 +32,7 @@ Rust: https://crates.io/crates/silicon-peek-client · Bugs: peek report --help";
     version,
     about = "Speak, show and ask on a Carbon's Mac screen, and get the answer back through Ting.",
     long_about = "Peek gives each Silicon one of eight positions around the Mac screen and a small \
-JavaScript drawing for its bubble. With the peek CLI a Silicon speaks a sentence (Google Gemini TTS), \
+JavaScript drawing for its bubble. With the peek CLI a Silicon speaks a sentence (ElevenLabs v4 TTS through Deepgram), \
 shows up to three text or image elements, or asks one self-contained question (text, single choice, \
 multiple choice, slider or range). Peek.app draws the bubble with Liquid Glass; the Carbon answers by \
 voice, keyboard or click, and the answer comes back to the asking Silicon as a Ting event.\n\n\
@@ -331,7 +331,7 @@ demand; these commands do it explicitly. On Linux and Windows `peek app status` 
     /// peekd, the per-user helper inside Peek.app: status, restart.
     #[command(
         long_about = "peekd runs inside Peek.app as a launchd agent, one per macOS user. It keeps \
-positions, queues, asks and the delivery outbox, uses Peek's Gemini speech and OpenAI transcription relays, and serves every Silicon home on this \
+positions, queues, asks and the delivery outbox, streams ElevenLabs speech directly through Deepgram, uses Peek's OpenAI transcription relay, and serves every Silicon home on this \
 Mac over /var/tmp/silicon-peek-<uid>/peekd.sock.",
         subcommand_required = true,
         arg_required_else_help = true
@@ -445,7 +445,7 @@ pub enum ConfigCommand {
 resulting config. Parsing is strict: a non-object, a duplicate key or an unknown key fails with exit 2 \
 and details.valid_keys, and nothing is written. `null` resets a key to its default. The result is \
 also pushed to peekd (best effort).\n\n\
-Keys: telemetry (bool), voice (Gemini voice ID or null), voice_instructions (1–2000 characters or null), language (BCP 47 primary \
+Keys: telemetry (bool), voice (ElevenLabs voice ID or null), voice_instructions (1–2000 characters or null), language (BCP 47 primary \
 subtag or null), notify (subset of [\"speech_finished\",\"show_dismissed\",\"shown\"]), api_url (https origin or \
 null), delivery_max_age_hours (1–168), position (1–8 or null), drawing (JavaScript file path or null). \
 Relative drawing paths are saved as absolute paths. Sends use position/drawing only when no explicit \
@@ -556,7 +556,7 @@ drawing API is in `peek docs drawing`."
 /// `peek send`.
 #[derive(Debug, Args)]
 pub struct SendArgs {
-    /// Stream this text with Google Gemini TTS (1–2000 characters).
+    /// Stream this text with ElevenLabs v4 TTS through Deepgram (1–2000 characters).
     #[arg(long, value_name = "TEXT")]
     pub speak: Option<String>,
 
@@ -570,16 +570,16 @@ pub struct SendArgs {
     #[arg(long, value_name = "JSON|@FILE|-")]
     pub ask: Option<String>,
 
-    /// Gemini voice ID (e.g. Kore, Puck, Aoede), overriding config `voice` (default Kore).
+    /// ElevenLabs voice ID, overriding config `voice` (default George: JBFqnCBsd6RMkjVDRZzb).
     #[arg(long, value_name = "VOICE")]
     pub voice: Option<String>,
 
-    /// Delivery instructions (1–2000 characters): accent, style, emotion and pace.
+    /// Delivery instructions (1–2000 characters), added as a leading [cue]: accent, emotion and pace.
     /// Overrides config `voice_instructions`; use `peek docs show` for inline expressions.
     #[arg(long, value_name = "TEXT")]
     pub voice_instructions: Option<String>,
 
-    /// TTS language hint (BCP 47, e.g. en, hi, ja); Gemini detects it when omitted.
+    /// TTS language hint (BCP 47, e.g. en, hi, ja); defaults to local detection, then config `language`.
     #[arg(long, value_name = "BCP47")]
     pub lang: Option<String>,
 
@@ -743,7 +743,7 @@ pub enum ByoCommand {
     /// Manage a legacy Deepgram key (unused by current speech providers).
     #[command(
         long_about = "Manages a legacy Deepgram key, stored sealed on the backend and never returned. \
-Current speech uses Google Gemini TTS and OpenAI transcription; this key affects neither provider. \
+Current speech uses ElevenLabs v4 TTS through Deepgram and OpenAI transcription; this key affects neither provider. \
 Writes require an org owner or admin; non-admins get not_org_admin (exit 4).",
         subcommand_required = true,
         arg_required_else_help = true

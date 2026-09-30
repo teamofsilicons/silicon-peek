@@ -49,7 +49,7 @@ const TOPICS: &[Topic] = &[
     Topic {
         name: "show",
         title: "Speak and show",
-        summary: "`peek send --speak \"…\"` streams 1–2000 characters with Google Gemini TTS; --voice-instructions or config voice_instructions customizes accent, style and delivery. `--show '{\"elements\":[…]}'` shows 1–3 elements: text (≤160 characters) or image (png, jpeg, heic, webp, gif; ≤10 MiB; caption ≤50). Image paths are relative to the current directory; the CLI reads the bytes. Sends queue (1 on screen + 5 waiting; `peek queue`); --replace takes over; --expires-in/--expires-at drop a late send; --in/--at schedule it.",
+        summary: "`peek send --speak \"…\"` streams 1–2000 characters with ElevenLabs v4 TTS through Deepgram; --voice-instructions or config voice_instructions customizes accent, style and delivery. `--show '{\"elements\":[…]}'` shows 1–3 elements: text (≤160 characters) or image (png, jpeg, heic, webp, gif; ≤10 MiB; caption ≤50). Image paths are relative to the current directory; the CLI reads the bytes. Sends queue (1 on screen + 5 waiting; `peek queue`); --replace takes over; --expires-in/--expires-at drop a late send; --in/--at schedule it.",
     },
     Topic {
         name: "ask",
@@ -84,7 +84,7 @@ const TOPICS: &[Topic] = &[
     Topic {
         name: "privacy",
         title: "Privacy",
-        summary: "History, asks and answers stay on the Mac. Text and voice instructions go through the backend to Google Gemini TTS; audio streams back without being stored by the backend. Completed microphone recordings go through the backend to OpenAI gpt-transcribe; Peek shows only the final transcript. Provider API keys stay on the backend; local speech audio is cached on the Mac.",
+        summary: "History, asks and answers stay on the Mac. Text and voice instructions go directly from the Mac to Deepgram for ElevenLabs v4 TTS; audio streams back to the Mac. The backend issues short-lived speech tokens. Completed microphone recordings go through the backend to OpenAI gpt-transcribe; Peek shows only the final transcript. Provider API keys stay on the backend; local speech audio is cached on the Mac.",
     },
     Topic {
         name: "platforms",

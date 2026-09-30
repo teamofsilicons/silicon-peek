@@ -231,13 +231,22 @@ Move the four keys into `runtime.json` as `PEEK_BACKEND_TABLE_KEY`, `PEEK_CLIDAE
 `render-env.py --check`, `put-secret-value` and `deploy.py --require-tls`, and `rm -P` the four
 key files.
 
-## P7: Google TTS and OpenAI transcription [USER keys, then MUTATING] (depends on U6)
+## P7: ElevenLabs TTS and OpenAI transcription [USER keys, then MUTATING] (depends on U6)
 
-Set `PEEK_GEMINI_API_KEY` in the server's runtime secret for Gemini 3.8 Flash TTS and
-`PEEK_GEMINI_TEST_API_KEY` for isolated test traffic. The server uses the pinned model
-`gemini-3.8-flash-tts`; it streams Google's SSE to clients and keeps the API key server-side.
-Peek adds no TTS concurrency cap; Google's project quotas govern upstream capacity.
-Speech content and audio are never stored or logged.
+Set `PEEK_DEEPGRAM_API_KEY` in the server's runtime secret for ElevenLabs v4 through
+Deepgram Voice Agent, and `PEEK_DEEPGRAM_TEST_API_KEY` for isolated test traffic.
+Both keys need Member permissions or higher for `POST /v1/auth/grant`. The backend
+grants temporary tokens; the Mac connects directly to Deepgram Voice Agent and
+streams `eleven_v4` as raw 24 kHz mono PCM. The default `PEEK_ELEVENLABS_AGENT_URL`
+is `wss://agent.deepgram.com/v1/agent/converse`; `PEEK_DEEPGRAM_BASE_URL` defaults
+to `https://api.deepgram.com` for grants. The account must have access to the model
+and requested voice. API keys stay on the backend; TTS text and audio never reach it.
+
+`PEEK_DEEPGRAM_TOKEN_TTL_SECONDS` defaults to 30 (allowed: 1–3600). Expiry limits
+when a new connection can open; it does not cut off an established connection.
+Temporary grants carry broad inference rights, not a model restriction or a spend
+cap. Keep the short default and manage usage through the provider account. Peek
+adds no TTS concurrency cap. See [Deepgram's token authentication guide](https://developers.deepgram.com/guides/fundamentals/token-based-authentication).
 
 Microphone transcription needs `PEEK_OPENAI_API_KEY` and a separate
 `PEEK_OPENAI_TEST_API_KEY`. The server uploads completed recordings to OpenAI
@@ -245,8 +254,8 @@ Microphone transcription needs `PEEK_OPENAI_API_KEY` and a separate
 remain manageable for compatibility but do not affect either speech provider.
 Missing test keys never fall back to production.
 
-Redeploy, then check `/readyz` for `"gemini":"configured"` and `"openai":"configured"`.
-Without the Google key, `--speak` falls back to a text pill; without an OpenAI key,
+Redeploy, then check `/readyz` for `"elevenlabs":"configured"` and `"openai":"configured"`.
+Without a usable Deepgram voice key, `--speak` falls back to a text pill; without an OpenAI key,
 voice answers are unavailable. Keep keys in runtime secrets, never in tracked files.
 
 ## P8: website [MUTATING, USER DNS] (depends on U9)
@@ -320,7 +329,7 @@ scripts/testing/bootstrap.sh --yes --participant-registered --clean   # wipe (ge
 | Task | Command |
 |---|---|
 | Logs | `sudo journalctl -u peek-server -u caddy --since -1h` (through `ssm start-session`) |
-| Health | `curl -fsS http://127.0.0.1:8080/healthz` on the host; `/readyz` lists `db`, `iam_config`, `ting_config`, `gemini` and `openai` |
+| Health | `curl -fsS http://127.0.0.1:8080/healthz` on the host; `/readyz` lists `db`, `iam_config`, `ting_config`, `elevenlabs` and `openai` |
 | Roll back | Redeploy the previous build: `python3 deploy/deploy.py --binary <old peek-server>`. Every release directory stays under `/opt/peek/releases` (the current one, the previous one and the three newest others). |
 | Backups | `systemctl list-timers peek-backup.timer`; `sudo -u peek python3 /opt/peek/current/backup.py`; objects are under `s3://<ArtifactBucket>/backups/YYYY/MM/DD/HHMMSSZ/` |
 | Restore | Stop `peek-server`. Copy the snapshot over `/var/lib/peek/<name>` (owner `peek`, mode 0600). Delete any stale `-wal`/`-shm` files. Start `peek-server`. |

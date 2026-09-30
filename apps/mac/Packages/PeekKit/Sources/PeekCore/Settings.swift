@@ -27,7 +27,7 @@ public struct PeekSettings: Sendable, Equatable {
     public var backdrop: BackdropSourceSetting = .wallpaper
     public var telemetry = true
     public var showTestPeeks = true
-    /// Language (BCP 47 primary subtag) → Google voice.
+    /// Language (BCP 47 primary subtag) → ElevenLabs voice.
     public var voiceDefaults: [String: String] = DefaultVoices.byLanguage
     /// `auto` or a BCP 47 tag.
     public var sttLanguage = "auto"
@@ -77,7 +77,7 @@ public struct PeekSettings: Sendable, Equatable {
             sttLanguage = text
         case .voiceDefaults:
             guard let object = value.objectValue else {
-                throw SettingsError(key: key.rawValue, message: "must be an object of language → Google voice; got \(value.jsonString)")
+                throw SettingsError(key: key.rawValue, message: "must be an object of language → ElevenLabs voice; got \(value.jsonString)")
             }
             var voices: [String: String] = [:]
             for (language, voice) in object {
@@ -89,9 +89,9 @@ public struct PeekSettings: Sendable, Equatable {
                 guard let name = voice.stringValue, DefaultVoices.isValidVoice(name) else {
                     throw SettingsError(
                         key: key.rawValue,
-                        message: "voice for \"\(language)\" must be a Google voice name or ID (1–128 ASCII letters, digits, _ or -); got \(voice.jsonString)")
+                        message: "voice for \"\(language)\" must be an ElevenLabs voice ID (1–128 ASCII letters, digits, _ or -); got \(voice.jsonString)")
                 }
-                voices[language] = name.hasPrefix("aura-") ? "Kore" : name
+                voices[language] = name
             }
             voiceDefaults = DefaultVoices.byLanguage.merging(voices) { _, chosen in chosen }
         }

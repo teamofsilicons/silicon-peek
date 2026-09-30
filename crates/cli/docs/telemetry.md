@@ -76,7 +76,7 @@ Events by source:
 
 | Source | Events |
 |---|---|
-| backend | `http.completed` (route template, method, status, duration; not for telemetry or health routes), `auth.login`, `auth.refresh`, `auth.logout`, `ting.enroll`, `ting.send` (type, status, attempt, silent), `speech.token` (purpose, key source, `method` proxy; direct is legacy), `speech.proxy` (relayed speech: `tts_model`, `speak_chars`, `tts_ttfb_ms` or `stt_ms`, `stt_request_id`, key source; never the text, voice instructions or audio), `drawing.put`, `report.created`, `webhook.received` (event type), `participant.op` (action, state) |
+| backend | `http.completed` (route template, method, status, duration; not for telemetry or health routes), `auth.login`, `auth.refresh`, `auth.logout`, `ting.enroll`, `ting.send` (type, status, attempt, silent), `speech.token` (purpose, key source, `method`: direct for TTS or proxy for STT), `speech.proxy` (OpenAI transcription: `stt_ms`, `stt_request_id`, key source; never the recording or transcript), `drawing.put`, `report.created`, `webhook.received` (event type), `participant.op` (action, state) |
 | cli | `command.finished` {command, outcome, error_code, exit_code, duration_ms}, once per invocation |
 | helper | `daemon.started`, `ipc.request` {op, outcome, duration_ms}, `send.displayed` and `send.queued` {slot, queue_waiting}, `send.shown` {slot}, `send.scheduled` {slot, scheduled}, `schedule.fired` {slot, status: the outcome}, `send.expired` {slot, status: shown or not_shown}, `send.cancelled` {slot, status: where it was}, `queue.cleared` {slot, queue_waiting}, `send.replaced` {slot}, `tts.request` {tts_model, speak_chars, tts_ttfb_ms, duration_ms, status, dg_request_id}, `stt.request` {duration_ms, stt_ms, stt_language, stt_request_id, matched, status}, `delivery.attempt` {type, status, attempt, error_code}, `session.refresh` {outcome}, `app.update` {update_from, update_to, outcome}, `update.cli_watchdog` |
 | Peek.app, analytics | `app_launched`, `peek_visible` {slot, mode, visible_ms}, `render_error`, `fallback_visual` {reason}, `glass_mode` {live or frosted}, `display_changed`, `appearance_changed` |
@@ -87,7 +87,7 @@ Events by source:
 
 - the text of any `--speak`, show element, caption, question, option, answer, message or transcript;
 - audio, image bytes, image paths, drawing source;
-- SLTs, access or refresh tokens, app secrets, Google/OpenAI API keys or legacy Deepgram keys;
+- SLTs, access or refresh tokens, app secrets, Deepgram/OpenAI API keys or legacy org keys;
 - raw Silicon or Carbon ids, and search queries typed on the website (only the number of results).
 
 Counts and lengths (for example `speak_chars`, `options_count`) are recorded because they explain latency and failures without revealing content.

@@ -19,7 +19,9 @@ path = "src/main.rs"
 
 [dependencies]
 silicon-peek-client = { workspace = true, features = ["runtime"] }
-base64.workspace = true
+bytes.workspace = true
+futures-util = { workspace = true, features = ["sink"] }
+tokio-tungstenite.workspace = true
 hex.workspace = true
 libc.workspace = true
 reqwest.workspace = true

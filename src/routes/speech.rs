@@ -1,4 +1,4 @@
-//! Authenticated speech: Gemini TTS streaming and `OpenAI` transcription.
+//! Authenticated speech: short-lived `ElevenLabs` connection tokens and `OpenAI` transcription.
 //! No audio, transcript, instructions or provider credentials are logged.
 
 use std::time::Instant;
@@ -14,16 +14,16 @@ use silicon_peek_client::{
     ErrorCode,
     api::{
         KeySource, LISTEN_MAX_BYTES, LISTEN_PARAMS, SpeechMode, SpeechParams, SpeechProvider,
-        SpeechPurpose, SpeechSpeakRequest, SpeechToken, SpeechTokenRequest, routes,
+        SpeechPurpose, SpeechToken, SpeechTokenRequest, routes,
     },
-    schema::send::{check_speak, check_voice, check_voice_instructions},
 };
 
 use crate::{
     auth::{self, Bearer, Principal},
+    elevenlabs,
     error::{ApiError, ApiResult},
     extract::{IdemKey, JsonBody, RawBody, single_header},
-    gemini, openai,
+    openai,
     plane::Plane,
     state::AppState,
     telemetry::{Event, RequestMeta},
@@ -70,7 +70,7 @@ async fn authorize(state: &AppState, plane: &Plane, headers: &HeaderMap) -> ApiR
     Ok(principal)
 }
 
-/// Returns a cached routing hint without exposing a provider credential.
+/// Returns a short-lived TTS connection credential or an STT proxy routing hint.
 pub(crate) async fn token(
     State(state): State<AppState>,
     Extension(meta): Extension<RequestMeta>,
@@ -83,19 +83,13 @@ pub(crate) async fn token(
     let started = Instant::now();
     let principal = authorize(&state, &plane, &headers).await?;
     let purpose = body.value.purpose;
-    let result = (|| {
-        let provider = match purpose {
-            SpeechPurpose::Tts => {
-                gemini::key(&state, &plane)?;
-                SpeechProvider::Gemini
-            }
-            SpeechPurpose::Stt => {
-                openai::key(&state, &plane)?;
-                SpeechProvider::Openai
-            }
-        };
+    let result = async {
+        if purpose == SpeechPurpose::Tts {
+            return elevenlabs::token(&state, &plane).await;
+        }
+        openai::key(&state, &plane)?;
         Ok(SpeechToken {
-            provider,
+            provider: SpeechProvider::Openai,
             mode: SpeechMode::Proxy,
             access_token: None,
             expires_in: PROXY_TOKEN_TTL_SECONDS,
@@ -106,7 +100,8 @@ pub(crate) async fn token(
                 tags: Vec::new(),
             },
         })
-    })();
+    }
+    .await;
     let mut event = Event::new(
         "speech.token",
         match purpose {
@@ -127,45 +122,6 @@ pub(crate) async fn token(
     }
     state.0.telemetry.record(&meta, event.outcome(&result));
     result.map(Json)
-}
-
-/// `POST /api/v1/speech/speak`: text to speech through peek's key, streamed.
-pub(crate) async fn speak(
-    State(state): State<AppState>,
-    Extension(meta): Extension<RequestMeta>,
-    plane: Plane,
-    IdemKey(_key): IdemKey,
-    headers: HeaderMap,
-    body: JsonBody<SpeechSpeakRequest>,
-) -> ApiResult<Response> {
-    let started = Instant::now();
-    let principal = authorize(&state, &plane, &headers).await?;
-    let request = body.value;
-    let result = async {
-        check_speak(&request.text).map_err(ApiError::from_client)?;
-        check_voice(&request.model).map_err(ApiError::from_client)?;
-        if let Some(instructions) = &request.voice_instructions {
-            check_voice_instructions(instructions).map_err(ApiError::from_client)?;
-        }
-        if let Some(language) = &request.language {
-            parse_language("language", language)?;
-        }
-        if request.sample_rate.is_some_and(|rate| rate != 24_000) {
-            return Err(ApiError::invalid_input(
-                "Gemini TTS streams at sample_rate 24000",
-            ));
-        }
-        gemini::speak(&state, &plane, &request).await
-    }
-    .await;
-    let event = Event::new("speech.proxy", "speech.tts")
-        .actor(&principal.org, &principal.actor)
-        .duration(started.elapsed())
-        .context("provider", "gemini")
-        .context("tts_model", gemini::MODEL)
-        .context("speak_chars", request.text.chars().count());
-    state.0.telemetry.record(&meta, event.outcome(&result));
-    result
 }
 
 fn parse_bool(name: &str, value: &str) -> ApiResult<()> {

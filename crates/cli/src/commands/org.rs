@@ -54,7 +54,7 @@ fn human(v: &Value) -> String {
         )
     } else {
         format!(
-            "org {} has no legacy Deepgram key; speech uses Google TTS and OpenAI transcription",
+            "org {} has no legacy Deepgram key; speech uses ElevenLabs v4 TTS through Deepgram and OpenAI transcription",
             v["org_id"].as_str().unwrap_or_default()
         )
     }
