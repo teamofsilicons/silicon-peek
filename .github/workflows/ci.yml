@@ -127,7 +127,8 @@ jobs:
             [ -e "$manifest" ] || continue
             package=$(dirname "$manifest")
             if [ -d "$package/Tests" ]; then
-              swift test --package-path "$package"
+              # UI tests share the main actor and real timers; avoid deadline contention.
+              swift test --no-parallel --package-path "$package"
             else
               swift build --package-path "$package"
             fi
