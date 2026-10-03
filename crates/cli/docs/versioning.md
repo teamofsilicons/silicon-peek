@@ -4,7 +4,7 @@ peek runs as many pieces that update on their own schedules: a CLI copy in every
 
 ## One version number
 
-Every Cargo package, `honeycomb.yaml`, the app's `CFBundleShortVersionString` and the git tag share one version (`0.1.6`, tag `v0.1.6`). The app's build number is derived from it (`major × 1,000,000 + minor × 1,000 + patch`, so 0.1.6 is build 1006) and only ever increases. `peek --version`, `peek iam --json` (`version`) and `peek daemon status` (`version`, `ui.build`) report it.
+Every Cargo package, `honeycomb.yaml`, the app's `CFBundleShortVersionString` and the git tag share one version (`0.2.0`, tag `v0.2.0`). The app's build number is derived from it (`major × 1,000,000 + minor × 1,000 + patch`, so 0.2.0 is build 2000) and only ever increases. `peek --version`, `peek iam --json` (`version`) and `peek daemon status` (`version`, `ui.build`) report it.
 
 The package version describes a release. Compatibility is decided by the **contract versions** below, not by comparing package versions.
 
@@ -36,6 +36,7 @@ A change that is not additive (removing or renaming a field, changing its type o
 
 | peek CLI | Helper and Peek.app | Backend API | Honeycomb | macOS | Status |
 |---|---|---|---|---|---|
+| 0.2.x | 0.2.x (IPC 1) | v1 with IAM 5 | ≥ 0.6.0 | 26.0 or newer | current; explicit Ting permission and context isolation |
 | 0.1.x | 0.1.x (IPC 1) | v1 | ≥ 0.5.0 | 26.0 or newer | supported |
 | 0.1.2 | 0.1.0 or 0.1.1 | v1 | ≥ 0.5.0 | 26.0 or newer | supported; plain sends behave as the old helper does, and 0.1.2 options fail with `app_update_pending` until Peek.app updates |
 | 0.1.0 or 0.1.1 | 0.1.2 | v1 | ≥ 0.5.0 | 26.0 or newer | supported; sends queue in order (a new show no longer replaces the visible one), a full queue is `slot_busy`, a replaced ask reads `cancelled` |
@@ -46,13 +47,15 @@ A change that is not additive (removing or renaming a field, changing its type o
 
 Speech in 0.1.6 requires the 0.1.6 CLI and helper (`elevenlabs_tts`). Update both together. The 0.1.6 backend no longer serves Google TTS; older helpers cannot synthesize speech against it. Replace saved Google or Aura voice names with ElevenLabs voice IDs. Text, drawings, history and login sessions remain compatible.
 
+The 0.1.x rows describe the earlier paired releases. Upgrade the CLI, helper, app and backend together for IAM 5 profile isolation and permission settings. Legacy sessions without an IAM 5 context require sign-in again; ordinary login does not approve Ting delivery. Review and approve the feature, then explicitly enable deliveries and retry queued answers. See [IAM](iam.md).
+
 External contracts peek relies on:
 
 | System | Requirement | Why |
 |---|---|---|
-| Silicon Stemcell | 5.0.2 contract (`<app> iam --json`, `login <SLT>`, `login status --json`, `logout`, `config set`) | installs and logs peek in on connect |
-| Honeycomb | 0.5.0 or newer | package installs and updates, and the macOS install script (package format 1, Manifest A); the installer refuses older versions |
-| IAM | 4.0.0 (bare app ids such as `peek`) | the backend uses `silicon-iam-client` 4.0.0 |
+| Silicon Stemcell | 6.0.1 context verification; existing discovery/login contract (`<app> iam --json`, `login <SLT>`, `login status --json`, `logout`, `config set`) | installs and logs peek in on connect |
+| Honeycomb | 0.6.0 or newer | package installs and updates, and the macOS install script (package format 1, Manifest A); the installer refuses older versions |
+| IAM | 5.0.0 (bare app ids such as `peek`) | ordinary sessions are org scoped; reusable Ting authority comes from explicit endpoint consent |
 | Ting | ≥ 0.1.6 for type registration | the nine event types |
 
 ## Skew is normal
@@ -110,6 +113,12 @@ Changes are checked against the consumers that depend on them: the Stemcell app 
 ## Changelog
 
 These entries describe the behavior of each historical release; the current speech setup is documented in [Speak and show](show.md).
+
+### 0.2.0
+
+- Migrate ordinary sessions and reusable Ting consent to IAM 5, with independent account/org/testing profiles and durable retries fixed to their original context. Legacy sessions require reauthentication.
+- Add native permission settings: review an account and organization, paste an approval code, then explicitly enable deliveries and retry queued answers. Decline or cancel keeps ordinary login usable.
+- Refresh the website and native settings using free UIArc component styling while preserving keyboard focus and reduced motion.
 
 ### 0.1.6
 

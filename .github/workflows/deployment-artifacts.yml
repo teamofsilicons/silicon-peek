@@ -1,0 +1,93 @@
+name: Deployment artifacts
+
+# Candidate staging only: no AWS/Vercel credentials, host mutation or package publication.
+on:
+  push:
+    branches: [feat/iam5-feature-consent-20261003]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deployment-artifacts-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.98.0"
+
+jobs:
+  backend:
+    name: Native Linux ARM64 backend archive
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      CC_aarch64_unknown_linux_musl: musl-gcc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: backend-aarch64-musl
+      - name: Install native musl build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools cmake clang
+      - name: Validate versions and backend fixtures
+        run: |
+          python3 scripts/package-honeycomb.py --check-versions
+          python3 -m unittest discover -s deploy/tests
+          cargo test --locked -p silicon-peek
+      - name: Build and package exact source without deployment
+        run: |
+          cargo build --release --locked --target aarch64-unknown-linux-musl -p silicon-peek
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          mkdir -p "$RUNNER_TEMP/peek-backend"
+          python3 deploy/deploy.py --binary target/aarch64-unknown-linux-musl/release/peek-server \
+            --dry-run --archive-out "$RUNNER_TEMP/peek-backend/peek-backend.tar.gz" \
+            > "$RUNNER_TEMP/peek-backend/manifest.json"
+          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/peek-backend/SOURCE_REVISION"
+          cd "$RUNNER_TEMP/peek-backend"
+          sha256sum peek-backend.tar.gz manifest.json SOURCE_REVISION > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: peek-deployment-backend
+          path: ${{ runner.temp }}/peek-backend/*
+          if-no-files-found: error
+
+  web:
+    name: Static website artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Check and build website
+        working-directory: web
+        run: npm ci && npm test && npm run build
+      - name: Package exact source without deployment
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          mkdir -p "$RUNNER_TEMP/peek-web"
+          tar -czf "$RUNNER_TEMP/peek-web/peek-web.tar.gz" -C web dist vercel.json
+          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/peek-web/SOURCE_REVISION"
+          cd "$RUNNER_TEMP/peek-web"
+          sha256sum peek-web.tar.gz SOURCE_REVISION > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: peek-deployment-web
+          path: ${{ runner.temp }}/peek-web/*
+          if-no-files-found: error

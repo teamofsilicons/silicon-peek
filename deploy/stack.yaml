@@ -114,7 +114,7 @@ Resources:
           - Effect: Allow
             Principal: {Service: ec2.amazonaws.com}
             Action: sts:AssumeRole
-      ManagedPolicyArns: [arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore]
+      ManagedPolicyArns: ['arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore']
       Policies:
         - PolicyName: PeekRuntime
           PolicyDocument:

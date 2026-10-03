@@ -30,8 +30,8 @@ settings:
     CODE_SIGN_STYLE: Automatic                # dev: "Apple Development: Shubham Gupta (MAP74QT7U4)"
     ENABLE_HARDENED_RUNTIME: YES
     SWIFT_VERSION: "6.0"                      # Swift 6 language mode (compiler 6.3.1)
-    MARKETING_VERSION: "0.1.6"
-    CURRENT_PROJECT_VERSION: "1006"           # == Peek.app.info bundle_version (0*1_000_000 + 1*1000 + 6)
+    MARKETING_VERSION: "0.2.0"
+    CURRENT_PROJECT_VERSION: "2000"           # == Peek.app.info bundle_version (0*1_000_000 + 2*1000 + 0)
     MACOSX_DEPLOYMENT_TARGET: "26.0"
     ENABLE_USER_SCRIPT_SANDBOXING: NO         # the embed-peekd phase writes into the bundle and reads ../../dist
   configs:
