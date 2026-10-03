@@ -43,6 +43,10 @@ fn main() -> ExitCode {
     };
     let globals = context::Globals::new(&cli.global);
     let out = globals.out();
+    if let Err(error) = context::initialize_profile(&cli.global) {
+        out.error(&error, &path);
+        return ExitCode::from(2);
+    }
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

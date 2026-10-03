@@ -58,6 +58,7 @@ pub async fn run(cli: Cli, path: &[String], g: &Globals) -> Result<()> {
         Command::Ting {
             command: TingCommand::Enroll,
         } => ting::enroll(g, out).await,
+        Command::Ting { command } => ting::permission(g, out, command).await,
         Command::Register { command } => register::run(g, out, command).await,
         Command::Unregister => register::unregister(g, out).await,
         Command::Send(args) => send::run(g, out, *args).await,
@@ -102,6 +103,7 @@ pub async fn mac_session(g: &Globals) -> Result<(Session, AuthBlock)> {
     let session = g.session(crate::context::store()?, false).await?;
     let file = session.store.read_session()?;
     let slot = file.usable_slot(&session.slot_key, session.store.dir())?;
+    g.session_org(slot)?;
     telemetry::note_actor(&slot.org_id, slot.actor_id());
     let auth = auth_block(&session.store, &session.slot_key)?;
     telemetry::note_auth(&auth);
@@ -134,21 +136,40 @@ where
     F: Fn(Client, OrgId) -> Fut,
     Fut: Future<Output = Result<T>>,
 {
-    match bearer_once(g, s, &f).await {
+    let stored = s.store.read_session()?;
+    let original = stored.usable_slot(&s.slot_key, s.store.dir())?;
+    g.session_org(original)?;
+    let expected = original.context_id()?.to_owned();
+    match bearer_once(g, s, &expected, &f).await {
         Err(e) if *e.code() == ErrorCode::TestingGenerationChanged && s.testing.is_some() => {
             let refreshed = crate::context::refresh_generation(s).await?;
-            bearer_once(g, &refreshed, &f).await
+            bearer_once(g, &refreshed, &expected, &f).await
         }
         r => r,
     }
 }
 
-async fn bearer_once<T, F, Fut>(g: &Globals, s: &Session, f: &F) -> Result<T>
+async fn bearer_once<T, F, Fut>(g: &Globals, s: &Session, expected: &str, f: &F) -> Result<T>
 where
     F: Fn(Client, OrgId) -> Fut,
     Fut: Future<Output = Result<T>>,
 {
+    let stored = s.store.read_session()?;
+    let original = stored.usable_slot(&s.slot_key, s.store.dir())?;
+    g.session_org(original)?;
+    if original.context_id()? != expected {
+        return Err(Error::new(
+            ErrorCode::SessionRejected,
+            "the account changed before retry; retry explicitly",
+        ));
+    }
     let slot = fresh(s).await?;
+    if slot.context_id()? != expected {
+        return Err(Error::new(
+            ErrorCode::SessionRejected,
+            "the account changed while the command was pending; retry explicitly",
+        ));
+    }
     let org = g.session_org(&slot)?;
     telemetry::note_actor(&org, slot.actor_id());
     match f(
@@ -167,6 +188,12 @@ where
                 &cli_refresh_policy(),
             )
             .await?;
+            if slot.context_id()? != expected {
+                return Err(Error::new(
+                    ErrorCode::SessionRejected,
+                    "the account changed while the command was pending; retry explicitly",
+                ));
+            }
             f(
                 s.client
                     .with_session(slot.access_token.clone(), org.clone()),

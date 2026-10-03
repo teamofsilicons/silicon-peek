@@ -11,7 +11,7 @@ use silicon_peek_client::{
     timestamp::unix_now,
 };
 
-pub const FULL_SCOPE: &str = "obo:ting:subscriptions.register obo:ting:subscriptions.revoke obo:ting:tings.send self.identity.read self.membership.read self.profile.read";
+pub const FULL_SCOPE: &str = "self.identity.read self.membership.read self.profile.read";
 
 /// A login/refresh response body.
 pub fn session_body(access: &str, refresh: &str, expires_in: u64) -> Value {
@@ -58,7 +58,7 @@ pub fn write_slot(f: &Fixture, access: &str, refresh: &str, expires_at: i64) {
     let slot = json!({
         "actor": {"type": "silicon", "public_id": "si:cleanup"},
         "org_id": "tos", "org_ids": ["tos"], "membership_id": "si:cleanup[tos]",
-        "scope": FULL_SCOPE, "access_token": access, "refresh_token": refresh,
+        "context_id":"080a80f2-248f-4b9f-9a4f-f918a867398d", "scope": FULL_SCOPE, "access_token": access, "refresh_token": refresh,
         "access_expires_at": expires_at, "refresh_started_at": null, "pending_refresh_key": null,
         "logged_in_at": now - 3600, "verified_at": now - 3600,
         "ting": {"subscribed": true, "subscription_id": "sub_1", "registered_at": now - 3600},

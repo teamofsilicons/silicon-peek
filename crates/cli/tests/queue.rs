@@ -81,7 +81,9 @@ fn handler() -> Handler {
 }
 
 fn legacy(env: &Env) -> FakeDaemon {
-    daemon::start(&env.socket, handler())
+    let mut hello = daemon::legacy_hello();
+    hello.features = vec![silicon_peek_client::ipc::cli::features::IAM5_CONTEXTS.into()];
+    daemon::start_with(&env.socket, hello, handler())
 }
 
 fn v2(env: &Env) -> FakeDaemon {
@@ -534,4 +536,17 @@ async fn queue_cancel_and_schedule_use_their_ops() {
         cancel.auth.is_some(),
         "every queue op carries the home's auth"
     );
+}
+
+#[tokio::test]
+async fn old_daemon_cannot_ignore_context_ids_on_authenticated_requests() {
+    let env = logged_in();
+    let daemon = daemon::start(&env.socket, handler());
+    let run = env.run(&["send", "--show", SHOW, "--json"]).await;
+    assert_eq!(run.code, 5);
+    assert_eq!(
+        run.error()["details"]["missing_features"],
+        json!(["iam5_contexts"])
+    );
+    assert!(daemon.seen().is_empty());
 }

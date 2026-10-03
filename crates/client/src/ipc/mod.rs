@@ -81,6 +81,9 @@ pub struct AuthBlock {
     pub api_url: ApiUrl,
     /// `production` or the testing environment UUID.
     pub context: Context,
+    /// Stable login context; prevents a queued request adopting a replacement account.
+    #[serde(default)]
+    pub context_id: Option<String>,
 }
 
 /// A request.
@@ -435,6 +438,7 @@ mod tests {
             home_token: Secret::new("ab".repeat(32)),
             api_url: ApiUrl::production(),
             context: Context::Production,
+            context_id: Some("080a80f2-248f-4b9f-9a4f-f918a867398d".into()),
         }
     }
 

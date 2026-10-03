@@ -131,7 +131,13 @@ async fn sync(g: &Globals, store: &Store, config: &Config) {
     let _ = tokio::time::timeout(Duration::from_secs(4), task).await;
 }
 
-const MOVABLE: [&str; 4] = [SESSION_FILE, CONFIG_FILE, TESTING_FILE, DAEMON_TOKEN_FILE];
+const MOVABLE: [&str; 5] = [
+    SESSION_FILE,
+    CONFIG_FILE,
+    TESTING_FILE,
+    DAEMON_TOKEN_FILE,
+    "feature-consent.json",
+];
 
 /// `peek config home <DIR>`: moves the store and writes the pointer.
 fn home(out: Out, dir: &Path) -> Result<()> {
@@ -160,6 +166,17 @@ fn home(out: Out, dir: &Path) -> Result<()> {
             format!("the store is already {}", new_dir.display())
         });
         return Ok(());
+    }
+    if !crate::context::default_profile()
+        || current.path("profiles").exists()
+        || new_dir.join("profiles").exists()
+    {
+        return Err(Error::invalid_input(
+            "home relocation cannot move a store with named profiles",
+        )
+        .with_hint(
+            "keep this home, or choose a separate SILICON_HOME before logging into new profiles",
+        ));
     }
     let lock = current.lock()?;
     let destination = Store::open(&new_dir)?;

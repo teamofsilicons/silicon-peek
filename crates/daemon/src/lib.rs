@@ -32,6 +32,7 @@ pub mod matching;
 pub mod net;
 pub mod outbox;
 pub mod paths;
+mod permissions;
 pub mod queue;
 pub mod schedule;
 mod server;

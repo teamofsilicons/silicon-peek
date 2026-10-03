@@ -43,7 +43,7 @@ use wiremock::{
 
 pub mod agent;
 
-pub const FULL_SCOPE: &str = "obo:ting:subscriptions.register obo:ting:subscriptions.revoke obo:ting:tings.send self.identity.read self.membership.read self.profile.read";
+pub const FULL_SCOPE: &str = "self.identity.read self.membership.read self.profile.read";
 
 /// 100 000 bytes of PCM with a recognizable pattern.
 pub fn pcm(len: usize) -> Vec<u8> {
@@ -312,7 +312,7 @@ impl Home {
         let slot = json!({
             "actor": {"type": "silicon", "public_id": actor},
             "org_id": "tos", "org_ids": ["tos"], "membership_id": format!("{actor}[tos]"),
-            "scope": FULL_SCOPE, "access_token": format!("oat_{}", actor.replace(':', "")),
+            "context_id":"080a80f2-248f-4b9f-9a4f-f918a867398d", "scope": FULL_SCOPE, "access_token": format!("oat_{}", actor.replace(':', "")),
             "refresh_token": format!("ort_{}", actor.replace(':', "")),
             "access_expires_at": now + 3600, "refresh_started_at": null, "pending_refresh_key": null,
             "logged_in_at": now - 60, "verified_at": now - 60,
@@ -329,6 +329,7 @@ impl Home {
             home_token: token,
             api_url: api.clone(),
             context: Context::Production,
+            context_id: Some("080a80f2-248f-4b9f-9a4f-f918a867398d".into()),
         };
         Self {
             dir: silicon_home,

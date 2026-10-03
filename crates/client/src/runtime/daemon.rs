@@ -414,6 +414,7 @@ mod tests {
             home_token: Secret::new("0".repeat(64)),
             api_url: ApiUrl::production(),
             context: Context::Production,
+            context_id: Some("080a80f2-248f-4b9f-9a4f-f918a867398d".into()),
         }
     }
 

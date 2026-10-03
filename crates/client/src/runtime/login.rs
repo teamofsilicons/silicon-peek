@@ -74,6 +74,15 @@ pub async fn login(
         )
         .with_hint("mint an SLT: iam silicon-login --app-id peek --grant-org <org> --approve-scopes"));
     }
+    if context != Context::Production
+        && ActorId::looks_like_public_id(slt_text)
+        && org_hint.is_none()
+    {
+        return Err(Error::invalid_input(
+            "testing public actor login requires an explicit organization",
+        )
+        .with_hint("pass --org <organization>"));
+    }
     let slt = Secret::new(slt_text);
     let key = SlotKey::new(client.api_url().clone(), context);
     // A real SLT is single-use, so its derived key names exactly one login.
@@ -87,6 +96,14 @@ pub async fn login(
     let started_at = unix_now();
     store
         .update_session_async(|f| {
+            if f.pending_login_live(started_at) {
+                return Err(Error::invalid_input(
+                    "another login is awaiting recovery in this profile",
+                )
+                .with_hint(
+                    "recover the pending login in its original world, or use a separate --profile",
+                ));
+            }
             f.pending_login = Some(PendingLogin {
                 key: idem.as_str().to_owned(),
                 slt: slt.clone(),
@@ -135,7 +152,12 @@ pub async fn recover_login(
     if unix_now().saturating_sub(pending.started_at) > REPLAY_WINDOW_SECS {
         store
             .update_session_async(|f| {
-                f.pending_login = None;
+                if f.pending_login
+                    .as_ref()
+                    .is_some_and(|current| current.key == pending.key)
+                {
+                    f.pending_login = None;
+                }
                 Ok(())
             })
             .await?;
@@ -199,7 +221,12 @@ async fn exchange_and_commit(
                 // A definitive answer: the SLT is spent or invalid.
                 store
                     .update_session_async(|f| {
-                        f.pending_login = None;
+                        if f.pending_login
+                            .as_ref()
+                            .is_some_and(|pending| pending.key == idem.as_str())
+                        {
+                            f.pending_login = None;
+                        }
                         Ok(())
                     })
                     .await?;
@@ -207,22 +234,36 @@ async fn exchange_and_commit(
             }
         }
     };
-    if !resp.access_token.expose().starts_with("oat_")
-        || !resp.refresh_token.expose().starts_with("ort_")
-        || resp.expires_in == 0
+    super::session::validate_response(&resp, key.context())?;
+    if org_hint.is_some_and(|org| org != &resp.org_id) {
+        return Err(Error::new(
+            ErrorCode::UnexpectedResponse,
+            "login returned a different organization",
+        ));
+    }
+    if ActorId::looks_like_public_id(slt.expose()) && resp.actor.public_id.as_str() != slt.expose()
     {
         return Err(Error::new(
             ErrorCode::UnexpectedResponse,
-            "peek-server returned tokens that are not an IAM oat_/ort_ pair with a lifetime",
-        )
-        .with_hint(
-            "check --api / PEEK_API_URL; report it with peek report if it points at peek-server",
+            "testing login returned a different actor",
         ));
     }
     let now = unix_now();
     let session = SessionSlot::from_login(&resp, started_at, now);
     let lock = store.lock_async().await?;
     let mut file = store.read_session()?;
+    if !file.pending_login.as_ref().is_some_and(|pending| {
+        pending.key == idem.as_str()
+            && pending
+                .slot
+                .as_deref()
+                .is_none_or(|slot| slot == key.as_string())
+    }) {
+        return Err(Error::new(
+            ErrorCode::SessionRejected,
+            "the pending login changed before its response arrived",
+        ));
+    }
     let replaced = file.record_login(key, session.clone(), now);
     store.write_session(&lock, &file)?;
     let daemon_token = store.ensure_daemon_token(&lock)?;
@@ -276,7 +317,15 @@ pub async fn logout(
     // With no slot there is nothing to revoke; `login status` already
     // reports `authenticated:false` (`no_session`).
     let begun = store
-        .update_session_async(|f| Ok(f.begin_logout(&key, now)))
+        .update_session_async(|f| {
+            let begun = f.begin_logout(&key, now);
+            if let Some((slot, _)) = &begun
+                && let Ok(context_id) = slot.context_id()
+            {
+                super::authorization::forget_context(store, context_id)?;
+            }
+            Ok(begun)
+        })
         .await?;
     let Some((slot, revocation)) = begun else {
         return Ok(LogoutOutcome {

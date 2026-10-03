@@ -21,6 +21,27 @@ fn refresh_key(rt: &str) -> String {
     format!("peek-refresh-{}", blake3::hash(rt.as_bytes()).to_hex())
 }
 
+#[allow(clippy::unwrap_used)]
+fn completed_permission(
+    store: &silicon_peek_client::runtime::Store,
+    key: &silicon_peek_client::identity::SlotKey,
+) {
+    let file = store.read_session().unwrap();
+    let slot = file.slot(key).unwrap();
+    let value = json!({ slot.context_id().unwrap(): {
+        "start_key":"peek-start-0000000001","finish_key":"peek-complete-0000000001","code":null,"code_started_at":null,
+        "request":{"request_id":"4e8cc0d5-a4dd-477c-8e3a-5c2fa90ce2ec","completed":true,"roots":[],
+        "authorization":{"id":"68d52bca-bbca-4350-ac60-2d66229f31ef","app_id":"peek","actor":slot.actor,"org_id":slot.org_id,
+            "status":"exchanged","version":1,"expires_at":"2099-01-01T00:00:00Z","state":null,"endpoints":[]}}
+    }});
+    silicon_peek_client::runtime::fs::write_atomic(
+        store.dir(),
+        "feature-consent.json",
+        &serde_json::to_vec(&value).unwrap(),
+    )
+    .unwrap();
+}
+
 #[tokio::test]
 async fn login_exchanges_the_slt_and_writes_the_store() {
     let server = MockServer::start().await;
@@ -54,7 +75,7 @@ async fn login_exchanges_the_slt_and_writes_the_store() {
     assert_eq!(v["membership_id"], "si:cleanup[tos]");
     assert_eq!(v["authority"], "silicon");
     assert_eq!(v["custody"], "client");
-    assert_eq!(v["scopes"].as_array().map(Vec::len), Some(6));
+    assert_eq!(v["scopes"].as_array().map(Vec::len), Some(3));
     assert_eq!(v["ting"]["subscribed"], true);
     assert_eq!(v["daemon"]["attached"], false);
     assert_eq!(v["validated"], true);
@@ -619,9 +640,13 @@ async fn testing_environments_are_discovered_saved_and_bannered() {
         .and(path("/api/v1/auth/login"))
         .and(header("x-testing-environment-key", secret.as_str()))
         .and(body_string(r#"{"slt":"si:peek-tester"}"#))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(session_body("oat_t", "ort_t", 1800)),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json({
+            let mut body = session_body("oat_t", "ort_t", 1800);
+            body["testing_environment"] = json!({"id":env_id,"name":"peek testing","generation":3});
+            body["actor"]["public_id"] = json!("si:peek-tester");
+            body["membership_id"] = json!("si:peek-tester[tos]");
+            body
+        }))
         .expect(1)
         .mount(&server)
         .await;
@@ -633,6 +658,8 @@ async fn testing_environments_are_discovered_saved_and_bannered() {
                 "-",
                 "login",
                 "si:peek-tester",
+                "--org",
+                "tos",
                 "--json",
             ],
             Some(format!("{secret}\n").as_bytes()),
@@ -696,6 +723,7 @@ async fn ting_enroll_records_the_subscription() {
         .await;
     let env = Env::new(&server.uri());
     env.login_as("oat_e", "ort_e", unix_now() + 1800);
+    completed_permission(&env.store(), &env.slot_key());
     let run = env
         .run(&[
             "ting",
@@ -751,13 +779,17 @@ async fn a_changed_testing_generation_is_rediscovered_and_retried_once() {
         .await;
     Mock::given(method("POST"))
         .and(path("/api/v1/auth/login"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(session_body("oat_g", "ort_g", 1800)),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json({
+            let mut body = session_body("oat_g", "ort_g", 1800);
+            body["testing_environment"] = json!({"id":env_id,"name":"peek testing","generation":3});
+            body["actor"]["public_id"] = json!("si:peek-tester");
+            body["membership_id"] = json!("si:peek-tester[tos]");
+            body
+        }))
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/ting/recipient"))
+    Mock::given(method("DELETE"))
+        .and(path("/api/v1/orgs/tos/byo/deepgram"))
         .and(header("x-testing-environment-generation", "3"))
         .respond_with(ResponseTemplate::new(409).set_body_json(json!({"error":{
             "code":"testing_generation_changed","message":"the environment moved to generation 4",
@@ -765,13 +797,13 @@ async fn a_changed_testing_generation_is_rediscovered_and_retried_once() {
         .expect(1)
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/ting/recipient"))
+    Mock::given(method("DELETE"))
+        .and(path("/api/v1/orgs/tos/byo/deepgram"))
         .and(header("x-testing-environment-generation", "4"))
         .and(header("x-testing-environment-key", secret.as_str()))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_json(json!({"subscribed":true,"subscription_id":"sub_g"})),
+                .set_body_json(json!({"configured":false,"updated_at":null,"base_url":null})),
         )
         .expect(1)
         .mount(&server)
@@ -784,6 +816,8 @@ async fn a_changed_testing_generation_is_rediscovered_and_retried_once() {
                 "-",
                 "login",
                 "si:peek-tester",
+                "--org",
+                "tos",
                 "--json",
             ],
             Some(format!("{secret}\n").as_bytes()),
@@ -791,10 +825,12 @@ async fn a_changed_testing_generation_is_rediscovered_and_retried_once() {
         .await;
     assert_eq!(login.code, 0, "{}", login.stderr);
     let run = env
-        .run(&["--test", env_id, "ting", "enroll", "--json"])
+        .run(&[
+            "--test", env_id, "org", "byo", "deepgram", "delete", "--json",
+        ])
         .await;
     assert_eq!(run.code, 0, "{}", run.stderr);
-    assert_eq!(run.json()["subscription_id"], "sub_g");
+    assert_eq!(run.json()["configured"], false);
     let testing = env.store().read_testing().unwrap_or_else(|e| panic!("{e}"));
     let saved = testing
         .environments
@@ -964,5 +1000,10 @@ async fn byo_deepgram_show_set_and_refusal() {
         .run(&["--org", "acme", "org", "byo", "deepgram", "show", "--json"])
         .await;
     assert_eq!(other_org.code, 2);
-    assert_eq!(other_org.error()["details"]["session_orgs"], json!(["tos"]));
+    assert!(
+        other_org.error()["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("tos")
+    );
 }

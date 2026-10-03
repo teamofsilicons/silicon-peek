@@ -212,6 +212,15 @@ mod mac {
             blobs: Vec<Vec<u8>>,
             timeout: Duration,
         ) -> Result<(O::Output, Vec<Vec<u8>>)> {
+            if auth.is_some() {
+                crate::commands::require_features(
+                    self,
+                    &[(
+                        silicon_peek_client::ipc::cli::features::IAM5_CONTEXTS,
+                        "saved account and organization contexts",
+                    )],
+                )?;
+            }
             self.conn.call(op, auth, blobs, timeout).await
         }
 

@@ -69,6 +69,10 @@ pub struct GlobalArgs {
     #[arg(long, global = true, value_name = "ORG")]
     pub org: Option<String>,
 
+    /// Separate named account/organization storage [env: PEEK_PROFILE; default: default].
+    #[arg(long, global = true, value_name = "NAME")]
+    pub profile: Option<String>,
+
     /// Use a saved testing environment by its UUID [env: SILICON_PEEK_TEST]. Save one first
     /// with --app-secret-file. A secret passed here is refused.
     #[arg(long, global = true, value_name = "ENV_UUID")]
@@ -131,7 +135,7 @@ in $SILICON_HOME/.peek/session.json (0600). The SLT is single use and lives two 
 peek --grant-org <org>` (a Carbon).\n\n\
 The exchange is idempotent (its key is derived from the SLT) and retried on transport errors and 5xx. \
 If the outcome stays uncertain, `peek login --recover` replays the same exchange within 10 minutes. On \
-success peek enrolls you as a Ting recipient, attaches this home to peekd, and on a Mac installs and \
+success peek saves this account and organization, attaches this home to peekd, and on a Mac installs and \
 starts Peek.app in the background after printing its result. `peek login status` verifies the session \
 later; `peek logout` ends it.",
         args_conflicts_with_subcommands = true,
@@ -170,8 +174,8 @@ and pushed to peekd.",
     /// Ting recipient enrollment for this Silicon.
     #[command(
         long_about = "peek delivers answers, dismissals and Carbon messages to the asking Silicon \
-through Ting. `peek login` enrolls the Silicon as a Ting recipient for peek; `peek ting enroll` \
-repeats that explicitly. peek never re-enrolls on its own, because that would undo a grant the Silicon \
+through Ting. Review provider permission with `peek ting authorize`, complete the approval code, \
+then run `peek ting enroll` explicitly to enable delivery. peek never re-enrolls on its own, because that would undo a grant the Silicon \
 revoked on purpose.",
         subcommand_required = true,
         arg_required_else_help = true
@@ -502,6 +506,18 @@ pub enum OnOff {
 /// `peek ting …`.
 #[derive(Debug, Subcommand)]
 pub enum TingCommand {
+    /// Start or resume explicit IAM permission review for this account and organization.
+    Authorize,
+    /// Read the current permission request without completing it or sending work.
+    AuthorizationStatus,
+    /// Redeem an IAM approval code. Omit --code-file to recover an uncertain completion.
+    CompleteAuthorization {
+        /// Read the approval code from a private file or stdin (-).
+        #[arg(long, value_name = "PATH|-")]
+        code_file: Option<String>,
+    },
+    /// Abandon local permission review; keeps queued work and drafts.
+    CancelAuthorization,
     /// (Re)register this Silicon as a Ting recipient for peek.
     #[command(
         long_about = "Registers this Silicon as a Ting recipient for peek (or re-registers it). Run \

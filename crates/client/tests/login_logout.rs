@@ -250,12 +250,20 @@ async fn testing_public_id_logins_use_one_key_per_attempt() {
         .await;
     let f = fixture(&server.uri());
     let ctx = Context::Testing(uuid::Uuid::now_v7());
+    let testing_body = |access, refresh| {
+        let mut body = session_body(access, refresh, 1800);
+        body["actor"]["public_id"] = serde_json::json!("si:peek-tester");
+        body["membership_id"] = serde_json::json!("si:peek-tester[tos]");
+        body["testing_environment"] =
+            serde_json::json!({"id":ctx.testing_id(),"name":"Sandbox","generation":1});
+        body
+    };
     login(
         &f.store,
         &f.client,
         ctx,
         &secret("si:peek-tester"),
-        None,
+        Some(&silicon_peek_client::identity::OrgId::parse("tos").unwrap()),
         &fast(),
     )
     .await
@@ -285,9 +293,7 @@ async fn testing_public_id_logins_use_one_key_per_attempt() {
         .and(path(LOGIN))
         .and(header("idempotency-key", first.as_str()))
         .and(body_string(r#"{"slt":"si:peek-tester"}"#))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(session_body("oat_1", "ort_1", 1800)),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(testing_body("oat_1", "ort_1")))
         .expect(1)
         .mount(&server)
         .await;
@@ -299,9 +305,7 @@ async fn testing_public_id_logins_use_one_key_per_attempt() {
     server.reset().await;
     Mock::given(method("POST"))
         .and(path(LOGIN))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(session_body("oat_2", "ort_2", 1800)),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(testing_body("oat_2", "ort_2")))
         .mount(&server)
         .await;
     login(
@@ -309,7 +313,7 @@ async fn testing_public_id_logins_use_one_key_per_attempt() {
         &f.client,
         ctx,
         &secret("si:peek-tester"),
-        None,
+        Some(&silicon_peek_client::identity::OrgId::parse("tos").unwrap()),
         &fast(),
     )
     .await

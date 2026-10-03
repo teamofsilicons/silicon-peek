@@ -7,7 +7,6 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use serde_json::json;
 use silicon_peek_client::{
     Error, ErrorCode, Result, Secret,
     config::Config,
@@ -43,15 +42,59 @@ fn env_value(name: &str) -> Result<Option<String>> {
     }
 }
 
+static PROFILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Selects the command's explicit account profile before any store access.
+pub fn initialize_profile(args: &GlobalArgs) -> Result<()> {
+    let profile = match &args.profile {
+        Some(profile) => profile.clone(),
+        None => env_value("PEEK_PROFILE")?.unwrap_or_else(|| "default".into()),
+    };
+    if profile.is_empty()
+        || profile.len() > 64
+        || !profile
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+    {
+        return Err(Error::invalid_input(
+            "--profile uses 1–64 lowercase letters, numbers, underscores or hyphens",
+        ));
+    }
+    let _ = PROFILE.set(profile);
+    Ok(())
+}
+
+/// Whether the selected profile is the original default store.
+pub fn default_profile() -> bool {
+    PROFILE.get().is_none_or(|name| name == "default")
+}
+
 /// The store directory for this home (without creating it).
 pub fn store_dir() -> Result<PathBuf> {
     let home = silicon_home(std::env::var_os("SILICON_HOME").as_deref())?;
-    store_dir_for(&home)
+    let root = store_dir_for(&home)?;
+    let profile = PROFILE.get().map_or("default", String::as_str);
+    Ok(if profile == "default" {
+        root
+    } else {
+        root.join("profiles").join(profile)
+    })
 }
 
 /// Opens (creating if needed) this home's store.
 pub fn store() -> Result<Store> {
-    Store::open(&store_dir()?)
+    let dir = store_dir()?;
+    if PROFILE.get().is_some_and(|profile| profile != "default") {
+        let profiles = dir
+            .parent()
+            .ok_or_else(|| Error::internal("profile path has no parent"))?;
+        let root = profiles
+            .parent()
+            .ok_or_else(|| Error::internal("profile path has no root"))?;
+        silicon_peek_client::runtime::fs::ensure_private_dir(root)?;
+        silicon_peek_client::runtime::fs::ensure_private_dir(profiles)?;
+    }
+    Store::open(&dir)
 }
 
 /// Opens the store only if it already exists.
@@ -223,23 +266,14 @@ impl Globals {
         let org = self
             .org(Some(&slot.org_id))?
             .unwrap_or_else(|| slot.org_id.clone());
-        let allowed = if slot.org_ids.is_empty() {
-            vec![slot.org_id.clone()]
-        } else {
-            slot.org_ids.clone()
-        };
-        if allowed.contains(&org) {
+        if slot.org_id == org {
             Ok(org)
         } else {
-            let list: Vec<&str> = allowed.iter().map(OrgId::as_str).collect();
             Err(Error::invalid_input(format!(
-                "this session is authorized for org(s) {}; `{org}` is not one of them",
-                list.join(", ")
+                "this profile belongs to {}, not {org}",
+                slot.org_id
             ))
-            .with_hint(format!(
-                "drop --org / SILICON_ORG, or log in for {org}: iam silicon-login --app-id peek --grant-org {org} --approve-scopes; peek --org {org} login '<SLT>'"
-            ))
-            .with_details(json!({"org": org, "session_orgs": list})))
+            .with_hint("sign in under a separate --profile for that organization"))
         }
     }
 

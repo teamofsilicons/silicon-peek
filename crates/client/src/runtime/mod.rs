@@ -10,6 +10,7 @@
 //! - [`daemon`] is the peekd IPC client with its socket helpers.
 //! - [`authenticate_home`] runs peekd's three checks on a CLI `auth` block.
 
+pub mod authorization;
 pub mod daemon;
 pub mod fs;
 pub mod login;
@@ -88,6 +89,12 @@ pub fn authenticate_home(auth: &AuthBlock) -> Result<VerifiedHome> {
     let slot_key = SlotKey::new(auth.api_url.clone(), auth.context);
     let file = store.read_session()?;
     let slot = file.usable_slot(&slot_key, store.dir())?;
+    if auth.context_id.as_deref() != Some(slot.context_id()?) {
+        return Err(Error::new(
+            ErrorCode::SessionRejected,
+            "the login context changed; retry from the selected account",
+        ));
+    }
     Ok(VerifiedHome {
         actor_id: slot.actor.public_id.clone(),
         org_id: slot.org_id.clone(),
@@ -113,10 +120,16 @@ pub fn auth_block(store: &Store, slot_key: &SlotKey) -> Result<AuthBlock> {
         )
         .with_hint(session::RELOGIN_HINT)
     })?;
+    let file = store.read_session()?;
+    let context_id = file
+        .usable_slot(slot_key, store.dir())?
+        .context_id()?
+        .to_owned();
     Ok(AuthBlock {
         home: store.dir().to_string_lossy().into_owned(),
         home_token: token,
         api_url: slot_key.api_url().clone(),
         context: slot_key.context(),
+        context_id: Some(context_id),
     })
 }

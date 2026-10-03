@@ -385,7 +385,10 @@ async fn verify(g: &Globals, session: &Session) -> Result<Verified> {
         .me()
         .await;
     match first {
-        Ok(me) => return Ok(Verified::Live(Box::new((slot, me, requested)))),
+        Ok(me) => {
+            validate_me(&slot, &me)?;
+            return Ok(Verified::Live(Box::new((slot, me, requested))));
+        }
         Err(e) if is_unauthenticated(&e) => {}
         Err(e) => return Err(unavailable(e)),
     }
@@ -402,19 +405,42 @@ async fn verify(g: &Globals, session: &Session) -> Result<Verified> {
         Err(e) if *e.code() == ErrorCode::SessionRejected => return Ok(Verified::Rejected),
         Err(e) => return Err(unavailable(e)),
     };
+    if retried.context_id()? != slot.context_id()? {
+        return Err(Error::new(
+            ErrorCode::SessionRejected,
+            "the account changed during session verification",
+        ));
+    }
     match session
         .client
         .with_session(retried.access_token.clone(), org)
         .me()
         .await
     {
-        Ok(me) => Ok(Verified::Live(Box::new((retried, me, requested)))),
+        Ok(me) => {
+            validate_me(&retried, &me)?;
+            Ok(Verified::Live(Box::new((retried, me, requested))))
+        }
         Err(e) if is_unauthenticated(&e) => {
             mark_rejected(session, &retried, &e).await?;
             Ok(Verified::Rejected)
         }
         Err(e) => Err(unavailable(e)),
     }
+}
+
+fn validate_me(slot: &SessionSlot, me: &Me) -> Result<()> {
+    if !me.authenticated
+        || me.actor != slot.actor
+        || me.org_id != slot.org_id
+        || me.membership_id != slot.membership_id
+    {
+        return Err(Error::new(
+            ErrorCode::UnexpectedResponse,
+            "session verification returned a different account or organization",
+        ));
+    }
+    Ok(())
 }
 
 /// Stores what the backend just verified (unless the session changed).

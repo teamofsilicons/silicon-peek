@@ -321,7 +321,15 @@ impl Client {
         if let Some(org) = org_hint {
             r = r.header(headers::ORG_ID, org.as_str());
         }
-        self.json(routes::LOGIN, r).await
+        let response: SessionResponse = self.json(routes::LOGIN, r).await?;
+        response.validate()?;
+        if org_hint.is_some_and(|org| org != &response.org_id) {
+            return Err(Error::new(
+                ErrorCode::UnexpectedResponse,
+                "login returned a different organization",
+            ));
+        }
+        Ok(response)
     }
 
     /// `POST /api/v1/auth/refresh` with body exactly `{"refresh_token":"…"}`.
@@ -337,11 +345,14 @@ impl Client {
         let body = RefreshRequest {
             refresh_token: refresh_token.clone(),
         };
-        self.json(
-            routes::REFRESH,
-            self.post(routes::REFRESH, key, &body, false),
-        )
-        .await
+        let response: SessionResponse = self
+            .json(
+                routes::REFRESH,
+                self.post(routes::REFRESH, key, &body, false),
+            )
+            .await?;
+        response.validate()?;
+        Ok(response)
     }
 
     /// `POST /api/v1/auth/logout` `{"token":"ort_…"}`. Only with
@@ -389,6 +400,53 @@ impl Client {
         let r =
             self.bearer(self.post(routes::TING_RECIPIENT, key, &serde_json::json!({}), true))?;
         self.json(routes::TING_RECIPIENT, r).await
+    }
+
+    /// Starts explicit Ting approval with a durable caller-provided key.
+    ///
+    /// # Errors
+    /// Authentication, provider, or transport errors.
+    pub async fn ting_authorization_start(
+        &self,
+        key: &IdempotencyKey,
+    ) -> Result<crate::authorization::TingAuthorization> {
+        let path = "/api/v1/ting/authorization";
+        self.json(
+            path,
+            self.bearer(self.post(path, key, &serde_json::json!({}), true))?,
+        )
+        .await
+    }
+
+    /// Reads the original approval, without granting or sending anything.
+    ///
+    /// # Errors
+    /// Authentication, provider, or transport errors.
+    pub async fn ting_authorization_status(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<crate::authorization::TingAuthorization> {
+        let path = format!("/api/v1/ting/authorizations/{id}");
+        self.json(&path, self.bearer(self.request(Method::GET, &path, false))?)
+            .await
+    }
+
+    /// Redeems the user's approval code for this request. Keep the same key on retry.
+    ///
+    /// # Errors
+    /// Authentication, changed terms (412), provider, or transport errors.
+    pub async fn ting_authorization_complete(
+        &self,
+        id: uuid::Uuid,
+        code: &Secret,
+        key: &IdempotencyKey,
+    ) -> Result<crate::authorization::TingAuthorization> {
+        let path = format!("/api/v1/ting/authorizations/{id}/complete");
+        self.json(
+            &path,
+            self.bearer(self.post(&path, key, &serde_json::json!({"code":code}), true))?,
+        )
+        .await
     }
 
     /// `POST /api/v1/deliveries` with the outbox row's exact bytes and key

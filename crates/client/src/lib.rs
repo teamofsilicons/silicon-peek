@@ -36,6 +36,7 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
+pub mod authorization;
 pub mod config;
 pub mod error;
 pub mod http;
@@ -82,17 +83,10 @@ pub const DOCS_URL: &str = "https://peek.teamofsilicons.com/docs";
 pub const REPOSITORY_URL: &str = "https://github.com/teamofsilicons/silicon-peek";
 
 /// Scopes a session must hold; missing ones mean `reconsent_required`.
-pub const REQUIRED_SCOPES: [&str; 3] = [
-    "self.identity.read",
-    "obo:ting:subscriptions.register",
-    "obo:ting:tings.send",
-];
+pub const REQUIRED_SCOPES: [&str; 1] = ["self.identity.read"];
 
 /// Every scope peek requests (BLUEPRINT D26), sorted.
-pub const ALL_SCOPES: [&str; 6] = [
-    "obo:ting:subscriptions.register",
-    "obo:ting:subscriptions.revoke",
-    "obo:ting:tings.send",
+pub const ALL_SCOPES: [&str; 3] = [
     "self.identity.read",
     "self.membership.read",
     "self.profile.read",

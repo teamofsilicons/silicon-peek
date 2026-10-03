@@ -80,7 +80,9 @@ Set `SILICON_HOME` per command, as above. Do not `export` it in a shell you use 
 
 The SLT is single use and lives two minutes. If the login response was lost (network drop), `peek login --recover` retries the same exchange within 10 minutes. Details: [IAM and sessions](iam.md).
 
-`peek logout` ends this home's session but keeps your Ting grant, because other homes of the same Silicon (a Stemcell home and a hand-run one, say) share it. `peek logout --revoke-ting` removes the grant too; then every home of this Silicon needs `peek ting enroll` before answers flow again.
+`peek login` now creates one account and organization session. Ting permission is separate: run `peek ting authorize`, review it in IAM, complete it with the manual code, then run `peek ting enroll`. Named `--profile` homes keep additional contexts separate.
+
+`peek logout` ends this profile's ordinary session while preserving the shared provider grant. `peek logout --revoke-ting` attempts to remove recipient enrollment using existing authority; it does not revoke the IAM grant. Other homes of the same account and organization then need explicit `peek ting enroll` before answers flow again. See [Ting enrollment](ting.md#enrollment).
 
 ## One-time setup: position and optional drawing
 

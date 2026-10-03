@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use silicon_peek_client::{
     Error, ErrorCode, Result,
     api::TestingEnvironment,
-    identity::{ActorId, Context, OrgId, SlotKey},
+    identity::{ActorId, Context, SlotKey},
     ipc::{
         AuthBlock,
         cli::{AttachResult, ConfigSyncConfig, DetachResult, Warning, warnings},
@@ -290,33 +290,25 @@ impl Shared {
         .map_err(|e| Error::internal(format!("authenticating a home failed: {e}")))??;
         let slot_key = SlotKey::new(auth.api_url.clone(), auth.context);
         let home_path = store.dir().to_string_lossy().into_owned();
-        let hp = home_path.clone();
-        let recorded: Option<(Option<String>, Option<String>)> = self
-            .db
-            .call(move |c| {
-                c.query_row(
-                    "SELECT org_id, actor_id FROM homes WHERE home_path = ?1",
-                    [hp],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()
-                .sql()
-            })
-            .await?;
         let key = if let Some(slot) = file.slot(&slot_key) {
+            if auth.context_id.as_deref() != Some(slot.context_id()?) {
+                return Err(Error::new(
+                    ErrorCode::SessionRejected,
+                    "this logout belongs to a previous login context",
+                ));
+            }
             Some((slot.org_id.clone(), slot.actor.public_id.clone()))
         } else {
             let tomb = file
                 .logged_out
                 .as_ref()
                 .filter(|l| l.slot.as_deref().is_none_or(|s| s == slot_key.as_string()));
-            match (tomb, recorded) {
-                (Some(t), Some((Some(org), Some(actor)))) if actor == t.actor => {
-                    Some((OrgId::parse(&org)?, ActorId::parse(&actor)?))
-                }
-                (None, Some((Some(org), Some(actor)))) => {
-                    Some((OrgId::parse(&org)?, ActorId::parse(&actor)?))
-                }
+            match tomb {
+                Some(t) if t.context_id.is_some() && t.context_id == auth.context_id => t
+                    .org_id
+                    .as_ref()
+                    .map(|org| ActorId::parse(&t.actor).map(|actor| (org.clone(), actor)))
+                    .transpose()?,
                 _ => None,
             }
         };

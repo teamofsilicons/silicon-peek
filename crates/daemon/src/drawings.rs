@@ -469,7 +469,9 @@ impl Shared {
             .session(&caller.home, PREWARM_MARGIN, &policy)
             .await
         {
-            Ok((client, slot, _)) if slot.actor.public_id == caller.key.actor => {
+            Ok((client, slot, _))
+                if slot.actor.public_id == caller.key.actor && slot.org_id == caller.key.org =>
+            {
                 client.get_drawing().await
             }
             Ok(_) => return,

@@ -65,6 +65,7 @@ peek
 | `--app-secret-file <PATH\|->` | – | peek's test app secret; `-` reads one line from stdin. |
 | `--app-secret <ask_…>` | `PEEK_TEST_APP_SECRET` (hidden in help) | Same; conflicts with `--app-secret-file`. |
 | `--api <URL>` | `PEEK_API_URL` | peek backend origin. Default `https://backend.peek.teamofsilicons.com`. HTTPS only, except `http` on loopback. |
+| `--profile <NAME>` | `PEEK_PROFILE` | Saved account profile (`default` when omitted); use a separate profile for each account or organization. Each profile keeps production and testing worlds separately. |
 | `--idempotency-key <K>` | – | Overrides the generated key of `peek ting enroll` and `peek report` only (16–255 visible ASCII). Every other command refuses it with `conflicting_flags`, because login, refresh and logout derive their keys so that a retry replays the same request. |
 | `--no-telemetry` | `PEEK_TELEMETRY`, `SPACE_STATION_TELEMETRY`, `SILICON_TELEMETRY` (any of `0/false/off/no`) | Telemetry off for this process. The environment variables are also forwarded to the helper for this home (`config.sync`), so its later work for the home (deliveries, speech, drawing uploads) is not recorded either; the flag is not ([Telemetry](telemetry.md#the-helper-and-environment-opt-outs)). |
 | `-q, --quiet` | `NO_COLOR` is honoured | No human hints or `Next:` lines on stderr (errors are still printed). peek never colours its output. |
@@ -144,8 +145,8 @@ peek login --recover                            # retry a lost exchange within 1
 - Mint the SLT with `iam silicon-login --app-id peek --grant-org <org> --approve-scopes` (a Silicon) or `iam login --app-id peek --grant-org <org>` (a Carbon).
 - There is no interactive prompt. Without an SLT, `--token-file` or `--recover` the command fails with `invalid_input` (exit 2, `details.missing_argument:"SLT"`) and prints its help.
 - The exchange is idempotent: its key is derived from the SLT, and transport failures and 5xx are retried with the same key three times (after 1 s, 3 s and 9 s).
-- On success it enrolls you as a Ting recipient, attaches this home to a running helper, and (on a Mac) installs and starts Peek.app in the background after printing its result. Its output and exit code never depend on that last step.
-- Output: the authenticated `login status` shape below. If Ting enrollment did not complete, `ting` is `{"subscribed":false,…,"error":{"code","message"}}`, `next` is `"peek ting enroll"`, and a hint says so on stderr.
+- On success it saves an ordinary IAM session and attaches this profile to a running helper. Ting permission review and enrollment are explicit, separate actions. On a Mac, it installs and starts Peek.app in the background after printing its result.
+- Output: the authenticated `login status` shape below. An unenrolled account stays authenticated; review Ting permission with `peek ting authorize`, then complete it and enroll explicitly.
 - `slt_rejected` (exit 3): the SLT was used, expired or invalid. Mint a new one. `slt_is_public_id` (exit 2): a public ID such as `si:x` works as an SLT only in a testing environment.
 - `login_attempt_expired` (exit 3): `--recover` ran more than 10 minutes after the first attempt. Mint a new SLT.
 
@@ -165,7 +166,7 @@ peek login status --json
 ```json
 {"authenticated":true,"id":"si:dj","actor":{"type":"silicon","public_id":"si:dj"},"display_name":"DJ",
  "org_id":"tos","org_ids":["tos"],"membership_id":"si:dj[tos]","authority":"silicon","custody":"client",
- "scopes":["obo:ting:subscriptions.register","obo:ting:subscriptions.revoke","obo:ting:tings.send","self.identity.read","self.membership.read","self.profile.read"],
+ "scopes":["self.identity.read","self.membership.read","self.profile.read"],
  "reconsent_required":false,"access_expires_at":"2026-09-26T10:30:00Z","logged_in_at":"2026-09-26T10:00:00Z",
  "family_expires_at_estimate":"2029-03-15T10:00:00Z","refresh_pending":false,
  "ting":{"subscribed":true,"subscription_id":"sub_…"},
@@ -188,7 +189,7 @@ peek logout                  # this home only; the Ting grant stays
 peek logout --revoke-ting    # also remove this Silicon's Ting grant for peek
 ```
 
-Prints `{"authenticated":false,"remote_revocation":"confirmed"|"pending"}` and exits **0** in both cases. After `--revoke-ting`, every home of this Silicon shows `"ting":{"subscribed":false}` in `peek login status`, its sends carry a `ting_not_enrolled` warning, and `peek ting enroll` (or a new login) restores delivery. `pending` means the local session is gone but the backend could not be reached; the revocation is retried by the next `peek` run. A home without a session also answers `confirmed`. `peek logout --help` exits 0 (Stemcell probes it).
+Prints `{"authenticated":false,"remote_revocation":"confirmed"|"pending"}` and exits **0** in both cases. After `--revoke-ting`, every home of this Silicon shows `"ting":{"subscribed":false}` in `peek login status`, its sends carry a `ting_not_enrolled` warning, and a fresh permission review followed by `peek ting enroll` restores delivery. `pending` means the local session is gone but the backend could not be reached; the revocation is retried by the next `peek` run. A home without a session also answers `confirmed`. `peek logout --help` exits 0 (Stemcell probes it).
 
 ## peek config
 
@@ -227,13 +228,35 @@ peek register drawing         # explicitly validates and applies the configured 
 
 `peek config home <DIR>` moves this home's store to `<DIR>/.peek` (the session, config, testing environments and daemon token) and leaves a pointer file named `home` in the default store. It prints `{"home","store","pointer","moved":[…],"previous_store"}`; `pointer` is `null` when you point back to `$SILICON_HOME`. If the target already holds a different store, nothing is changed (`invalid_input`).
 
-## peek ting enroll
+## Saved account and organization contexts
 
-Registers (or re-registers) this Silicon as a Ting recipient for peek. Login does this automatically; run it yourself when `peek login status` shows `"ting":{"subscribed":false}`, a send carries a `ting_not_enrolled` warning, or a delivery is stuck on `recipient_not_registered`. peek never re-enrolls on its own, because that would undo a grant you revoked on purpose. Events waiting in `authority_required` for the enrollment are retried right away.
+Use named profiles to retain separate Carbon or Silicon logins. `--org` must equal the selected token's organization; it cannot switch the organization of a saved bearer. Production and each testing world keep separate slots within a profile. Old sessions without an IAM5 context identifier require login again.
 
 ```sh
-peek ting enroll --json        # {"subscribed":true,"subscription_id":"sub_…"}
+peek --profile work login --token-file -
+peek --profile personal login --token-file -
+peek --profile work --org tos login status --json
+peek --profile sandbox --app-secret-file ./peek-test-secret login si:tester --org tos
 ```
+
+`peek config home` refuses relocation when named profiles exist so it cannot leave some credentials or retry receipts behind. Profiles store private credentials under `.peek/profiles/<name>`; `default` uses the existing `.peek` directory. Config and permission retry receipts follow the selected profile. An interrupted login must be recovered in its original profile/API/world before another login starts there; use another profile for independent attempts. Refresh cannot change the actor, organization or testing world. Pending commands and native permission actions carry the original context identifier, so a replacement login cannot receive their results.
+
+## peek ting authorize / complete-authorization / enroll
+
+Ting delivery is an explicit feature permission, independent of ordinary login. First review the IAM request, then complete it with the manual approval code. Completing permission does not send queued answers. Enrollment is a separate action that enables deliveries and retries waiting answers for the selected account/org/world.
+
+```sh
+peek --profile work ting authorize --json
+peek --profile work ting authorization-status --json
+peek --profile work ting complete-authorization --code-file - --json
+peek --profile work ting enroll --json
+```
+
+The start and completion keys are saved before network I/O. Repeat `authorize` or `authorization-status` to recover an uncertain start; repeat `complete-authorization` without a code to replay a saved uncertain completion. The private retry receipt keeps the exact code until completion succeeds, then removes it. A different code cannot replace a pending completion. Keep the same profile, API, org and testing world throughout.
+
+`peek ting cancel-authorization` clears the local review and retained code while preserving drafts and queued work. A decline, expiry or HTTP412 terms change requires a fresh review. Ordinary login remains usable. `peek ting enroll` requires a completed review and uses a stable request-derived key unless `--idempotency-key` is explicitly supplied. Re-enrollment is never automatic.
+
+Peek.app's Permissions pane lists saved account/org/world contexts, opens the IAM review link, accepts the approval code, recovers pending completion, and provides a separate **Enable deliveries and retry queued answers** action.
 
 ## peek register side
 

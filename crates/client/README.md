@@ -111,3 +111,9 @@ permissions. Integration tests run the HTTP client, `fresh_session` (success,
 rotation), login/logout and home authentication against `wiremock` and temp
 homes, and the framing over real Unix socket pairs. No test touches the real
 home directory or any remote service.
+
+## IAM5 account contexts and Ting permission
+
+`SessionSlot::context_id()` identifies one login incarnation. Runtime authentication refuses legacy actor/org-unbound sessions, and refresh validates the immutable actor, organization, membership and production/testing world before replacing credentials. IPC requests include the saved context ID. A caller must preserve that ID across retries; do not re-read a replacement account as the target of a pending action. The CLI provides `--profile` / `PEEK_PROFILE`; library callers use independent `Store` directories for independent accounts and organizations.
+
+`runtime::authorization::perform` implements explicit Ting start/status/complete/cancel/enroll actions. It saves retry keys and the exact approval code privately before I/O, validates response actor/org/request/state and HTTPS review URLs, and retains pending work on failure. `Complete(None)` recovers an uncertain completion. Completion does not enroll or send; `Enroll(None)` explicitly enables deliveries using a stable key. HTTP412 discards the stale review and requires new terms to be reviewed. Ordinary session scopes contain only `self.*`; delegated tokens remain backend-owned.

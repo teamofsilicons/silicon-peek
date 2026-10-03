@@ -187,8 +187,11 @@ pub mod features {
     pub const NOTIFY_SHOWN: &str = "notify_shown";
     /// `ElevenLabs` streaming speech and configurable voice instructions.
     pub const ELEVENLABS_TTS: &str = "elevenlabs_tts";
+    /// Immutable IAM5 login context IDs and dedicated feature permission controls.
+    pub const IAM5_CONTEXTS: &str = "iam5_contexts";
     /// Every feature of the current peekd.
-    pub const ALL: [&str; 6] = [
+    pub const ALL: [&str; 7] = [
+        IAM5_CONTEXTS,
         QUEUE_V2,
         EXPIRY_ALL,
         REPLACE,
@@ -1871,6 +1874,7 @@ mod tests {
         assert_eq!(
             v["features"],
             json!([
+                "iam5_contexts",
                 "queue_v2",
                 "expiry_all",
                 "replace",

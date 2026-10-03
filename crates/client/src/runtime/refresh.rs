@@ -237,6 +237,16 @@ fn commit_rotation(
     resp: &SessionResponse,
     started_at: i64,
 ) -> Result<SessionSlot> {
+    super::session::validate_response(resp, SlotKey::parse(slot_key)?.context())?;
+    if resp.actor != sent.actor
+        || resp.org_id != sent.org_id
+        || resp.membership_id != sent.membership_id
+    {
+        return Err(Error::new(
+            ErrorCode::UnexpectedResponse,
+            "refresh changed this session's actor or organization",
+        ));
+    }
     let mut file = store.read_session()?;
     let updated = match file.slots.get_mut(slot_key) {
         Some(s) if s.refresh_token == sent.refresh_token => {
@@ -328,11 +338,22 @@ async fn refresh_locked(
     let slot_key = key.as_string();
     let mut retries = 0usize;
     let mut rotations = 0usize;
+    let expected = store
+        .read_session()?
+        .usable_slot(key, store.dir())?
+        .context_id()?
+        .to_owned();
     loop {
         // Step 2: exclusive lock, then re-read.
         let lock = store.lock_async().await?;
         let mut file = store.read_session()?;
         let slot = file.usable_slot(key, store.dir())?.clone();
+        if slot.context_id()? != expected {
+            return Err(Error::new(
+                ErrorCode::SessionRejected,
+                "the selected account changed while refresh was pending; retry explicitly",
+            ));
+        }
         let now = unix_now();
         if good_enough(&slot, now) {
             return Ok(slot);

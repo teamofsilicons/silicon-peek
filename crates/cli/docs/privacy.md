@@ -52,13 +52,14 @@ The backend (`https://backend.peek.teamofsilicons.com`) keeps:
 | `drawings` | each Silicon's current drawing (JavaScript, at most 256 KiB) |
 | `ting_enrollments` | which Silicons are enrolled as Ting recipients, and their subscription id |
 | `deliveries` | delivery receipts: event id, type, Ting key, Ting id, status, timestamps. **Not** the event data. |
+| `obo_requests`, `obo_roots`, `obo_operations`, `obo_locks` | feature review details, encrypted approved Ting token families and pending retry credentials; original destination and payload hashes; no event content |
 | `byo_keys` | a legacy org Deepgram key, encrypted (AES-256-GCM), never returned or used for speech |
 | `reports` | bug reports sent with `peek report` |
 | `idempotency`, `webhook_events`, testing-environment bindings | bookkeeping so retries are safe |
 
-It stores **no IAM tokens** (each Silicon keeps its own), **no audio**, **no speak text or voice instructions**, **no transcripts** and **no show content**. Answer and message text passes through it on the way to Ting and is not kept. TTS content and audio travel directly between the Mac and the speech provider. Completed recordings pass through the backend to OpenAI without being kept or logged. Test environments live in a separate database. Backups are encrypted and expire after 7 days.
+Ordinary session refresh tokens remain on the client. A feature start temporarily seals its ordinary access token until IAM returns the review request; that pending payload is then cleared. Separately approved Ting access/refresh families are encrypted on the backend, bound to the original account, organization, world and clean generation. It stores **no audio**, **no speak text or voice instructions**, **no transcripts** and **no show content**. Answer and message text passes through it on the way to Ting and is not kept. TTS content and audio travel directly between the Mac and the speech provider. Completed recordings pass through the backend to OpenAI without being kept or logged. Test environments live in a separate database. Backups are encrypted and expire after 7 days.
 
-Deletion: `peek unregister` deletes the Silicon's drawing on the Mac and on the backend. `peek logout` revokes its session and its Ting enrollment. When IAM reports that a Silicon was removed from an org, the backend deletes its drawing and enrollment.
+Deletion: `peek unregister` deletes the Silicon's drawing on the Mac and on the backend. `peek logout` revokes the ordinary session while preserving the separately approved provider grant and enrollment. `peek logout --revoke-ting` additionally attempts to remove recipient enrollment; revoke the provider grant in IAM itself. When IAM reports that a member was removed from an org, the backend deletes its drawing, enrollment and saved feature authority in that context.
 
 ## What Ting stores
 

@@ -358,6 +358,18 @@ pub fn notes(path: &str) -> String {
              Next:\n  peek login status --json",
             "cli",
         ),
+        "peek ting authorize" | "peek ting authorization-status" => (
+            "Examples:\n  peek --profile work ting authorize --json\n  peek --profile work ting authorization-status --json\n\nNext:\n  Review the returned IAM link, then peek ting complete-authorization --code-file -",
+            "ting",
+        ),
+        "peek ting complete-authorization" => (
+            "Examples:\n  peek ting complete-authorization --code-file -\n  peek ting complete-authorization   # retry a saved completion\n\nNext:\n  peek ting enroll   explicitly enable delivery and retry queued answers",
+            "ting",
+        ),
+        "peek ting cancel-authorization" => (
+            "Examples:\n  peek ting cancel-authorization\n\nNext:\n  peek ting authorize   start a fresh review; pending work stays saved",
+            "ting",
+        ),
         "peek ting" | "peek ting enroll" => (
             "Examples:\n  peek ting enroll --json\n\n\
              Next:\n  peek login status --json     shows ting.subscribed\n  peek status                  shows the delivery backlog",

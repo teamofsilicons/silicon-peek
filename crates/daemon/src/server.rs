@@ -81,7 +81,7 @@ const CLI_OPS: [&str; 23] = [
     "schedule.clear",
 ];
 /// Ops only Peek.app may send.
-const UI_OPS: [&str; 13] = [
+const UI_OPS: [&str; 15] = [
     "answer",
     "voice.submit",
     "ui.status",
@@ -94,6 +94,8 @@ const UI_OPS: [&str; 13] = [
     "drawing.error",
     "telemetry",
     "settings.changed",
+    "permissions.contexts",
+    "permissions.ting",
     "shown",
 ];
 
@@ -1195,6 +1197,15 @@ impl Shared {
         }
         let empty = |r: Result<()>| reply_of(&req, r.map(|()| Empty {}));
         match req.op.as_str() {
+            "permissions.contexts" => reply_of(&req, self.permission_contexts().await),
+            "permissions.ting" => reply_of(
+                &req,
+                async {
+                    self.ting_permission(req.parse::<crate::permissions::PermissionAction>()?)
+                        .await
+                }
+                .await,
+            ),
             "answer" => empty(async { self.ui_answer(req.parse::<AnswerOp>()?).await }.await),
             "message" => reply_of(
                 &req,

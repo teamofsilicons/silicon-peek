@@ -75,7 +75,7 @@ pub struct SessionSlot {
     pub actor: Actor,
     /// The selected org.
     pub org_id: OrgId,
-    /// Every org of the grant.
+    /// Compatibility projection: exactly the token-bound organization.
     #[serde(default)]
     pub org_ids: Vec<OrgId>,
     /// `si:<handle>[<org>]`.
@@ -206,6 +206,12 @@ impl PendingRevocation {
 /// The logout tombstone.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoggedOut {
+    /// Exact login context whose work may be cancelled.
+    #[serde(default)]
+    pub context_id: Option<String>,
+    /// Organization of that login.
+    #[serde(default)]
+    pub org_id: Option<OrgId>,
     /// The actor that logged out.
     pub actor: String,
     /// Unix seconds.
@@ -245,7 +251,10 @@ impl SessionSlot {
             display_name: resp.display_name.clone(),
             reconsent_required: resp.reconsent_required,
             rejected: None,
-            extra: BTreeMap::new(),
+            extra: BTreeMap::from([(
+                "context_id".into(),
+                Value::String(uuid::Uuid::new_v4().to_string()),
+            )]),
         };
         slot.reconsent_required |= !slot.has_required_scopes();
         slot
@@ -265,6 +274,47 @@ impl SessionSlot {
         if resp.display_name.is_some() {
             self.display_name.clone_from(&resp.display_name);
         }
+    }
+
+    /// Stable identity of this login family. Older sessions require a fresh IAM 5 login.
+    ///
+    /// # Errors
+    /// `session_rejected` for legacy or invalid saved context metadata.
+    pub fn context_id(&self) -> Result<&str> {
+        self.extra
+            .get("context_id")
+            .and_then(Value::as_str)
+            .filter(|id| uuid::Uuid::parse_str(id).is_ok_and(|id| !id.is_nil()))
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::SessionRejected,
+                    "this saved session predates IAM 5; sign in again",
+                )
+                .with_hint(RELOGIN_HINT)
+            })
+    }
+
+    /// Rejects legacy multi-organization or delegated credentials before use.
+    ///
+    /// # Errors
+    /// `session_rejected` when the saved authority is not one ordinary context.
+    pub fn validate_context(&self) -> Result<()> {
+        self.context_id()?;
+        if self.org_ids != [self.org_id.clone()]
+            || self.actor.actor_type != self.actor.public_id.actor_type()
+            || self.membership_id != format!("{}[{}]", self.actor.public_id, self.org_id)
+            || self
+                .scope
+                .split_ascii_whitespace()
+                .any(|scope| scope.starts_with("obo:"))
+        {
+            return Err(Error::new(
+                ErrorCode::SessionRejected,
+                "this saved session is not an IAM 5 account and organization context",
+            )
+            .with_hint(RELOGIN_HINT));
+        }
+        Ok(())
     }
 
     /// The actor ID.
@@ -342,6 +392,7 @@ impl SessionFile {
             };
             return Err(Error::new(ErrorCode::NotLoggedIn, msg).with_hint(RELOGIN_HINT));
         };
+        slot.validate_context()?;
         if let Some(r) = &slot.rejected {
             return Err(Error::new(
                 ErrorCode::SessionRejected,
@@ -408,6 +459,8 @@ impl SessionFile {
         let k = key.as_string();
         let slot = self.slots.get(&k)?.clone();
         self.logged_out = Some(LoggedOut {
+            context_id: slot.context_id().ok().map(str::to_owned),
+            org_id: Some(slot.org_id.clone()),
             actor: slot.actor.public_id.to_string(),
             at: now,
             slot: Some(k.clone()),
@@ -437,6 +490,21 @@ impl SessionFile {
             .as_ref()
             .is_some_and(|p| now.saturating_sub(p.started_at) <= REPLAY_WINDOW_SECS)
     }
+}
+
+/// Validates the ordinary login/refresh response against its selected world.
+///
+/// # Errors
+/// `unexpected_response` when identity, scope, token, or world bindings are invalid.
+pub fn validate_response(resp: &SessionResponse, context: crate::identity::Context) -> Result<()> {
+    resp.validate()?;
+    if resp.testing_environment.as_ref().map(|world| world.id) != context.testing_id() {
+        return Err(Error::new(
+            ErrorCode::UnexpectedResponse,
+            "the backend returned a different IAM world",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -526,7 +594,7 @@ mod tests {
 
     #[test]
     fn reconsent_and_freshness() -> Result<()> {
-        let s = SessionSlot::from_login(&response("oat", "ort", "self.identity.read")?, 0, 0);
+        let s = SessionSlot::from_login(&response("oat", "ort", "self.profile.read")?, 0, 0);
         assert!(s.reconsent_required);
         let mut s = SessionSlot::from_login(&response("oat", "ort", FULL)?, 1000, 1000);
         assert!(s.is_fresh(1000, 60));

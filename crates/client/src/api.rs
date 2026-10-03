@@ -273,6 +273,33 @@ pub struct SessionResponse {
     pub testing_environment: Option<TestingEnvironment>,
 }
 
+impl SessionResponse {
+    /// Validates an ordinary IAM 5 token pair and its single identity context.
+    ///
+    /// # Errors
+    /// `unexpected_response` for malformed, unscoped or delegated credentials.
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.token_type != "Bearer"
+            || self.expires_in == 0
+            || !self.access_token.expose().starts_with("oat_")
+            || !self.refresh_token.expose().starts_with("ort_")
+            || self.actor.actor_type != self.actor.public_id.actor_type()
+            || self.org_ids != [self.org_id.clone()]
+            || self.membership_id != format!("{}[{}]", self.actor.public_id, self.org_id)
+            || self
+                .scope
+                .split_ascii_whitespace()
+                .any(|scope| scope.starts_with("obo:"))
+        {
+            return Err(crate::Error::new(
+                crate::ErrorCode::UnexpectedResponse,
+                "the backend did not return one ordinary IAM 5 account and organization",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// `GET /api/v1/auth/me`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Me {
