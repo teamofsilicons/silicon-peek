@@ -63,6 +63,30 @@ jobs:
           command: check
           rust-version: ${{ env.RUST_TOOLCHAIN }}
 
+  rust-windows:
+    name: Rust on Windows (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-2025, target: x86_64-pc-windows-msvc }
+          - { runner: windows-11-arm, target: aarch64-pc-windows-msvc }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      RUSTFLAGS: "-C target-feature=+crt-static"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Tests
+        run: cargo test --locked --no-fail-fast -p silicon-peek-client -p silicon-peek-cli --target ${{ matrix.target }}
+
   web:
     name: Website and docs build
     runs-on: ubuntu-24.04
