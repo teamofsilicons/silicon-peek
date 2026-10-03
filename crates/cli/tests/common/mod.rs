@@ -130,6 +130,12 @@ impl Env {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        // Winsock needs this OS directory to load its network providers.
+        #[cfg(windows)]
+        c.env(
+            "SystemRoot",
+            std::env::var_os("SystemRoot").expect("Windows system directory"),
+        );
         for (k, v) in &self.vars {
             c.env(k, v);
         }
