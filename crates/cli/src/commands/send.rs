@@ -718,10 +718,13 @@ mod tests {
         std::fs::write(&png, b"\x89PNG\r\n\x1a\n0000")
             .map_err(|e| Error::internal(e.to_string()))?;
         let mut a = args();
-        a.show = Some(format!(
-            r#"{{"elements":[{{"type":"image","path":"{p}","caption":"c"}},{{"type":"image","path":"{p}"}}]}}"#,
-            p = png.display()
-        ));
+        a.show = Some(
+            json!({"elements": [
+                {"type":"image","path":png,"caption":"c"},
+                {"type":"image","path":png}
+            ]})
+            .to_string(),
+        );
         let p = prepare(&a, &[])?;
         assert_eq!(p.blobs.len(), 2, "one blob per reference");
         let v = serde_json::to_value(&p.op).map_err(|e| Error::internal(e.to_string()))?;

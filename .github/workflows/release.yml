@@ -52,8 +52,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { runner: macos-15, target: macos-aarch64, triple: aarch64-apple-darwin, binary: peek }
-          - { runner: macos-15-intel, target: macos-x86_64, triple: x86_64-apple-darwin, binary: peek }
+          - { runner: macos-26, target: macos-aarch64, triple: aarch64-apple-darwin, binary: peek }
+          - { runner: macos-26-intel, target: macos-x86_64, triple: x86_64-apple-darwin, binary: peek }
           - { runner: ubuntu-24.04, target: linux-x86_64, triple: x86_64-unknown-linux-musl, binary: peek }
           - { runner: ubuntu-24.04-arm, target: linux-aarch64, triple: aarch64-unknown-linux-musl, binary: peek }
           - { runner: windows-2025, target: windows-x86_64, triple: x86_64-pc-windows-msvc, binary: peek.exe }
