@@ -14,8 +14,7 @@ use silicon_iam_client::{Error as IamError, IdempotencyKey as IamKey, Mutation, 
 use silicon_peek_client::{
     ErrorCode, REQUIRED_SCOPES, Secret,
     api::{
-        EnrollmentError, LoginRequest, LogoutRequest, Me, RefreshRequest, SessionResponse,
-        TingEnrollment, headers,
+        LoginRequest, LogoutRequest, Me, RefreshRequest, SessionResponse, TingEnrollment, headers,
     },
     identity::{Actor, ActorId, ActorType, OrgId},
     ids::IdempotencyKey,
@@ -171,59 +170,47 @@ async fn verify_tokens(
     if actor.actor_type() != actor_type {
         return Err(unusable("the actor type does not match its ID"));
     }
-    let grants = iam
-        .authorizations(&tokens.access_token)
-        .await
-        .map_err(|e| {
-            upstream(
-                &e,
-                "read the new session's authorizations",
-                iam.environment_id().is_some(),
-            )
-        })?
-        .ok_or_else(|| reject("IAM reports the new session inactive".to_owned()))?;
-    let mut orgs: Vec<(OrgId, String)> = Vec::new();
-    for grant in &grants {
-        let type_matches = match &grant.actor_type {
-            None => true,
-            Some(models::ApplicationAuthorizationActorType::Silicon) => {
-                actor_type == ActorType::Silicon
-            }
-            Some(models::ApplicationAuthorizationActorType::Carbon) => {
-                actor_type == ActorType::Carbon
-            }
-            Some(_) => false,
-        };
-        let actor_matches = type_matches
-            && grant
-                .public_id
-                .as_deref()
-                .is_none_or(|p| p == actor.as_str());
-        if grant.audience != app_id
-            || grant.testing_environment_id != iam.environment_id()
-            || !actor_matches
-        {
-            return Err(unusable(
-                "an authorization belongs to another app, actor or data plane",
-            ));
-        }
-        let org =
-            OrgId::parse(&grant.org_id).map_err(|_| unusable("an org handle is malformed"))?;
-        if !orgs.iter().any(|(o, _)| *o == org) {
-            orgs.push((org, grant.membership_id.clone()));
-        }
+    let org = tokens
+        .org_id
+        .as_deref()
+        .and_then(|org| OrgId::parse(org).ok())
+        .ok_or_else(|| reject("IAM 5 requires one organization; sign in again".to_owned()))?;
+    if hint.is_some_and(|hint| hint != &org) {
+        return Err(reject(
+            "The session belongs to a different organization".to_owned(),
+        ));
     }
-    orgs.sort_by(|a, b| a.0.cmp(&b.0));
-    let (org, membership_id) = hint
-        .and_then(|h| orgs.iter().find(|(o, _)| o == h))
-        .or_else(|| orgs.first())
-        .cloned()
-        .ok_or_else(|| {
-            reject(
-                "the session selects no organization; mint the SLT with --grant-org <org>"
-                    .to_owned(),
-            )
-        })?;
+    let inspected = iam
+        .introspect(&tokens.access_token, None)
+        .await
+        .map_err(|e| upstream(&e, "verify the new session", iam.environment_id().is_some()))?;
+    let principal = auth::verify(
+        &inspected,
+        &Bearer {
+            token: Secret::new(tokens.access_token.clone()),
+            org: org.clone(),
+        },
+        app_id,
+        iam.environment_id(),
+        unix_now(),
+    )
+    .map_err(|check| {
+        reject(format!(
+            "IAM 5 returned an invalid ordinary session ({check}); sign in again"
+        ))
+    })?;
+    let scopes: BTreeSet<String> = tokens
+        .scope
+        .split_ascii_whitespace()
+        .map(str::to_owned)
+        .collect();
+    if principal.actor != actor || principal.scopes != scopes {
+        return Err(reject(
+            "The token response and its verified identity do not agree".to_owned(),
+        ));
+    }
+    let membership_id = principal.membership_id;
+
     Ok(Verified {
         access: Secret::new(tokens.access_token),
         refresh: Secret::new(tokens.refresh_token),
@@ -234,8 +221,8 @@ async fn verify_tokens(
             .map(str::to_owned)
             .collect(),
         actor,
-        org,
-        org_ids: orgs.into_iter().map(|(o, _)| o).collect(),
+        org: org.clone(),
+        org_ids: vec![org],
         membership_id,
     })
 }
@@ -346,9 +333,14 @@ async fn login_inner(
         ));
     }
     let hint = org_hint(headers)?;
+    if plane.is_testing() && ActorId::looks_like_public_id(slt) && hint.is_none() {
+        return Err(ApiError::invalid_input(
+            "Testing actor login requires X-Org-ID; choose the organization explicitly",
+        ));
+    }
     let iam = plane.iam()?;
     let tokens = iam
-        .login(slt, &mutation(key)?)
+        .login(slt, hint.as_ref().map(OrgId::as_str), &mutation(key)?)
         .await
         .map_err(|e| login_error(&e, plane.is_testing()))?;
     let verified = verify_tokens(
@@ -360,32 +352,9 @@ async fn login_inner(
     )
     .await?;
     let name = display_name(iam.as_ref(), verified.access.expose(), &verified.scopes).await;
-    let reconsent = REQUIRED_SCOPES
-        .iter()
-        .any(|s| !verified.scopes.contains(*s));
-    let ting = if reconsent {
-        TingEnrollment {
-            subscribed: false,
-            subscription_id: None,
-            error: Some(EnrollmentError {
-                code: ErrorCode::ReconsentRequired.as_str().to_owned(),
-                message:
-                    "the session lacks the Ting scopes; log in again and approve peek's scopes"
-                        .to_owned(),
-            }),
-        }
-    } else {
-        let principal = Principal {
-            actor: verified.actor.clone(),
-            org: verified.org.clone(),
-            membership_id: verified.membership_id.clone(),
-            scopes: verified.scopes.clone(),
-            org_role: None,
-            access_token: verified.access.clone(),
-        };
-        enroll_for_login(state, plane, &principal).await
-    };
-    Ok(session_response(verified, plane, name, Some(ting)))
+    // Login remains usable when Ting permission is declined or absent.
+    // Provider token families belong to the feature, never to this session.
+    Ok(session_response(verified, plane, name, None))
 }
 
 fn slt_rejected_owned(message: String) -> ApiError {
@@ -394,56 +363,6 @@ fn slt_rejected_owned(message: String) -> ApiError {
 
 fn session_rejected_owned(message: String) -> ApiError {
     session_rejected(message)
-}
-
-/// Enrollment at login: a transient failure never fails the login.
-async fn enroll_for_login(
-    state: &AppState,
-    plane: &Plane,
-    principal: &Principal,
-) -> TingEnrollment {
-    let result = async {
-        let subscription = ting::enroll(state, plane, principal).await?;
-        let (ctx, org, actor, sub) = (
-            plane.ctx_string(),
-            principal.org.to_string(),
-            principal.actor.to_string(),
-            subscription.clone(),
-        );
-        plane
-            .db
-            .call(move |conn| {
-                Ok(store::enrollments::record(
-                    conn,
-                    &ctx,
-                    &org,
-                    &actor,
-                    &sub,
-                    unix_now(),
-                )?)
-            })
-            .await?;
-        Ok::<_, ApiError>(subscription)
-    }
-    .await;
-    match result {
-        Ok(subscription) => TingEnrollment {
-            subscribed: true,
-            subscription_id: Some(subscription),
-            error: None,
-        },
-        Err(e) => {
-            tracing::warn!(code = %e.code(), "Ting enrollment at login failed; `peek ting enroll` retries it");
-            TingEnrollment {
-                subscribed: false,
-                subscription_id: None,
-                error: Some(EnrollmentError {
-                    code: e.code().as_str().to_owned(),
-                    message: e.message().to_owned(),
-                }),
-            }
-        }
-    }
 }
 
 /// `POST /api/v1/auth/refresh` `{"refresh_token"}`.
@@ -546,8 +465,7 @@ async fn logout_inner(
     }
 }
 
-/// Revokes the Silicon's Ting grant, best effort: the IAM revocation that
-/// follows ends every way to mint proofs for it anyway.
+/// Explicitly removes the Ting enrollment; ordinary logout preserves consent.
 async fn revoke_ting_grant(state: &AppState, plane: &Plane, principal: &Principal) {
     let (ctx, org, actor) = (
         plane.ctx_string(),

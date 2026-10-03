@@ -16,7 +16,11 @@ pub(crate) mod webhooks;
 use rusqlite::{Connection, params};
 
 /// Tables holding per-context data (everything a clean must erase).
-const DATA_TABLES: [&str; 7] = [
+const DATA_TABLES: [&str; 11] = [
+    "obo_requests",
+    "obo_roots",
+    "obo_operations",
+    "obo_locks",
     "drawings",
     "ting_enrollments",
     "deliveries",
@@ -59,6 +63,9 @@ pub(crate) mod testing {
     pub(crate) fn memory() -> rusqlite::Result<Connection> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(include_str!("../../migrations/0001_initial.sql"))?;
+        conn.execute_batch(include_str!(
+            "../../migrations/0002_iam5_feature_consent.sql"
+        ))?;
         Ok(conn)
     }
 }

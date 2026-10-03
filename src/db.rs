@@ -17,7 +17,13 @@ use crate::error::{ApiError, ApiResult};
 
 /// Embedded migrations, applied in order; `PRAGMA user_version` records the
 /// last one applied.
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_initial.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_initial.sql")),
+    (
+        2,
+        include_str!("../migrations/0002_iam5_feature_consent.sql"),
+    ),
+];
 
 /// Why a database could not be opened.
 #[derive(Debug, thiserror::Error)]
@@ -80,7 +86,8 @@ impl Db {
         if !mode.eq_ignore_ascii_case("wal") {
             tracing::warn!(path = %path.display(), mode, "SQLite did not switch to WAL mode");
         }
-        conn.pragma_update(None, "synchronous", "NORMAL")
+        // Feature refresh retry identities must survive before the upstream rotation.
+        conn.pragma_update(None, "synchronous", "FULL")
             .map_err(sqlite)?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(sqlite)?;
@@ -174,7 +181,7 @@ mod tests {
         let version = db
             .call(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?))
             .await?;
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
         let bad = db
             .call(|c| {
                 Ok(c.execute(

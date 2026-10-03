@@ -29,13 +29,11 @@ use crate::{
     plane::Plane,
 };
 
-/// The scopes a delivery (`tings.send` proof) needs.
-pub(crate) const DELIVERY_SCOPES: [&str; 2] = ["obo:ting:tings.send", "self.identity.read"];
-/// The scopes a Ting enrollment needs.
-pub(crate) const ENROLL_SCOPES: [&str; 2] =
-    ["obo:ting:subscriptions.register", "self.identity.read"];
-/// The scopes a Ting grant revocation needs.
-pub(crate) const REVOKE_SCOPES: [&str; 2] = ["obo:ting:subscriptions.revoke", "self.identity.read"];
+/// Ordinary identity is sufficient to enter a feature. Ting delegation is
+/// separately consented and checked by the feature's stored root family.
+pub(crate) const DELIVERY_SCOPES: [&str; 1] = ["self.identity.read"];
+pub(crate) const ENROLL_SCOPES: [&str; 1] = ["self.identity.read"];
+pub(crate) const REVOKE_SCOPES: [&str; 1] = ["self.identity.read"];
 
 /// Bearer credentials presented with a request.
 pub(crate) struct Bearer {
@@ -196,7 +194,7 @@ pub(crate) fn verify(
     if inspected.audience.as_deref().is_some_and(|a| a != app_id) {
         return Err("audience");
     }
-    if inspected.org_id.as_deref() != Some(org) {
+    if inspected.authorizations.is_some() || inspected.org_id.as_deref() != Some(org) {
         return Err("org_id");
     }
     if inspected.expires_at.is_some_and(|e| e <= now) {
@@ -252,7 +250,9 @@ pub(crate) fn verify(
         Some(scope) => scope.split_ascii_whitespace().map(str::to_owned).collect(),
         None => snapshot_scopes.clone(),
     };
-    if !snapshot.scopes.is_empty() && scopes != snapshot_scopes {
+    if scopes.iter().any(|scope| scope.starts_with("obo:"))
+        || (!snapshot.scopes.is_empty() && scopes != snapshot_scopes)
+    {
         return Err("scope");
     }
     Ok(Principal {
@@ -274,12 +274,12 @@ mod tests {
     fn inspected() -> Value {
         json!({
             "active": true, "public_id": "si:cleanup", "actor_type": "silicon", "client_id": "peek",
-            "org_id": "tos", "membership_id": "si:cleanup[tos]", "scope": "self.identity.read obo:ting:tings.send",
+            "org_id": "tos", "membership_id": "si:cleanup[tos]", "scope": "self.identity.read",
             "audience": "peek", "expires_at": 2_000_000_000_i64, "authorization_epoch": 1,
             "authorization": {"actor_type": "silicon", "public_id": "si:cleanup", "organization_id": Uuid::now_v7(),
                 "org_id": "tos", "membership_id": "si:cleanup[tos]", "membership_version": 1,
                 "authorization_epoch": 1, "audience": "peek", "testing_environment_id": null,
-                "scopes": ["obo:ting:tings.send", "self.identity.read"], "org_role": "admin", "tags": null}
+                "scopes": ["self.identity.read"], "org_role": "admin", "tags": null}
         })
     }
 
@@ -306,8 +306,9 @@ mod tests {
         assert_eq!(p.membership_id, "si:cleanup[tos]");
         assert!(p.is_org_admin());
         assert!(p.require_scopes(&DELIVERY_SCOPES).is_ok());
-        assert!(p.require_scopes(&ENROLL_SCOPES).is_err());
-        assert!(p.reconsent_required());
+        assert!(p.require_scopes(&ENROLL_SCOPES).is_ok());
+        assert!(p.require_scopes(&["self.profile.read"]).is_err());
+        assert!(!p.reconsent_required());
     }
 
     #[test]
@@ -347,7 +348,7 @@ mod tests {
                 v["membership_id"] = json!("si:cleanup[other]");
                 v["authorization"]["membership_id"] = json!("si:cleanup[other]");
             }),
-            ("scope", |v| v["scope"] = json!("self.identity.read")),
+            ("scope", |v| v["scope"] = json!("self.profile.read")),
         ];
         for (expected, mutate) in cases {
             let mut v = inspected();

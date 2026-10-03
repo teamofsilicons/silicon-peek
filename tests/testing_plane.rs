@@ -1,7 +1,7 @@
 //! Testing environments (BLUEPRINT §2.9): the Honeycomb lifecycle participant
 //! (receipts, idempotency, barrier → wipe → receipt), plane resolution from
 //! the validated peek test secret only, generations, data isolation, and the
-//! Ting test headers taken from the proof.
+//! Ting test headers taken from its approved root.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -431,7 +431,7 @@ async fn test_login_uses_the_test_secret_and_forwards_tings_test_headers() {
 
     let r = h
         .send(json_body(
-            testing(post("/api/v1/auth/login"), None),
+            testing(post("/api/v1/auth/login").header("x-org-id", ORG), None),
             &json!({"slt": ACTOR}),
         ))
         .await;
@@ -442,12 +442,20 @@ async fn test_login_uses_the_test_secret_and_forwards_tings_test_headers() {
         v["testing_environment"],
         json!({"id": env_id(), "name": "peek testing", "generation": 1})
     );
-    assert_eq!(v["ting"]["subscribed"], true);
+    assert!(v.get("ting").is_none(), "login does not authorize Ting");
+    let permission = h.approve_ting(TEST_ACCESS, true).await;
+    assert_eq!(
+        permission.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&permission.body)
+    );
+    h.enroll_ting(TEST_ACCESS, true).await;
     let regs = Harness::requests(&h.ting, "/v1/subscriptions").await;
     assert_eq!(regs.len(), 1);
     assert_eq!(
         regs[0].headers["iam_test_app_secret"], TING_TEST_SECRET,
-        "Ting's audience secret, from the proof"
+        "Ting's audience secret, from the approved root"
     );
     assert_eq!(
         regs[0].headers["x-testing-environment-key"], ROOT_KEY,
@@ -463,7 +471,7 @@ async fn test_login_uses_the_test_secret_and_forwards_tings_test_headers() {
 }
 
 #[tokio::test]
-async fn a_proof_for_another_environment_is_refused() {
+async fn a_root_for_another_environment_is_refused() {
     let h = testing_harness().await;
     h.prepare_environment().await;
     Mock::given(method("GET"))
@@ -483,19 +491,9 @@ async fn a_proof_for_another_environment_is_refused() {
     )
     .await;
     mount_ting_register(&h.ting).await;
-    let r = h
-        .send(json_body(
-            testing(
-                authed("POST", "/api/v1/ting/recipient", TEST_ACCESS)
-                    .header("content-type", "application/json")
-                    .header("idempotency-key", IDEM),
-                Some(1),
-            ),
-            &json!({}),
-        ))
-        .await;
-    assert_eq!(r.status, 502, "{}", String::from_utf8_lossy(&r.body));
-    assert_eq!(r.code(), "ting_rejected");
+    let r = h.approve_ting(TEST_ACCESS, true).await;
+    assert_eq!(r.status, 403, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.code(), "reconsent_required");
     assert!(
         Harness::requests(&h.ting, "/v1/subscriptions")
             .await

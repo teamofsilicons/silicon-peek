@@ -1,6 +1,6 @@
 //! Sealing secrets at rest with AES-256-GCM (`PEEK_ENCRYPTION_KEY`).
 //!
-//! Used for org BYO Deepgram keys and for testing-environment root keys. The
+//! Used for org BYO keys, testing roots and independently approved OBO families. The
 //! sealed form is `0x01 || nonce(12) || ciphertext+tag`. The associated data
 //! names what the secret is for (for example `peek/byo/v1/<ctx>/<org>/deepgram`),
 //! so a sealed value copied into another row fails to open.

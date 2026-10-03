@@ -3,7 +3,7 @@
 //! [`IamPlane`] is everything peek-server asks IAM, for one data plane
 //! (production, or one testing environment). [`IamConnector`] hands out the
 //! production plane and resolves testing planes from a peek test app secret.
-//! The production implementation wraps `silicon-iam-client` 4.0.0; tests run
+//! The production implementation wraps `silicon-iam-client` 5.0.0; tests run
 //! the same implementation against a local mock IAM base URL.
 
 use std::{sync::Arc, time::Duration};
@@ -35,7 +35,12 @@ pub(crate) trait IamPlane: Send + Sync {
     /// The testing environment, or `None` for production.
     fn environment_id(&self) -> Option<Uuid>;
     /// Exchanges an SLT (`POST /api/v1/app-auth/tokens`).
-    async fn login(&self, slt: &str, mutation: &Mutation) -> IamResult<models::OAuthTokenResponse>;
+    async fn login(
+        &self,
+        slt: &str,
+        org: Option<&str>,
+        mutation: &Mutation,
+    ) -> IamResult<models::OAuthTokenResponse>;
     /// Rotates a refresh token.
     async fn refresh(
         &self,
@@ -48,25 +53,32 @@ pub(crate) trait IamPlane: Send + Sync {
         access_token: &str,
         org: Option<&str>,
     ) -> IamResult<models::TokenIntrospection>;
-    /// Every organization authorization of an access token (`None` = inactive).
-    async fn authorizations(
-        &self,
-        access_token: &str,
-    ) -> IamResult<Option<Vec<models::ApplicationAuthorization>>>;
     /// Revokes a token (unknown tokens succeed).
     async fn revoke(&self, token: &str, kind: TokenKind, mutation: &Mutation) -> IamResult<()>;
     /// The scope-projected `GET /api/v1/me` for the token's actor.
     async fn me(&self, access_token: &str) -> IamResult<Value>;
-    /// An audience's OBO endpoint catalog.
-    async fn obo_endpoints(&self, audience: &str) -> IamResult<models::OboEndpointCatalog>;
-    /// Signs and sends one OBO exchange.
-    async fn obo_exchange(
+    /// Starts independent, feature-specific Ting consent.
+    async fn obo_authorize(
         &self,
-        request: &models::OboExchangeRequest,
-        catalog: &models::OboEndpointCatalog,
+        request: &models::OboAuthorizationRequest,
         mutation: &Mutation,
-    ) -> IamResult<models::OboProofResponse>;
-    /// Validates an audience's testing credential (from an OBO proof's
+    ) -> IamResult<models::OboConsentDetail>;
+    /// Reads the authorization with this app's credentials.
+    async fn obo_authorization(&self, id: Uuid) -> IamResult<models::OboConsentDetail>;
+    /// Redeems a one-use code, retaining the same mutation after uncertain I/O.
+    async fn obo_code(
+        &self,
+        id: Uuid,
+        code: &str,
+        mutation: &Mutation,
+    ) -> IamResult<models::OboTokenResponse>;
+    /// Rotates one independently stored root family.
+    async fn obo_refresh(
+        &self,
+        refresh: &str,
+        mutation: &Mutation,
+    ) -> IamResult<models::OboTokenResponse>;
+    /// Validates an audience's testing credential (from an approved root's
     /// `testing_context`) and returns the environment it names.
     async fn audience_testing_context(
         &self,
@@ -102,7 +114,22 @@ impl IamPlane for SdkPlane {
         self.environment_id
     }
 
-    async fn login(&self, slt: &str, mutation: &Mutation) -> IamResult<models::OAuthTokenResponse> {
+    async fn login(
+        &self,
+        slt: &str,
+        org: Option<&str>,
+        mutation: &Mutation,
+    ) -> IamResult<models::OAuthTokenResponse> {
+        if self.environment_id.is_some()
+            && silicon_peek_client::identity::ActorId::looks_like_public_id(slt)
+            && let Some(org) = org
+        {
+            return self
+                .client
+                .oauth()
+                .login_testing_actor(&self.app_id, slt, org, mutation)
+                .await;
+        }
         self.client.oauth().login(&self.app_id, slt, mutation).await
     }
 
@@ -136,13 +163,6 @@ impl IamPlane for SdkPlane {
             .await
     }
 
-    async fn authorizations(
-        &self,
-        access_token: &str,
-    ) -> IamResult<Option<Vec<models::ApplicationAuthorization>>> {
-        self.client.oauth().authorizations(access_token).await
-    }
-
     async fn revoke(&self, token: &str, kind: TokenKind, mutation: &Mutation) -> IamResult<()> {
         let hint = match kind {
             TokenKind::Access => models::OAuthRevocationRequestTokenTypeHint::AccessToken,
@@ -168,20 +188,30 @@ impl IamPlane for SdkPlane {
             .await
     }
 
-    async fn obo_endpoints(&self, audience: &str) -> IamResult<models::OboEndpointCatalog> {
-        self.client.obo().endpoints(audience).await
-    }
-
-    async fn obo_exchange(
+    async fn obo_authorize(
         &self,
-        request: &models::OboExchangeRequest,
-        catalog: &models::OboEndpointCatalog,
+        request: &models::OboAuthorizationRequest,
         mutation: &Mutation,
-    ) -> IamResult<models::OboProofResponse> {
-        self.client
-            .obo()
-            .exchange_signed(request, catalog, mutation)
-            .await
+    ) -> IamResult<models::OboConsentDetail> {
+        self.client.obo().authorize(request, mutation).await
+    }
+    async fn obo_authorization(&self, id: Uuid) -> IamResult<models::OboConsentDetail> {
+        self.client.obo().authorization(id).await
+    }
+    async fn obo_code(
+        &self,
+        id: Uuid,
+        code: &str,
+        mutation: &Mutation,
+    ) -> IamResult<models::OboTokenResponse> {
+        self.client.obo().exchange_code(id, code, mutation).await
+    }
+    async fn obo_refresh(
+        &self,
+        refresh: &str,
+        mutation: &Mutation,
+    ) -> IamResult<models::OboTokenResponse> {
+        self.client.obo().refresh(refresh, mutation).await
     }
 
     async fn audience_testing_context(

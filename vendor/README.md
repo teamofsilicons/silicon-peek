@@ -1,0 +1,1 @@
+IAM 5 preview SDK pinned to reviewed upstream commit `f1e9c4768029aacabe337ca41be52e05023d1631` (crates/client), as published in the IAM migration guide. Replace the path dependency with registry `=5.0.0` after publication and coordinated runtime verification.

@@ -48,10 +48,7 @@ pub const ACCESS: &str = "oat_cleanupAccessToken01";
 pub const REFRESH: &str = "ort_cleanupRefreshToken01";
 pub const ACTOR: &str = "si:cleanup";
 pub const ORG: &str = "tos";
-pub const FULL_SCOPES: [&str; 6] = [
-    "obo:ting:subscriptions.register",
-    "obo:ting:subscriptions.revoke",
-    "obo:ting:tings.send",
+pub const FULL_SCOPES: [&str; 3] = [
     "self.identity.read",
     "self.membership.read",
     "self.profile.read",
@@ -357,15 +354,23 @@ pub async fn mount_silicon(iam: &MockServer, token: &str) {
     .await;
 }
 
-/// Mounts the unscoped introspection `oauth().authorizations()` performs.
+/// Mounts IAM 5's unscoped introspection of the selected organization.
+/// Multiple snapshots intentionally retain the legacy shape for refusal tests.
 pub async fn mount_authorizations(iam: &MockServer, token: &str, authorizations: Value) {
+    let response = if authorizations
+        .as_array()
+        .is_some_and(|items| items.len() == 1)
+    {
+        let grant = &authorizations[0];
+        json!({"active":true,"client_id":"peek","audience":"peek","public_id":grant["public_id"],"actor_type":grant["actor_type"],"org_id":grant["org_id"],"membership_id":grant["membership_id"],"scope":grant["scopes"].as_array().unwrap().iter().map(|s|s.as_str().unwrap()).collect::<Vec<_>>().join(" "),"expires_at":4_000_000_000_i64,"authorization":grant})
+    } else {
+        json!({"active":true,"client_id":"peek","audience":"peek","authorizations":authorizations})
+    };
     Mock::given(method("POST"))
         .and(path("/api/v1/oauth/introspect"))
         .and(body_string_contains(format!("token={token}&")))
         .and(NoHeader("x-org-id"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "active": true, "client_id": "peek", "audience": "peek", "authorizations": authorizations
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response))
         .mount(iam)
         .await;
 }
@@ -374,7 +379,7 @@ pub async fn mount_authorizations(iam: &MockServer, token: &str, authorizations:
 pub fn token_response(access: &str, refresh: &str, scopes: &[&str]) -> Value {
     json!({
         "access_token": access, "refresh_token": refresh, "token_type": "Bearer", "expires_in": 1800,
-        "scope": scopes.join(" "), "actor": {"type": "silicon", "public_id": ACTOR}
+        "scope": scopes.join(" "), "org_id": ORG, "actor": {"type": "silicon", "public_id": ACTOR}
     })
 }
 
@@ -421,38 +426,93 @@ pub async fn mount_catalog(iam: &MockServer) {
         .await;
 }
 
-pub fn proof_body(proof: &str, testing: Option<Value>) -> Value {
-    let expires = time::OffsetDateTime::now_utc() + time::Duration::seconds(60);
-    let mut v = json!({
-        "access_proof": proof, "proof_id": Uuid::now_v7(), "expires_in": 60,
-        "expires_at": expires.format(&time::format_description::well_known::Rfc3339).unwrap()
-    });
-    if let Some(t) = testing {
-        v["testing_context"] = t;
-    }
-    v
+pub fn consent(id: Uuid, status: &str) -> Value {
+    json!({"id":id,"app_id":"peek","app_name":"Peek","actor":{"type":"silicon","public_id":ACTOR},"org_id":ORG,"status":status,"version":1,"expires_at":"2090-01-01T00:00:00Z","endpoints":[],"authorization_url":format!("https://auth.iam.teamofsilicons.com/obo/{id}")})
 }
-
-/// Mounts OBO exchanges signed with the production app secret: each call
-/// gets a distinct proof `proof-<n>`.
+pub fn root_pair(endpoint: &str, testing: Option<Value>) -> Value {
+    let grant = match endpoint {
+        "subscriptions.register" => "00000000-0000-4000-8000-000000000001",
+        "subscriptions.revoke" => "00000000-0000-4000-8000-000000000002",
+        _ => "00000000-0000-4000-8000-000000000003",
+    };
+    let mut value = json!({"grant_id":grant,"access_token":format!("oba_fixture_{endpoint}"),"refresh_token":format!("obr_fixture_{endpoint}"),"token_type":"Bearer","expires_in":1800,"expires_at":"2090-01-01T00:00:00Z","audience":"ting","endpoint_id":endpoint,"org_id":ORG,"actor":{"type":"silicon","public_id":ACTOR},"scope":format!("obo:ting:{endpoint}")});
+    if let Some(testing) = testing {
+        value["testing_context"] = testing;
+    }
+    value
+}
+/// Mounts the IAM 5 separately approved roots, including refresh support.
 pub async fn mount_exchange(iam: &MockServer, testing: Option<Value>) {
     mount_exchange_for(iam, APP_SECRET, testing).await;
 }
-
-/// As [`mount_exchange`], for exchanges authenticated with `secret`.
 pub async fn mount_exchange_for(iam: &MockServer, secret: &str, testing: Option<Value>) {
-    let counter = Arc::new(Mutex::new(0_u32));
+    let id = Uuid::new_v4();
     Mock::given(method("POST"))
-        .and(path("/api/v1/obo-access/exchanges"))
+        .and(path("/api/v1/obo-access/authorizations"))
         .and(header("authorization", basic("peek", secret).as_str()))
-        .respond_with(move |_: &wiremock::Request| {
-            let mut n = counter.lock().unwrap();
-            *n += 1;
-            ResponseTemplate::new(200)
-                .set_body_json(proof_body(&format!("proof-{n}"), testing.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(consent(id, "pending")))
+        .mount(iam)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/obo-access/authorizations/{id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(consent(id, "approved")))
+        .mount(iam)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/obo-access/tokens"))
+        .and(header("authorization", basic("peek", secret).as_str()))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let items = if let Some(refresh) = body["refresh_token"].as_str() {
+                let endpoint = refresh.strip_prefix("obr_fixture_").unwrap();
+                let mut pair = root_pair(endpoint, testing.clone());
+                pair["access_token"] = json!(format!("oba_rotated_{endpoint}"));
+                vec![pair]
+            } else {
+                [
+                    "subscriptions.register",
+                    "subscriptions.revoke",
+                    "tings.send",
+                ]
+                .into_iter()
+                .map(|e| root_pair(e, testing.clone()))
+                .collect()
+            };
+            ResponseTemplate::new(200).set_body_json(json!({"items":items}))
         })
         .mount(iam)
         .await;
+}
+impl Harness {
+    pub async fn approve_ting(&self, token: &str, is_testing: bool) -> Response {
+        let make = |path: &str| {
+            let b = authed("POST", path, token)
+                .header("idempotency-key", format!("permission-{}", Uuid::new_v4()));
+            if is_testing { testing(b, Some(1)) } else { b }
+        };
+        let started = self
+            .send(json_body(make("/api/v1/ting/authorization"), &json!({})))
+            .await;
+        assert_eq!(
+            started.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&started.body)
+        );
+        let id = started.json()["request_id"].as_str().unwrap().to_owned();
+        self.send(json_body(
+            make(&format!("/api/v1/ting/authorizations/{id}/complete")),
+            &json!({"code":"test-manual-code"}),
+        ))
+        .await
+    }
+    pub async fn enroll_ting(&self, token: &str, is_testing: bool) {
+        let b = authed("POST", "/api/v1/ting/recipient", token)
+            .header("idempotency-key", format!("enroll-{}", Uuid::new_v4()));
+        let b = if is_testing { testing(b, Some(1)) } else { b };
+        let r = self.send(json_body(b, &json!({}))).await;
+        assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    }
 }
 
 /// Ting accepts registrations.

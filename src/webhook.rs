@@ -166,6 +166,12 @@ pub(crate) async fn handle(
             for (org, actor) in &removed {
                 store::drawings::delete(&tx, &ctx_s, org.as_str(), actor.as_str())?;
                 store::enrollments::delete(&tx, &ctx_s, org.as_str(), actor.as_str())?;
+                for table in ["obo_roots", "obo_requests", "obo_operations", "obo_locks"] {
+                    tx.execute(
+                        &format!("DELETE FROM {table} WHERE ctx=?1 AND org_id=?2 AND actor_id=?3"),
+                        rusqlite::params![ctx_s, org.as_str(), actor.as_str()],
+                    )?;
+                }
             }
             tx.commit()?;
             Ok(Handled::Applied {

@@ -3,10 +3,10 @@
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-use silicon_iam_client::{WebhookSecret, WebhookSecretKeyring, WebhookVerifier, models};
+use silicon_iam_client::{WebhookSecret, WebhookSecretKeyring, WebhookVerifier};
 use silicon_peek_client::timestamp::unix_now;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -86,8 +86,6 @@ pub(crate) struct Inner {
     pub(crate) webhooks: WebhookVerifier,
     pub(crate) telemetry: Telemetry,
     pub(crate) limits: RateLimits,
-    /// OBO catalogs by context, cached for five minutes (§3.4).
-    pub(crate) catalogs: Mutex<HashMap<String, (Instant, models::OboEndpointCatalog)>>,
     /// Per-environment request fences: requests hold a read guard, lifecycle
     /// effects (clean, purge) take the write guard.
     env_locks: Mutex<HashMap<Uuid, Arc<RwLock<()>>>>,
@@ -172,7 +170,6 @@ impl AppState {
                     Duration::from_secs(60),
                 ),
             },
-            catalogs: Mutex::new(HashMap::new()),
             env_locks: Mutex::new(HashMap::new()),
             config,
         })))

@@ -61,6 +61,7 @@ pub(crate) async fn enroll(
         principal.org.as_str().as_bytes(),
         principal.actor.as_str().as_bytes(),
     ]);
+    let enrollment_key = key.as_str().to_owned();
     let run = Idempotent {
         db: plane.db.clone(),
         ctx,
@@ -73,7 +74,8 @@ pub(crate) async fn enroll(
     run.run(StatusCode::OK, async move {
         let started = Instant::now();
         let result = async {
-            let subscription = ting::enroll(&task_state, &plane, &principal).await?;
+            let subscription =
+                ting::enroll(&task_state, &plane, &principal, &enrollment_key).await?;
             let (ctx, org, actor, sub) = (
                 plane.ctx_string(),
                 principal.org.to_string(),
@@ -158,7 +160,11 @@ pub(crate) async fn deliver(
         ctx: plane.ctx_string(),
         scope: "deliveries",
         key,
-        request_sha256: request_hash(&[&raw]),
+        request_sha256: request_hash(&[
+            principal.org.as_str().as_bytes(),
+            principal.actor.as_str().as_bytes(),
+            &raw,
+        ]),
     };
     run.run(
         StatusCode::OK,

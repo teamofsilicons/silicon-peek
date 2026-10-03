@@ -1,13 +1,14 @@
 # peek-server
 
 The backend of Peek (root package `silicon-peek`, binary `peek-server`;
-BLUEPRINT §5.2). It holds peek's IAM app secret and nothing a Silicon owns:
+BLUEPRINT §5.2). It holds the application secret and separately approved, encrypted provider root families:
 
 - exchanges SLTs, rotates and revokes app sessions — the `oat_`/`ort_` pair goes
-  straight back to the caller and is **never stored** (D5);
+  straight back to the caller; an ordinary access token is sealed only while a
+  manual feature request is pending its first IAM response, then cleared;
 - introspects every bearer **live** on every request (§2.7);
-- mints a fresh single-use Ting OBO proof for every enrollment, revocation and
-  delivery attempt, bound to the exact body bytes (§3.4–§3.6);
+- requests explicit Ting permission, durably stores encrypted reusable roots,
+  and binds every provider retry to its original destination and body;
 - mints short-lived connection tokens for direct ElevenLabs TTS through Deepgram
   Voice Agent and relays completed WAV recordings to OpenAI `gpt-transcribe`;
   permanent provider keys stay on the server;
@@ -24,8 +25,9 @@ BLUEPRINT §5.2). It holds peek's IAM app secret and nothing a Silicon owns:
 | `app.rs` | router, request middleware (`X-Request-ID`, `Cache-Control: no-store`, envelope for every error, logs, `http.completed`) |
 | `plane.rs` | production vs testing plane, resolved only from the IAM-validated test secret; generation fence |
 | `auth.rs` | bearer verification (the §2.7 checks) and per-route scopes |
-| `iam.rs` | the IAM seam: `IamPlane`/`IamConnector` traits over `silicon-iam-client` 4.0.0 |
-| `ting.rs` | OBO proofs, enrollment, revocation, deliveries, the §3.6 error matrix |
+| `iam.rs` | the IAM seam: `IamPlane`/`IamConnector` traits over the vendored `silicon-iam-client` 5.0.0 candidate |
+| `obo.rs` | dedicated consent, encrypted roots, durable rotation keys and operation destination binding |
+| `ting.rs` | bearer-authorized enrollment, revocation, deliveries and provider errors |
 | `elevenlabs.rs`, `openai.rs`, `deepgram.rs`, `github.rs` | TTS connection tokens, OpenAI transcription, legacy Deepgram BYO key validation, and bug reports |
 | `honeycomb.rs` | lifecycle participant (barrier → wipe → receipt) and activity reports |
 | `webhook.rs` | IAM webhook verification, routing, dedupe and removal cleanup |
@@ -48,10 +50,13 @@ after 60 s.
 | `GET /healthz` | – | `{"status":"ok","service":"peek","version"}` |
 | `GET /readyz` | – | `200`/`503` `{"status","checks":{"db","iam_config","ting_config","elevenlabs","openai","deepgram"}}`; ready = both databases answer and the app secret is set |
 | `GET /api/v1/iam` | – (test key optional) | discovery; with a test key also `testing_environment_id`, `testing_generation`, `testing_environment{id,name,generation}` |
-| `POST /api/v1/auth/login` | – | `{"slt"}` (+ `X-Org-ID` hint) → session incl. `ting` enrollment; public IDs refused in production (`slt_is_public_id`) |
+| `POST /api/v1/auth/login` | – | `{"slt"}` (+ `X-Org-ID` hint) → one-org ordinary session; Ting permission remains separate; public IDs refused in production (`slt_is_public_id`) |
 | `POST /api/v1/auth/refresh` | – | `{"refresh_token"}` → session without `ting`; terminal errors → `401 session_rejected` |
 | `POST /api/v1/auth/logout` | optional Bearer | `{"token"}` → `204`; with a bearer the Ting grant is revoked first (best effort); unknown tokens succeed |
 | `GET /api/v1/auth/me` | Bearer + `X-Org-ID` | live identity, `display_name` (via `application_reads().me()`), `org_role`, scopes, `reconsent_required`, `ting` |
+| `POST /api/v1/ting/authorization` | Bearer | `{}` → local request ID and IAM review details |
+| `GET /api/v1/ting/authorizations/{id}` | Bearer | original account/org/world only; live IAM review state |
+| `POST /api/v1/ting/authorizations/{id}/complete` | Bearer | `{"code"}` → durable approved roots; no root secrets in response |
 | `POST /api/v1/ting/recipient` | Bearer | `{}` → `{"subscribed":true,"subscription_id"}` (explicit enrollment only; never automatic, D7) |
 | `POST /api/v1/deliveries` | Bearer | peekd's exact outbox bytes → `{"event_id","ting_id","status":"accepted","silent","replayed"}`; `type` must be one of the nine `peek.*` types (`TingType::ALL`: the six 0.1.0 types plus `peek.send.expired`, `peek.schedule.due`, `peek.send.shown`), `data` must match that type's strict client-crate schema and `data.context` the plane, and `key` must be `<verified actor>/<subject id>/<event>` |
 | `POST /api/v1/speech/token` | Bearer | TTS returns `{"provider":"elevenlabs","mode":"direct","access_token":<temporary JWT>,"expires_in":30,"base_url":"wss://agent.deepgram.com/v1/agent/converse",…}`. STT returns `{"provider":"openai","mode":"proxy",…}` with the Peek speech base URL and no provider credential. |
@@ -133,7 +138,7 @@ addresses and localhost are refused. Startup and maintenance make no Deepgram ca
 | Ting says | peek-server returns |
 |---|---|
 | `202` / `200` | `200` (`replayed` = Ting's `200`) |
-| `401 invalid_proof\|proof_expired\|proof_consumed` | one retry with a new proof over the same bytes, then `503 ting_unavailable` |
+| `401 invalid_obo_token` (or compatibility `invalid_proof`) | one refresh and retry over the same operation bytes, then `403 reconsent_required` |
 | `403 recipient_not_registered` | `409 recipient_not_registered` (enrollment marked revoked; no re-registration) |
 | `403` otherwise | `502 ting_rejected` + `details.ting_code` |
 | `404` | `502 ting_type_missing` (`Retry-After: 900`) |
@@ -144,7 +149,7 @@ addresses and localhost are refused. Startup and maintenance make no Deepgram ca
 
 ## Data planes and storage
 
-Two SQLite files with the same schema (`migrations/0001_initial.sql`): the
+Two SQLite files with the same schema (embedded, versioned `migrations/`): the
 production database and one testing database for every testing environment.
 Every row carries `ctx` (`production` or the environment UUID), resolved only
 from a validated credential.
@@ -155,7 +160,7 @@ testing-application selector), requires a Honeycomb participant binding
 (`409 environment_not_prepared` otherwise), and requires the binding's current
 `X-Testing-Environment-Generation` on every mutation except login and refresh
 (`409 testing_generation_changed`). Ting's test headers come only from each
-proof's `testing_context`, validated against the same environment; inbound
+approved root's `testing_context`, validated against the same environment; inbound
 headers are never forwarded. Test traffic records no telemetry.
 
 Lifecycle operations commit a pending barrier (new test requests are refused),

@@ -2,7 +2,7 @@
 
 Everything the Carbon does in response to a Silicon (an answer, a dismissal, a message), and what becomes of the Silicon's sends when it cannot watch (one expired, a scheduled one came due, one appeared), comes back to that Silicon as a Ting event. This page lists the nine event types, their exact payloads, how delivery behaves, how to route them in a Stemcell flow, and how to receive them without Stemcell.
 
-peek never talks to your Silicon directly. peekd records the event on the Mac, the peek backend proves it to Ting with your own session, and Ting delivers it to your Silicon's webhook. Under Stemcell that is `http://<handle>.<org>.localhost/events`, where Stemcell runs your flow. Without Stemcell, you point Ting at a webhook of your own ([Receive answers without Stemcell](#receive-answers-without-stemcell)).
+peek never talks to your Silicon directly. peekd records the event on the Mac, the peek backend sends it using your separately approved Ting permission, and Ting delivers it to your Silicon's webhook. Under Stemcell that is `http://<handle>.<org>.localhost/events`, where Stemcell runs your flow. Without Stemcell, you point Ting at a webhook of your own ([Receive answers without Stemcell](#receive-answers-without-stemcell)).
 
 ## The nine types
 
@@ -18,7 +18,7 @@ peek never talks to your Silicon directly. peekd records the event on the Mac, t
 | `peek.schedule.due` | a scheduled send (`--in`, `--at`) came due; says whether it was shown, queued, expired or replaced your active bubble | always (only scheduled sends) |
 | `peek.send.shown` | a send appeared on the Carbon's screen | always for scheduled sends; otherwise only with `--notify shown` or config `notify` |
 
-Nothing is sent for your own actions: `peek cancel`, `peek ask cancel`, `peek queue clear`, `peek schedule cancel` and `clear`, `peek unregister`, `peek logout`, and a send you took over with `--replace`. `peek.speech.finished`, `peek.show.dismissed` and `peek.send.shown` are opt-in because a catch-all flow branch (like Flow A) forwards every one of them as a message, and each event costs an IAM proof and a Ting verification.
+Nothing is sent for your own actions: `peek cancel`, `peek ask cancel`, `peek queue clear`, `peek schedule cancel` and `clear`, `peek unregister`, `peek logout`, and a send you took over with `--replace`. `peek.speech.finished`, `peek.show.dismissed` and `peek.send.shown` are opt-in because a catch-all flow branch (like Flow A) forwards every one of them as a message, and each event requires a Ting request and authorization check.
 
 An expiry is always reported with exactly one type: `peek.ask.expired` for an ask, `peek.send.expired` for anything else. A scheduled send whose deadline passed before it came due gets both `peek.schedule.due` (outcome `expired`) and that expiry event.
 
@@ -143,15 +143,19 @@ peek status --json                # "deliveries":{"pending":0,"authority_require
 
 ## Enrollment
 
-To receive peek events, your Silicon must be a Ting recipient for peek. `peek login` enrolls you. If that failed transiently, the login still succeeds with `"ting":{"subscribed":false,"error":{…}}`, and you can retry:
+Ordinary `peek login` signs into one account and organization. It does not grant Ting access or enroll a recipient. Request permission explicitly, review the endpoints and destination in IAM, then complete the request with IAM's manual code:
 
 ```sh
-peek ting enroll --json    # {"subscribed":true,"subscription_id":"sub_…"}
+peek ting authorize --json
+peek ting complete-authorization --code-file - --json
+peek ting enroll --json
 ```
 
-peek **never** re-enrolls you automatically after a delivery fails with `recipient_not_registered`. Re-enrolling would reactivate a grant you may have revoked on purpose. Instead the event waits in `authority_required`, `peek login status` shows `"ting":{"subscribed":false}` with `next:"peek ting enroll"`, and every `peek send` carries a `ting_not_enrolled` warning so you know answers cannot reach you yet. `peek ting enroll` retries the waiting events right away.
+The CLI preserves the request and its retry keys after a lost response. A declined, expired or changed request leaves login and queued events intact. Review a new request when prompted. Permission belongs to the original account, organization and data world; switching a profile cannot approve or deliver that profile's old queued actions under another account.
 
-The Ting grant belongs to the Silicon, not to one home: two homes logged in as the same `si:` share it. So `peek logout` keeps the grant, and logging out one home never stops another home's answers. To remove the grant as well, run `peek logout --revoke-ting`; after that, every home of this Silicon needs `peek ting enroll` (or a new login) before answers flow again.
+Peek never re-enrolls after `recipient_not_registered`. The event waits until you explicitly run `peek ting enroll`. Completing permission does not silently deliver through a newly selected Ting destination: a pending action remains bound to the destination and payload of its first provider attempt.
+
+Homes logged into the same account and organization share the server's approved Ting root family and recipient enrollment. Plain `peek logout` preserves these so another home remains usable. `peek logout --revoke-ting` attempts to remove the recipient enrollment using existing permission; it does not revoke the separate IAM grant. Re-enroll explicitly to resume events after removal. IAM is where you review or revoke the provider permission itself.
 
 ## Receive answers without Stemcell
 
@@ -195,7 +199,7 @@ class Peek(BaseHTTPRequestHandler):
 HTTPServer(("127.0.0.1", 8787), Peek).serve_forever()
 ```
 
-Run it, then `peek send --ask …` and answer the bubble; the answer prints as one line. The Ting login and webhook are separate from peek's own Ting grant: `peek login` (or `peek ting enroll`) makes you a recipient of peek's events, and `ting webhook` decides where Ting delivers them.
+Run it, then `peek send --ask …` and answer the bubble; the answer prints as one line. The Ting login and webhook are separate from peek's own Ting grant: explicit permission followed by `peek ting enroll` makes you a recipient of peek's events, and `ting webhook` decides where Ting delivers them.
 
 ## Route events in your flow
 
@@ -218,10 +222,10 @@ curl --fail-with-body -H 'Content-Type: application/json' --data '{"tings":[{"id
 |---|---|---|
 | The event is recorded | peekd, when Peek.app reports an answer, dismissal, message, finished speech, dismissed show or a bubble that appeared, or when a send expires or a scheduled send comes due | none; it writes an outbox row with the exact request bytes |
 | Delivery request | peekd: refresh your session if it expires within 120 s, then `POST /api/v1/deliveries` | your `oat_` access token |
-| Proof and send | peek backend: one IAM on-behalf-of proof per attempt for `tings.send`, whose subject is your own token, then `POST /v1/tings` to Ting | peek's app secret signs the exchange |
+| Authorized send | peek backend: `POST /v1/tings` with the stored root for `tings.send`; refresh its family when needed | the approved `oba_` bearer |
 | Receipt | Ting → your ting-daemon → Stemcell → your flow | – |
 
-The backend builds the Ting body only from your verified identity and the request fields, hashes it into the proof, and sends exactly those bytes. `for` is always you: an event can only ever be delivered to the Silicon whose session sent it. The backend records a delivery receipt (event id, type, ting key, ting id, status); it does not store the event data. See [IAM and sessions](iam.md) and [Privacy](privacy.md).
+The backend verifies the ordinary caller, then selects only that account and organization's encrypted Ting root family in the current world. The recipient and provider organization come from the approved root. An operation's destination and payload hash are durable before the provider call, so retries after a lost response or permission change cannot redirect it. Rotations keep the same operation bytes and key. The backend records receipts and payload hashes, not event content. See [IAM and sessions](iam.md) and [Privacy](privacy.md).
 
 Registering the types is an operator step, done once per data context (production and every testing environment) with byte-identical descriptions. A type must be registered before any helper sends it, so the three types added in 0.1.2 are registered before 0.1.2 is released:
 

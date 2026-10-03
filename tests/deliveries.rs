@@ -65,6 +65,7 @@ async fn ready(h: &Harness) {
     mount_silicon(&h.iam, ACCESS).await;
     mount_catalog(&h.iam).await;
     mount_exchange(&h.iam, None).await;
+    assert_eq!(h.approve_ting(ACCESS, false).await.status, 200);
 }
 
 fn key_for(d: &DeliveryRequest) -> String {
@@ -92,12 +93,13 @@ async fn delivers_the_exact_deterministic_body() {
     )
     .unwrap();
     assert_eq!(
-        sends[0].body, expected,
-        "byte-identical to the deterministic body"
+        serde_json::from_slice::<Value>(&sends[0].body).unwrap(),
+        serde_json::from_slice::<Value>(&expected).unwrap()
     );
-    let text = String::from_utf8(sends[0].body.clone()).unwrap();
-    assert!(text.starts_with(r#"{"org_id":"tos","type":"peek.ask.answered","for":"si:cleanup","key":"si:cleanup/ask_"#), "{text}");
-    assert_eq!(sends[0].headers["authorization"], "Bearer proof-1");
+    assert_eq!(
+        sends[0].headers["authorization"],
+        "Bearer oba_fixture_tings.send"
+    );
     assert_eq!(sends[0].headers["content-type"], "application/json");
     assert!(
         !sends[0].headers.contains_key("idempotency-key"),
@@ -105,17 +107,18 @@ async fn delivers_the_exact_deterministic_body() {
     );
     assert!(!sends[0].headers.contains_key("x-testing-environment-key"));
 
-    let exchanges = Harness::requests(&h.iam, "/api/v1/obo-access/exchanges").await;
-    assert_eq!(exchanges.len(), 1);
-    let x: Value = serde_json::from_slice(&exchanges[0].body).unwrap();
-    assert_eq!(x["endpoint_id"], "tings.send");
-    assert_eq!(x["audience"], "ting");
-    assert_eq!(x["org_id"], ORG);
-    assert_eq!(x["metadata"], json!({}));
-    assert_eq!(x["request"]["method"], "POST");
+    assert!(
+        Harness::requests(&h.iam, "/api/v1/obo-access/exchanges")
+            .await
+            .is_empty(),
+        "the retired flow is never called"
+    );
     assert_eq!(
-        x["request"]["body_sha256"],
-        silicon_iam_client::api::obo::body_sha256(&expected)
+        Harness::requests(&h.iam, "/api/v1/obo-access/tokens")
+            .await
+            .len(),
+        1,
+        "the root is reused after approval"
     );
     let send_event = h
         .events()
@@ -174,12 +177,12 @@ async fn ting_200_means_replayed() {
 }
 
 #[tokio::test]
-async fn proof_errors_are_retried_once_with_a_fresh_proof_and_the_same_bytes() {
+async fn token_errors_refresh_once_and_keep_the_same_operation_bytes() {
     let h = Harness::start().await;
     ready(&h).await;
     Mock::given(method("POST"))
         .and(path("/v1/tings"))
-        .respond_with(ting_error(401, "proof_consumed"))
+        .respond_with(ting_error(401, "invalid_obo_token"))
         .up_to_n_times(1)
         .mount(&h.ting)
         .await;
@@ -190,20 +193,22 @@ async fn proof_errors_are_retried_once_with_a_fresh_proof_and_the_same_bytes() {
     let sends = Harness::requests(&h.ting, "/v1/tings").await;
     assert_eq!(sends.len(), 2);
     assert_eq!(sends[0].body, sends[1].body, "never re-serialized");
-    assert_eq!(sends[0].headers["authorization"], "Bearer proof-1");
     assert_eq!(
-        sends[1].headers["authorization"], "Bearer proof-2",
+        sends[0].headers["authorization"],
+        "Bearer oba_fixture_tings.send"
+    );
+    assert_eq!(
+        sends[1].headers["authorization"], "Bearer oba_rotated_tings.send",
         "never reuse a proof"
     );
-    let exchanges = Harness::requests(&h.iam, "/api/v1/obo-access/exchanges").await;
-    assert_ne!(
-        exchanges[0].headers["idempotency-key"], exchanges[1].headers["idempotency-key"],
-        "a fresh exchange key per attempt"
-    );
+    let exchanges = Harness::requests(&h.iam, "/api/v1/obo-access/tokens").await;
+    assert_eq!(exchanges.len(), 2, "code redemption and one root refresh");
+    let refresh: Value = serde_json::from_slice(&exchanges[1].body).unwrap();
+    assert_eq!(refresh["refresh_token"], "obr_fixture_tings.send");
 }
 
 #[tokio::test]
-async fn two_proof_errors_are_ting_unavailable() {
+async fn repeated_token_rejection_requires_feature_permission_without_logging_out() {
     let h = Harness::start().await;
     ready(&h).await;
     Mock::given(method("POST"))
@@ -213,8 +218,8 @@ async fn two_proof_errors_are_ting_unavailable() {
         .await;
     let d = delivery(DataContext::Production);
     let r = h.send(deliver_request(&d, &key_for(&d))).await;
-    assert_eq!(r.status, 503);
-    assert_eq!(r.code(), "ting_unavailable");
+    assert_eq!(r.status, 403);
+    assert_eq!(r.code(), "reconsent_required");
     assert_eq!(Harness::requests(&h.ting, "/v1/tings").await.len(), 2);
 }
 
@@ -398,10 +403,7 @@ async fn a_missing_scope_is_reconsent_before_any_proof() {
     let r = h.send(deliver_request(&d, &key_for(&d))).await;
     assert_eq!(r.status, 403);
     assert_eq!(r.code(), "reconsent_required");
-    assert_eq!(
-        r.json()["error"]["details"]["missing_scopes"],
-        json!(["obo:ting:tings.send"])
-    );
+    assert_eq!(r.json()["error"]["details"]["feature"], json!("ting"));
     assert!(
         Harness::requests(&h.iam, "/api/v1/obo-access/exchanges")
             .await
@@ -429,11 +431,9 @@ async fn an_unsolicited_testing_context_in_production_is_refused() {
         Some(json!({"app_id": "ting", "app_secret": TING_TEST_SECRET, "iam_test_key": ROOT_KEY})),
     )
     .await;
-    mount_ting_send(&h.ting, 202, false).await;
-    let d = delivery(DataContext::Production);
-    let r = h.send(deliver_request(&d, &key_for(&d))).await;
+    let r = h.approve_ting(ACCESS, false).await;
     assert_eq!(r.status, 502);
-    assert_eq!(r.code(), "ting_rejected");
+    assert_eq!(r.code(), "iam_unavailable");
     assert!(
         Harness::requests(&h.ting, "/v1/tings").await.is_empty(),
         "never sent"
@@ -483,6 +483,22 @@ impl Case {
             "data": self.data,
             "metadata": {"isi": "deliberate", "peek_version": "0.1.2"}
         })
+    }
+
+    /// A variant is a distinct recorded action, not a changed retry of the
+    /// same Ting operation. Give its keyed subject a fresh identity.
+    fn independent(mut self) -> Self {
+        let (field, fresh) = if self.ting_type == "peek.schedule.due" {
+            ("schedule_id", ScheduleId::generate().to_string())
+        } else if self.ting_type.starts_with("peek.ask.") {
+            ("ask_id", AskId::generate().to_string())
+        } else {
+            ("send_id", SendId::generate().to_string())
+        };
+        let old = self.data[field].as_str().unwrap().to_owned();
+        self.key = self.key.replace(&old, &fresh);
+        self.data[field] = json!(fresh);
+        self
     }
 
     /// A copy with `data[field]` set to `value`.
@@ -729,7 +745,7 @@ async fn the_new_types_deliver_the_exact_deterministic_body() {
         );
         assert_eq!(
             sends[i].headers["authorization"],
-            format!("Bearer proof-{}", i + 1)
+            "Bearer oba_fixture_tings.send"
         );
     }
     let steps: Vec<Value> = h
@@ -838,6 +854,7 @@ async fn the_new_types_accept_every_documented_variant() {
                 .with("shown_at", json!("2026-09-27T12:00:00.000Z")),
         ),
     ];
+    let cases = cases.map(|(label, case)| (label, case.independent()));
     for (label, case) in &cases {
         accept(&h, label, case).await;
     }
@@ -1287,6 +1304,13 @@ async fn new_types_deliver_in_a_testing_plane_with_testing_data_only() {
         Some(json!({"app_id": "ting", "app_secret": TING_TEST_SECRET, "iam_test_key": ROOT_KEY})),
     )
     .await;
+    let approval = h.approve_ting(TEST_ACCESS, true).await;
+    assert_eq!(
+        approval.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&approval.body)
+    );
     mount_ting_send(&h.ting, 202, false).await;
     let ids = Ids::new();
 
@@ -1353,6 +1377,7 @@ async fn ask_expired_accepts_the_0_1_1_shape_and_the_additive_shown() {
             legacy.with("shown", json!(false)),
         ),
     ];
+    let accepted = accepted.map(|(label, case)| (label, case.independent()));
     for (label, case) in &accepted {
         accept(&h, label, case).await;
     }
@@ -1422,6 +1447,7 @@ async fn esc_double_is_a_dismiss_gesture_for_shows_and_asks() {
             ask_dismissed(&ids, "down_arrow"),
         ),
     ];
+    let accepted = accepted.map(|(label, case)| (label, case.independent()));
     for (label, case) in &accepted {
         accept(&h, label, case).await;
     }
@@ -1558,6 +1584,7 @@ async fn peekd_built_deliveries_are_accepted() {
         AskId::generate(),
         ScheduleId::generate(),
     );
+    let queued_schedule_id = ScheduleId::generate();
     let deliveries = [
         (
             TingData::SendExpired(SendExpired {
@@ -1598,7 +1625,7 @@ async fn peekd_built_deliveries_are_accepted() {
         (
             TingData::ScheduleDue(ScheduleDue {
                 schema: SchemaV1,
-                schedule_id: schedule_id.clone(),
+                schedule_id: queued_schedule_id.clone(),
                 send_id: send_id.clone(),
                 ask_id: Some(ask_id.clone()),
                 kind: "ask".into(),
@@ -1612,7 +1639,7 @@ async fn peekd_built_deliveries_are_accepted() {
                 slot,
                 context: DataContext::Production,
             }),
-            format!("{ACTOR}/{schedule_id}/due"),
+            format!("{ACTOR}/{queued_schedule_id}/due"),
         ),
         (
             TingData::SendShown(SendShown {

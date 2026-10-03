@@ -1,35 +1,24 @@
-//! Ting: OBO proofs, recipient enrollment, grant revocation and deliveries
-//! (BLUEPRINT §3.4–§3.6).
-//!
-//! Every Ting call gets a fresh single-use proof minted with peek's app
-//! secret, subject = the Silicon's own access token, bound to the exact body
-//! bytes. The body is never re-serialized between hashing and sending. In a
-//! testing plane the Ting test headers come **only** from that proof's
-//! `testing_context`, validated against the request's environment; inbound
-//! headers are never forwarded.
-
-use std::time::{Duration, Instant};
+//! Ting operations use separately approved reusable root access tokens.
+//! The same token is forwarded to Ting, which verifies its registered endpoint
+//! on every call. Retry bytes and destination remain bound to the original action.
 
 use axum::http::StatusCode;
 use bytes::Bytes;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use silicon_iam_client::{IdempotencyKey, Mutation, api::obo::body_sha256, models};
-use silicon_peek_client::{ErrorCode, Secret};
-use time::OffsetDateTime;
+use silicon_iam_client::models;
+use silicon_peek_client::ErrorCode;
 
 use crate::{
     auth::{ENROLL_SCOPES, Principal, REVOKE_SCOPES},
     error::{ApiError, ApiResult},
-    iam::{IamPlane, api_code, upstream},
+    obo,
     plane::Plane,
     state::AppState,
 };
 
-const AUDIENCE: &str = "ting";
-const CATALOG_TTL: Duration = Duration::from_secs(300);
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
-const PROOF_ERRORS: [&str; 3] = ["invalid_proof", "proof_expired", "proof_consumed"];
+const TOKEN_ERRORS: [&str; 2] = ["invalid_obo_token", "invalid_proof"];
 
 /// A Ting OBO endpoint peek calls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,12 +49,6 @@ impl Endpoint {
     }
 }
 
-/// A single-use proof plus the Ting test headers it carries.
-struct Proof {
-    access_proof: Secret,
-    testing: Option<(Secret, Secret)>,
-}
-
 fn ting_unavailable(message: impl Into<String>, retry_after: u64) -> ApiError {
     ApiError::new(
         StatusCode::SERVICE_UNAVAILABLE,
@@ -81,169 +64,6 @@ fn ting_rejected(message: impl Into<String>, ting_code: Option<&str>) -> ApiErro
     ApiError::new(StatusCode::BAD_GATEWAY, ErrorCode::TingRejected, message)
         .with_hint("this is a peek bug or a Ting configuration problem; report it with `peek report` and quote the request ID")
         .with_details(json!({"ting_code": ting_code}))
-}
-
-async fn catalog(
-    state: &AppState,
-    plane: &Plane,
-    iam: &dyn IamPlane,
-) -> ApiResult<models::OboEndpointCatalog> {
-    let ctx = plane.ctx_string();
-    if let Ok(cache) = state.0.catalogs.lock()
-        && let Some((at, catalog)) = cache.get(&ctx)
-        && at.elapsed() < CATALOG_TTL
-    {
-        return Ok(catalog.clone());
-    }
-    let catalog = iam.obo_endpoints(AUDIENCE).await.map_err(|e| match api_code(&e) {
-        Some((code, 403 | 404)) => ting_rejected(
-            format!("IAM will not show peek Ting's OBO endpoints ({code}); peek's app_scope must declare Ting's endpoints"),
-            None,
-        ),
-        _ => upstream(&e, "read Ting's OBO endpoint catalog", plane.is_testing()),
-    })?;
-    if let Ok(mut cache) = state.0.catalogs.lock() {
-        cache.insert(ctx, (Instant::now(), catalog.clone()));
-    }
-    Ok(catalog)
-}
-
-fn check_endpoint(catalog: &models::OboEndpointCatalog, endpoint: Endpoint) -> ApiResult<()> {
-    let found = catalog
-        .endpoints
-        .iter()
-        .find(|e| e.endpoint_id == endpoint.id())
-        .ok_or_else(|| {
-            ting_rejected(
-                format!("Ting's OBO catalog has no `{}` endpoint", endpoint.id()),
-                None,
-            )
-        })?;
-    let metadata_empty = found
-        .metadata
-        .as_object()
-        .is_some_and(serde_json::Map::is_empty);
-    if found.path != endpoint.path()
-        || !metadata_empty
-        || !found.ttl_seconds.is_some_and(|t| (1..=60).contains(&t))
-    {
-        return Err(ting_unavailable(
-            format!(
-                "Ting's `{}` OBO endpoint changed shape (path, metadata or proof lifetime); peek-server refuses to call it",
-                endpoint.id()
-            ),
-            300,
-        ));
-    }
-    Ok(())
-}
-
-fn exchange_error(e: &silicon_iam_client::Error, testing: bool) -> ApiError {
-    match api_code(e) {
-        Some((code, 401 | 410)) if code != "invalid_client" => ApiError::unauthenticated(format!(
-            "IAM no longer accepts the Silicon's access token for delegation to Ting ({code})"
-        )),
-        Some((code, 403)) => ApiError::new(
-            StatusCode::FORBIDDEN,
-            ErrorCode::ReconsentRequired,
-            format!("IAM refused to delegate this Silicon's authority to Ting ({code})"),
-        )
-        .with_hint("log in again and approve peek's Ting scopes; if that does not help, Ting has not approved peek's critical scopes yet")
-        .with_details(json!({"iam_code": code})),
-        Some((code, 404 | 422)) => ting_rejected(
-            format!("IAM rejected peek's Ting proof request ({code})"),
-            None,
-        ),
-        _ => upstream(e, "mint a Ting proof", testing),
-    }
-}
-
-async fn validate_testing(
-    iam: &dyn IamPlane,
-    plane: &Plane,
-    context: Option<&models::OboTestingContext>,
-) -> ApiResult<Option<(Secret, Secret)>> {
-    let expected = plane.testing.as_ref().map(|t| t.environment_id);
-    match (expected, context) {
-        (None, None) => Ok(None),
-        (Some(expected), Some(tc)) if tc.app_id == AUDIENCE => {
-            let audience = iam
-                .audience_testing_context(AUDIENCE, &tc.app_secret, &tc.iam_test_key)
-                .await
-                .map_err(|e| match api_code(&e) {
-                    Some((code, _)) => ting_rejected(
-                        format!("IAM did not validate the Ting testing credential it issued ({code}); refusing to send"),
-                        None,
-                    ),
-                    None => upstream(&e, "validate Ting's testing credential", true),
-                })?;
-            if audience.environment_id != expected || audience.application.app_id != AUDIENCE {
-                return Err(ting_rejected(
-                    "IAM's Ting testing credential names another testing environment; refusing to send",
-                    None,
-                ));
-            }
-            Ok(Some((
-                Secret::new(tc.app_secret.clone()),
-                Secret::new(tc.iam_test_key.clone()),
-            )))
-        }
-        (None, Some(_)) => Err(ting_rejected(
-            "IAM attached a testing context to a production proof; refusing to send",
-            None,
-        )),
-        _ => Err(ting_rejected(
-            "IAM returned a Ting proof without the testing context this environment requires; refusing to send",
-            None,
-        )),
-    }
-}
-
-async fn mint_proof(
-    state: &AppState,
-    plane: &Plane,
-    principal: &Principal,
-    endpoint: Endpoint,
-    body: &[u8],
-) -> ApiResult<Proof> {
-    let iam = plane.iam()?;
-    let catalog = catalog(state, plane, iam.as_ref()).await?;
-    check_endpoint(&catalog, endpoint)?;
-    let request = models::OboExchangeRequest {
-        org_id: Some(principal.org.as_str().to_owned()),
-        subject_token: principal.access_token.expose().to_owned(),
-        audience: AUDIENCE.to_owned(),
-        endpoint_id: endpoint.id().to_owned(),
-        metadata: json!({}),
-        request: models::OboExchangeRequestBinding {
-            method: "POST".to_owned(),
-            body_sha256: body_sha256(body),
-        },
-    };
-    let proof = iam
-        .obo_exchange(
-            &request,
-            &catalog,
-            &Mutation::with_key(IdempotencyKey::generate()),
-        )
-        .await
-        .map_err(|e| exchange_error(&e, plane.is_testing()))?;
-    if !(1..=60).contains(&proof.expires_in)
-        || proof.expires_at <= OffsetDateTime::now_utc()
-        || proof.access_proof.is_empty()
-    {
-        return Err(ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            ErrorCode::IamUnavailable,
-            "IAM issued a Ting proof that is already expired or malformed",
-        )
-        .with_retryable(true));
-    }
-    let testing = validate_testing(iam.as_ref(), plane, proof.testing_context.as_ref()).await?;
-    Ok(Proof {
-        access_proof: Secret::new(proof.access_proof),
-        testing,
-    })
 }
 
 /// Ting's answer.
@@ -267,7 +87,7 @@ async fn post(
     state: &AppState,
     endpoint: Endpoint,
     body: &[u8],
-    proof: &Proof,
+    authority: &models::OboTokenPair,
 ) -> ApiResult<Reply> {
     let url = format!("{}{}", state.0.config.ting.base_url, endpoint.path());
     let mut request = state
@@ -276,12 +96,12 @@ async fn post(
         .post(url)
         .timeout(state.0.config.ting.request_timeout)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .bearer_auth(proof.access_proof.expose())
+        .bearer_auth(&authority.access_token)
         .body(body.to_vec());
-    if let Some((app_secret, key)) = &proof.testing {
+    if let Some(context) = &authority.testing_context {
         request = request
-            .header("IAM_TEST_APP_SECRET", app_secret.expose())
-            .header("X-Testing-Environment-Key", key.expose());
+            .header("IAM_TEST_APP_SECRET", &context.app_secret)
+            .header("X-Testing-Environment-Key", &context.iam_test_key);
     }
     let transport = |e: &reqwest::Error| {
         let why = if e.is_timeout() {
@@ -383,21 +203,67 @@ fn classify_failure(reply: &Reply) -> (ApiError, &'static str) {
     }
 }
 
-/// Mints a proof and posts, retrying once with a fresh proof when Ting
-/// refuses the proof itself. Returns the reply and the attempts made.
+/// Authorize and send with at most one dedicated-family refresh. The operation
+/// stays bound to its original provider account, organization and body hash.
 async fn call(
     state: &AppState,
     plane: &Plane,
     principal: &Principal,
     endpoint: Endpoint,
     body: &[u8],
+    operation: &str,
 ) -> (ApiResult<Reply>, u32) {
-    let mut attempts = 0;
-    loop {
-        attempts += 1;
+    let original: Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return (Err(ApiError::internal("Invalid Ting payload")), 0),
+    };
+
+    for attempt in 1..=2 {
         let result = async {
-            let proof = mint_proof(state, plane, principal, endpoint, body).await?;
-            post(state, endpoint, body, &proof).await
+            let authority = obo::access(
+                state,
+                plane,
+                principal,
+                endpoint.id(),
+                operation,
+                body,
+                attempt == 2,
+            )
+            .await?;
+            let mut outbound = original.clone();
+            outbound["org_id"] = json!(authority.org_id);
+            if outbound.get("for").is_some() {
+                outbound["for"] = json!(
+                    authority
+                        .actor
+                        .as_ref()
+                        .ok_or_else(obo::required)?
+                        .public_id
+                );
+            }
+            // Preserve the canonical client bytes when consent selected the
+            // original destination; only a provider-selected destination needs
+            // rewriting. Both forms stay identical across token refresh.
+            let body = if outbound == original {
+                body.to_vec()
+            } else {
+                serde_json::to_vec(&outbound)
+                    .map_err(|_| ApiError::internal("Could not build Ting request"))?
+            };
+            let reply = post(state, endpoint, &body, &authority).await?;
+            if endpoint == Endpoint::Register && matches!(reply.status, 200 | 201) {
+                let value: Value = serde_json::from_slice(&reply.body)
+                    .map_err(|_| ting_rejected("Ting returned an unreadable enrollment", None))?;
+                if value.get("for").and_then(Value::as_str)
+                    != authority.actor.as_ref().map(|a| a.public_id.as_str())
+                {
+                    return Err(ting_rejected(
+                        "Ting enrolled a different provider account",
+                        None,
+                    ));
+                }
+            }
+            Ok(reply)
         }
         .await;
         match result {
@@ -405,22 +271,16 @@ async fn call(
                 if reply.status == 401
                     && reply
                         .error_code()
-                        .is_some_and(|c| PROOF_ERRORS.contains(&c.as_str())) =>
+                        .is_some_and(|c| TOKEN_ERRORS.contains(&c.as_str())) =>
             {
-                if attempts >= 2 {
-                    let code = reply.error_code().unwrap_or_default();
-                    return (
-                        Err(ting_unavailable(
-                            format!("Ting refused two fresh proofs in a row ({code})"),
-                            5,
-                        )),
-                        attempts,
-                    );
+                if attempt == 2 {
+                    return (Err(obo::required()), attempt);
                 }
             }
-            other => return (other, attempts),
+            other => return (other, attempt),
         }
     }
+    (Err(obo::required()), 2)
 }
 
 #[derive(Deserialize)]
@@ -437,18 +297,27 @@ fn valid_id(id: &str) -> bool {
 }
 
 /// Enrolls the principal as a Ting recipient for peek and returns the
-/// subscription ID. Only called at login and on explicit `peek ting enroll`
+/// subscription ID. Only called on explicit `peek ting enroll`
 /// (never from the delivery path, D7).
 pub(crate) async fn enroll(
     state: &AppState,
     plane: &Plane,
     principal: &Principal,
+    operation: &str,
 ) -> ApiResult<String> {
     principal.require_scopes(&ENROLL_SCOPES)?;
     let body =
         silicon_peek_client::ting::subscription_register_body(&principal.org, &principal.actor)
             .map_err(ApiError::from_client)?;
-    let (reply, _) = call(state, plane, principal, Endpoint::Register, &body).await;
+    let (reply, _) = call(
+        state,
+        plane,
+        principal,
+        Endpoint::Register,
+        &body,
+        operation,
+    )
+    .await;
     let reply = reply?;
     match reply.status {
         200 | 201 => {
@@ -457,7 +326,7 @@ pub(crate) async fn enroll(
             })?;
             if !valid_id(&sub.id)
                 || sub.app_id != silicon_peek_client::APP_ID
-                || sub.recipient != principal.actor.as_str()
+                || silicon_peek_client::identity::ActorId::parse(&sub.recipient).is_err()
                 || !sub.active
             {
                 return Err(ting_rejected(
@@ -492,7 +361,15 @@ pub(crate) async fn revoke(
     principal.require_scopes(&REVOKE_SCOPES)?;
     let body = silicon_peek_client::ting::subscription_revoke_body(&principal.org, subscription_id)
         .map_err(ApiError::from_client)?;
-    let (reply, _) = call(state, plane, principal, Endpoint::Revoke, &body).await;
+    let (reply, _) = call(
+        state,
+        plane,
+        principal,
+        Endpoint::Revoke,
+        &body,
+        subscription_id,
+    )
+    .await;
     let reply = reply?;
     match reply.status {
         200..=299 | 404 => Ok(()),
@@ -530,7 +407,7 @@ pub(crate) async fn send(
     body: &[u8],
     ting_key: &str,
 ) -> (Result<Accepted, Failed>, u32) {
-    let (reply, attempts) = call(state, plane, principal, Endpoint::Send, body).await;
+    let (reply, attempts) = call(state, plane, principal, Endpoint::Send, body, ting_key).await;
     let reply = match reply {
         Ok(reply) => reply,
         Err(error) => {
@@ -661,17 +538,23 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_catalog_must_match() -> Result<(), serde_json::Error> {
-        let catalog: models::OboEndpointCatalog = serde_json::from_value(json!({
-            "application": {"app_id": "ting", "org_id": "tos"},
-            "endpoints": [
-                {"endpoint_id": "tings.send", "path": "/v1/tings", "critical": true, "metadata": {}, "ttl_seconds": 60},
-                {"endpoint_id": "subscriptions.register", "path": "/v1/other", "critical": true, "metadata": {}, "ttl_seconds": 60}
-            ]
-        }))?;
-        assert!(check_endpoint(&catalog, Endpoint::Send).is_ok());
-        assert!(check_endpoint(&catalog, Endpoint::Register).is_err());
-        assert!(check_endpoint(&catalog, Endpoint::Revoke).is_err());
-        Ok(())
+    fn registered_endpoints_keep_the_provider_contract() {
+        for (endpoint, id, path) in [
+            (Endpoint::Send, "tings.send", "/v1/tings"),
+            (
+                Endpoint::Register,
+                "subscriptions.register",
+                "/v1/subscriptions",
+            ),
+            (
+                Endpoint::Revoke,
+                "subscriptions.revoke",
+                "/v1/subscriptions/revoke",
+            ),
+        ] {
+            assert_eq!(endpoint.id(), id);
+            assert_eq!(endpoint.path(), path);
+            assert!(obo::ENDPOINTS.contains(&id));
+        }
     }
 }

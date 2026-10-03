@@ -1,6 +1,6 @@
 //! Login, refresh, logout and `/me` against a fake IAM (BLUEPRINT §2.4,
 //! §2.6, §2.7): the exact IAM calls, the error mapping, the Ting enrollment
-//! at login, and no token ever persisted.
+//! independent of login, and no ordinary token ever persisted.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -8,7 +8,7 @@ mod common;
 
 use axum::{body::Body, http::Request};
 use common::*;
-use serde_json::{Value, json};
+use serde_json::json;
 use wiremock::{
     Mock, ResponseTemplate,
     matchers::{method, path},
@@ -45,7 +45,7 @@ fn login_request(key: &str) -> Request<Body> {
 }
 
 #[tokio::test]
-async fn login_exchanges_verifies_enrolls_and_returns_the_session() {
+async fn login_exchanges_verifies_and_returns_the_session_without_provider_authority() {
     let h = Harness::start().await;
     mount_login_happy_path(&h, &FULL_SCOPES).await;
     let key = "peek-login-0123456789abcdef";
@@ -60,7 +60,7 @@ async fn login_exchanges_verifies_enrolls_and_returns_the_session() {
     assert_eq!(v["expires_in"], 1800);
     assert_eq!(
         v["scope"],
-        "obo:ting:subscriptions.register obo:ting:subscriptions.revoke obo:ting:tings.send self.identity.read self.membership.read self.profile.read"
+        "self.identity.read self.membership.read self.profile.read"
     );
     assert_eq!(v["actor"], json!({"type": "silicon", "public_id": ACTOR}));
     assert_eq!(v["org_id"], ORG);
@@ -68,10 +68,7 @@ async fn login_exchanges_verifies_enrolls_and_returns_the_session() {
     assert_eq!(v["membership_id"], "si:cleanup[tos]");
     assert_eq!(v["reconsent_required"], false);
     assert_eq!(v["display_name"], "Cleanup");
-    assert_eq!(
-        v["ting"],
-        json!({"subscribed": true, "subscription_id": "sub_1"})
-    );
+    assert!(v.get("ting").is_none());
     assert!(v["testing_environment"].is_null());
 
     // The exact IAM exchange: Basic peek:<secret>, the CLI's key, form app_id+slt.
@@ -89,27 +86,15 @@ async fn login_exchanges_verifies_enrolls_and_returns_the_session() {
         "{form}"
     );
 
-    // Enrollment: exactly {"app_id":"peek","for":…,"org_id":…} with a proof.
-    let regs = Harness::requests(&h.ting, "/v1/subscriptions").await;
-    assert_eq!(regs.len(), 1);
-    assert_eq!(
-        regs[0].body,
-        br#"{"app_id":"peek","for":"si:cleanup","org_id":"tos"}"#
+    assert!(
+        Harness::requests(&h.ting, "/v1/subscriptions")
+            .await
+            .is_empty()
     );
-    assert_eq!(regs[0].headers["authorization"], "Bearer proof-1");
-    assert!(!regs[0].headers.contains_key("iam_test_app_secret"));
-    let exchange: Value = serde_json::from_slice(
-        &Harness::requests(&h.iam, "/api/v1/obo-access/exchanges").await[0].body,
-    )
-    .unwrap();
-    assert_eq!(exchange["endpoint_id"], "subscriptions.register");
-    assert_eq!(exchange["audience"], "ting");
-    assert_eq!(exchange["subject_token"], ACCESS);
-    assert_eq!(exchange["org_id"], ORG);
-    assert_eq!(exchange["metadata"], json!({}));
-    assert_eq!(
-        exchange["request"]["body_sha256"],
-        silicon_iam_client::api::obo::body_sha256(&regs[0].body)
+    assert!(
+        Harness::requests(&h.iam, "/api/v1/obo-access/authorizations")
+            .await
+            .is_empty()
     );
 
     // /me now reports the enrollment; the backend stored no token anywhere.
@@ -121,10 +106,7 @@ async fn login_exchanges_verifies_enrolls_and_returns_the_session() {
         )
         .await;
     assert_eq!(me.status, 200);
-    assert_eq!(
-        me.json()["ting"],
-        json!({"subscribed": true, "subscription_id": "sub_1"})
-    );
+    assert_eq!(me.json()["ting"]["subscribed"], false);
     for file in ["peek.sqlite", "testing.sqlite"] {
         let bytes = std::fs::read(h.dir.path().join(file)).unwrap();
         let wal = std::fs::read(h.dir.path().join(format!("{file}-wal"))).unwrap_or_default();
@@ -143,7 +125,7 @@ async fn login_exchanges_verifies_enrolls_and_returns_the_session() {
 }
 
 #[tokio::test]
-async fn login_prefers_the_org_hint_among_grants() {
+async fn login_rejects_legacy_multi_organization_sessions() {
     let h = Harness::start().await;
     mount_token_exchange(
         &h.iam,
@@ -167,28 +149,24 @@ async fn login_prefers_the_org_hint_among_grants() {
     req.headers_mut()
         .insert("x-org-id", "zeta".parse().unwrap());
     let r = h.send(req).await;
-    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
-    assert_eq!(r.json()["org_id"], "zeta");
-    assert_eq!(r.json()["org_ids"], json!(["acme", "zeta"]));
-
+    assert_eq!(r.status, 401);
+    assert_eq!(r.code(), "slt_rejected");
     let r = h.send(login_request("peek-login-without-hint-01")).await;
     assert_eq!(
-        r.json()["org_id"],
-        "acme",
-        "without a hint, the first org sorted"
+        r.status, 401,
+        "an omitted hint never picks the first organization"
     );
 }
 
 #[tokio::test]
-async fn login_without_ting_scopes_is_reconsent_and_skips_enrollment() {
+async fn ordinary_login_is_usable_without_ting_authority() {
     let h = Harness::start().await;
     let scopes = ["self.identity.read", "self.profile.read"];
     mount_login_happy_path(&h, &scopes).await;
     let r = h.send(login_request(IDEM)).await;
     assert_eq!(r.status, 200);
-    assert_eq!(r.json()["reconsent_required"], true);
-    assert_eq!(r.json()["ting"]["subscribed"], false);
-    assert_eq!(r.json()["ting"]["error"]["code"], "reconsent_required");
+    assert_eq!(r.json()["reconsent_required"], false);
+    assert!(r.json().get("ting").is_none());
     assert!(
         Harness::requests(&h.ting, "/v1/subscriptions")
             .await
@@ -220,8 +198,12 @@ async fn a_failed_enrollment_never_fails_the_login() {
         .await;
     let r = h.send(login_request(IDEM)).await;
     assert_eq!(r.status, 200);
-    assert_eq!(r.json()["ting"]["subscribed"], false);
-    assert_eq!(r.json()["ting"]["error"]["code"], "ting_unavailable");
+    assert!(r.json().get("ting").is_none());
+    assert!(
+        Harness::requests(&h.ting, "/v1/subscriptions")
+            .await
+            .is_empty()
+    );
     assert_eq!(r.json()["access_token"], ACCESS);
 }
 
@@ -352,6 +334,8 @@ async fn a_plain_logout_keeps_the_shared_ting_grant() {
     let h = Harness::start().await;
     mount_login_happy_path(&h, &FULL_SCOPES).await;
     assert_eq!(h.send(login_request(IDEM)).await.status, 200);
+    assert_eq!(h.approve_ting(ACCESS, false).await.status, 200);
+    h.enroll_ting(ACCESS, false).await;
     Mock::given(method("POST"))
         .and(path("/api/v1/oauth/revoke"))
         .respond_with(ResponseTemplate::new(200))
@@ -394,6 +378,8 @@ async fn logout_with_revoke_ting_revokes_the_ting_grant_then_the_family() {
     let h = Harness::start().await;
     mount_login_happy_path(&h, &FULL_SCOPES).await;
     assert_eq!(h.send(login_request(IDEM)).await.status, 200);
+    assert_eq!(h.approve_ting(ACCESS, false).await.status, 200);
+    h.enroll_ting(ACCESS, false).await;
     Mock::given(method("POST"))
         .and(path("/v1/subscriptions/revoke"))
         .respond_with(
