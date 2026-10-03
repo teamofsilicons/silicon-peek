@@ -155,8 +155,19 @@ public protocol DaemonLinking: Sendable {
 | peekd → UI request | `drawing.load` | `.drawingLoad(DrawingLoadRequest)` → `.encode(DrawingLoadResult(ok:))` |
 | peekd → UI request | `app.update.prepare` / `app.quit` | `.appUpdatePrepare` / `.appQuit(AppBuildRequest)` → `.encode(ReadyResult(ready:))` |
 
-All replies to UI requests other than `hello` decode as `IPCAck` (any object). Errors are `IPCErrorBody`
+Most replies to UI requests other than `hello` decode as `IPCAck` (any object). Errors are `IPCErrorBody`
 (`code`, `message`, `hint`, `retryable`, `details`), identical to the CLI error shape.
+
+Settings › Permissions uses pane-local typed IPC requests: `permissions.contexts` lists saved login
+contexts with a home id, immutable context id, actor, organization, API origin and environment;
+`permissions.ting` pins that home/context and accepts `start`, `status`, `complete`, `cancel` or `enroll`.
+Its response contains public review metadata and an enrollment flag. The app checks the returned
+context, actor, organization, review identifiers and callback state, and opens only HTTPS review links
+without embedded credentials. Context changes and pane dismissal discard the code and fence late replies.
+The daemon owns durable retry receipts and completion codes. An interrupted completion can be retried
+without re-entering its code. Changed terms require fresh review. Saving approval never enables deliveries;
+the separate **Enable deliveries and retry queued answers** action enrolls only the selected context.
+Clearing local review preserves existing enrollment and queued answers; revocation remains in IAM.
 
 There is **no live word or transcript data** anywhere (D9): no `speech.word`, no `word` event, no `mic.transcript`.
 

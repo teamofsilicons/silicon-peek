@@ -3,19 +3,21 @@ import Combine
 import PeekCore
 import SwiftUI
 
-/// The Settings scene content (BLUEPRINT §8.11): General, Voice, Testing, Startup, Diagnostics.
+/// The Settings scene content, including account-scoped feature permissions through peekd.
 ///
-/// Every change goes through ``SettingsModel`` → ``PeekControlling/setSetting(_:_:)``, which writes
-/// `~/Library/Application Support/Peek/settings.json` and sends peekd `settings.changed`.
+/// Preferences go through ``SettingsModel`` → ``PeekControlling/setSetting(_:_:)``.
+/// Account-scoped feature approvals use local IPC through ``PermissionsModel``; peekd owns credentials.
 public struct SettingsRootView: View {
     private let coordinator: PeekCoordinator
     @State private var model: SettingsModel
     @State private var diagnostics: DiagnosticsModel
+    @State private var permissions: PermissionsModel
 
     public init(coordinator: PeekCoordinator) {
         self.coordinator = coordinator
         _model = State(initialValue: SettingsModel(controls: coordinator))
         _diagnostics = State(initialValue: DiagnosticsModel(paths: coordinator.paths))
+        _permissions = State(initialValue: PermissionsModel(link: coordinator.link))
     }
 
     public var body: some View {
@@ -25,6 +27,9 @@ public struct SettingsRootView: View {
             }
             Tab("Voice", systemImage: "waveform") {
                 VoiceSettingsView(model: model)
+            }
+            Tab("Permissions", systemImage: "person.badge.key") {
+                PermissionsView(model: permissions)
             }
             Tab("Testing", systemImage: "testtube.2") {
                 TestingEnvironmentsView(model: model)
