@@ -33,6 +33,7 @@ struct StartupSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .peekSettingsPane("Ready when you are", subtitle: "Manage Peek at login and its background service.")
         .onAppear { model.refreshSystemStatus() }
     }
 }

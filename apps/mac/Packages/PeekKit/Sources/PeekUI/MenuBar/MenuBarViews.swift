@@ -46,7 +46,7 @@ public struct MenuBarContentView: View {
             slots: controls.slots, modifier: controls.settings.hotkeyModifier, showTestPeeks: controls.settings.showTestPeeks)
         VStack(alignment: .leading, spacing: 0) {
             header
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 18)
                 .padding(.top, 12)
                 .padding(.bottom, 8)
             Divider()
@@ -55,8 +55,8 @@ public struct MenuBarContentView: View {
                 .padding(.vertical, 6)
             Divider()
             pauseSection
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
             Divider()
             VStack(spacing: 0) {
                 MenuBarActionButton(title: "Simulation…", symbol: "play.rectangle") {
@@ -74,13 +74,14 @@ public struct MenuBarContentView: View {
             }
             .padding(6)
         }
-        .frame(width: 320)
+        .frame(width: 336)
+        .buttonBorderShape(.capsule)
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Peek").font(.headline)
+                Text("Peek").font(.system(size: 18, weight: .semibold))
                 Spacer()
                 Circle()
                     .fill(controls.linkState.isConnected ? Color.green : Color.orange)
@@ -106,7 +107,7 @@ public struct MenuBarContentView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 6)
             } else {
                 ForEach(summary.rows) { row in
                     MenuBarSlotRow(row: row)
@@ -177,7 +178,7 @@ private struct MenuBarSlotRow: View {
                 .help(row.hotkey.map { "Press \($0) to summon this bubble" } ?? "No hotkey for this position")
         }
         .padding(.horizontal, 6)
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
         .opacity(row.muted ? 0.6 : 1)
         .help(row.muted ? "Show test peeks is off: this Silicon's bubbles wait in peekd" : row.actorID)
         .accessibilityElement(children: .combine)

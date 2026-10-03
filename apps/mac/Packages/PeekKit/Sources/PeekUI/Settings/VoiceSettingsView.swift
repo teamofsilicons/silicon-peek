@@ -61,6 +61,7 @@ struct VoiceSettingsView: View {
             SettingsErrorBanner(model: model)
         }
         .formStyle(.grouped)
+        .peekSettingsPane("Voice & language", subtitle: "Make spoken answers feel familiar.")
     }
 }
 

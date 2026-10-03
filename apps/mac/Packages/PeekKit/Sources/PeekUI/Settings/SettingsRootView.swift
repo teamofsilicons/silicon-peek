@@ -41,8 +41,10 @@ public struct SettingsRootView: View {
                 DiagnosticsView(model: model, diagnostics: diagnostics)
             }
         }
-        .frame(width: 560)
-        .frame(minHeight: 460, idealHeight: 640)
+        .frame(width: 620)
+        .controlSize(.large)
+        .buttonBorderShape(.capsule)
+        .frame(minHeight: 520, idealHeight: 680)
         .onAppear { model.refreshSystemStatus() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             // Permissions and login items change in System Settings while Peek is in the background.
@@ -70,7 +72,8 @@ struct SettingsFootnote: View {
 
     var body: some View {
         Text(attributed)
-            .font(.callout)
+            .font(.system(size: 12))
+            .lineSpacing(3)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
             .textSelection(.enabled)
@@ -90,5 +93,37 @@ struct SettingsErrorBanner: View {
             }
             .font(.callout)
         }
+    }
+}
+
+
+/// Native counterpart to the web control rhythm: clear headings, quiet surfaces, and
+/// platform controls that keep macOS focus, contrast, keyboard, and reduced-motion behavior.
+private struct SettingsPaneStyle: ViewModifier {
+    let title: String
+    let subtitle: String
+
+    func body(content: Content) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.system(size: 24, weight: .semibold))
+                    .accessibilityAddTraits(.isHeader)
+                Text(subtitle)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 24)
+            .padding(.bottom, 8)
+            content
+        }
+    }
+}
+
+extension View {
+    func peekSettingsPane(_ title: String, subtitle: String) -> some View {
+        modifier(SettingsPaneStyle(title: title, subtitle: subtitle))
     }
 }

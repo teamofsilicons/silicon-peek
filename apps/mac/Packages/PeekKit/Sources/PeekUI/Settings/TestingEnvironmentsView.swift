@@ -42,6 +42,7 @@ struct TestingEnvironmentsView: View {
             SettingsErrorBanner(model: model)
         }
         .formStyle(.grouped)
+        .peekSettingsPane("Testing environments", subtitle: "Keep test bubbles separate from everyday work.")
     }
 }
 

@@ -1,0 +1,179 @@
+/* UIArc free Button CSS adaptation. Copyright (c) 2026 Elia Kuratli, MIT.
+   Pinned source and license: UIARC.md and licenses/uiarc-MIT.txt. */
+:root {
+  --arc-surface: #fff;
+  --arc-muted: #f3f4f2;
+  --arc-ink: #202521;
+  --arc-secondary: #616861;
+  --arc-line: #dfe3df;
+  --arc-focus: #1f5fb8;
+  --arc-radius: 12px;
+  --arc-fast: 150ms;
+  --arc-ease: cubic-bezier(0.2, 0, 0, 1);
+}
+:is(.copy-button, .copy-mini) {
+  position: relative;
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--arc-line);
+  border-radius: var(--arc-radius);
+  padding: 0 16px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    color var(--arc-fast) var(--arc-ease),
+    background var(--arc-fast) var(--arc-ease),
+    border-color var(--arc-fast) var(--arc-ease),
+    box-shadow var(--arc-fast) var(--arc-ease);
+}
+:is(.copy-button, .copy-mini):focus-visible {
+  outline: 2px solid var(--arc-focus);
+  outline-offset: 3px;
+}
+:is(.copy-button, .copy-mini):disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+:is(.copy-button, .copy-mini)[aria-busy="true"] {
+  cursor: progress;
+}
+:is(.copy-button, .copy-mini):is(
+  [aria-haspopup]:not([aria-haspopup="false"]),
+  [data-state],
+  [role="combobox"]
+) {
+  transform: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  :is(.copy-button, .copy-mini):hover:not(:disabled) {
+    box-shadow: 0 1px 3px #18241c0d;
+  }
+}
+:is(.copy-button, .copy-mini):active:not(:disabled) {
+  opacity: 0.84;
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.copy-button, .copy-mini) {
+    transition: none;
+  }
+}
+/* UIArc Segmented Control: compact scrolling rail, quiet raised selection. */
+.segmented {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  gap: 2px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding: 4px;
+  border: 1px solid var(--arc-line);
+  border-radius: 12px;
+  background: var(--arc-muted);
+  scrollbar-width: none;
+}
+.segmented::-webkit-scrollbar {
+  display: none;
+}
+.segmented > button {
+  flex: 0 0 auto;
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0 13px;
+  background: transparent;
+  color: var(--arc-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    color var(--arc-fast) var(--arc-ease),
+    background var(--arc-fast) var(--arc-ease);
+}
+.segmented
+  > button:is(
+    [aria-selected="true"],
+    [aria-checked="true"],
+    [aria-pressed="true"]
+  ) {
+  color: var(--arc-ink);
+  background: var(--arc-surface);
+  border-color: var(--arc-line);
+  box-shadow: 0 1px 3px #18241c0d;
+}
+.segmented > button:focus-visible {
+  outline: 2px solid var(--arc-focus);
+  outline-offset: -2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .segmented > button {
+    transition: none;
+  }
+}
+
+/* Keep Peek's existing glass landscape; Arc brings clearer, tactile controls. */
+:root {
+  --arc-surface: #fffffff0;
+  --arc-muted: #ffffff24;
+  --arc-line: #ffffff45;
+  --arc-ink: #202126;
+  --arc-secondary: #393b48;
+  --arc-focus: var(--focus);
+}
+.copy-button {
+  border-radius: 10px;
+  min-height: 38px;
+}
+.copy-mini {
+  min-height: 32px;
+  border-radius: 9px;
+  padding: 0 11px;
+}
+.segmented {
+  flex: 0 1 auto;
+  border-radius: 11px;
+}
+.segmented > button {
+  border-radius: 7px;
+}
+.demo-controls {
+  border: 1px solid #ffffff65;
+  box-shadow: 0 2px 14px #2427450a;
+}
+.install-row {
+  border: 1px solid #ffffff80;
+}
+@media (max-width: 640px) {
+  .copy-button {
+    min-height: 44px;
+    padding-inline: 17px;
+  }
+  .segmented {
+    width: 100%;
+  }
+  .segmented > button {
+    flex: 1 0 auto;
+    min-height: 40px;
+    padding: 0 12px;
+  }
+  .install-code {
+    scrollbar-width: thin;
+  }
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --arc-surface: #4b4c5de8;
+    --arc-muted: #11142140;
+    --arc-line: #ffffff24;
+    --arc-ink: #fff;
+    --arc-secondary: #dedee8;
+  }
+}

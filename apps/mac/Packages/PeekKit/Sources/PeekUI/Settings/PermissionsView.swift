@@ -24,19 +24,20 @@ struct PermissionsView: View {
                     }
                     if let context = model.selected {
                         VStack(alignment: .leading, spacing: 8) {
-                            HStack(alignment: .top, spacing: 24) {
+                            HStack(alignment: .top, spacing: 32) {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text("Account").font(.caption).foregroundStyle(.secondary)
-                                    Text(context.actor.publicID)
+                                    Text(context.actor.publicID).fontWeight(.medium)
                                 }
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text("Organization").font(.caption).foregroundStyle(.secondary)
-                                    Text(context.orgID)
+                                    Text(context.orgID).fontWeight(.medium)
                                 }
                                 Spacer(minLength: 0)
                             }
                             Text(context.environmentLabel).font(.caption).foregroundStyle(.secondary)
                             Text(context.apiURL).font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(2).truncationMode(.middle)
                         }.textSelection(.enabled)
                     }
                 }
@@ -102,6 +103,7 @@ struct PermissionsView: View {
             }
         }
         .formStyle(.grouped)
+        .peekSettingsPane("Accounts & permissions", subtitle: "Review access for each account and organization.")
         .task { await model.reloadContexts() }
         .onDisappear { model.suspend() }
     }

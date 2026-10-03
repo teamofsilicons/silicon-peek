@@ -96,5 +96,6 @@ struct GeneralSettingsView: View {
             SettingsErrorBanner(model: model)
         }
         .formStyle(.grouped)
+        .peekSettingsPane("Bubbles & controls", subtitle: "Choose how Peek appears and how you answer.")
     }
 }

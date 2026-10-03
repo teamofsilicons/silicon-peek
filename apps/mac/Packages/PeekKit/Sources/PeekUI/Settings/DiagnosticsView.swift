@@ -70,6 +70,7 @@ struct DiagnosticsView: View {
             }
         }
         .formStyle(.grouped)
+        .peekSettingsPane("Diagnostics", subtitle: "Connection, permissions, and recent activity in one place.")
         .task { await diagnostics.refreshLog() }
     }
 

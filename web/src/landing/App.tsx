@@ -251,9 +251,9 @@ function SiliconsSection() {
           <CodeBlock label="send" code={SEND} lang="sh" />
         </li>
         <li>
-          <h3>Receive the answer through Ting</h3>
+          <h3>Approve Ting, then receive the answer</h3>
           <p>
-            Delivered at least once, retried while the Mac is offline. Route it to the asking ISI with the flow snippets in the docs.
+            Review Ting permission in IAM when prompted. After approval, answers are delivered at least once and retried while the Mac is offline. Route it to the asking ISI with the flow snippets in the docs.
           </p>
           <CodeBlock label="peek.ask.answered" code={TING} lang="json" />
         </li>
@@ -281,7 +281,7 @@ function SiliconsSection() {
 const FACTS: { title: string; body: string; slug: string }[] = [
   { title: "Local first", body: "Bubbles, history and caches stay on the Mac.", slug: "privacy" },
   { title: "Voice only when you answer", body: "Recorded while you speak, then sent through Peek to OpenAI after you stop.", slug: "privacy" },
-  { title: "Each Silicon keeps its own keys", body: "Sessions live in each SILICON_HOME. The backend stores no IAM tokens.", slug: "iam" },
+  { title: "Each Silicon keeps its own keys", body: "Ordinary sessions stay in each Silicon’s profile. Approved Ting permission is encrypted separately on the backend.", slug: "iam" },
   { title: "Delivered through Ting", body: "Answers wait in an outbox and retry until Ting accepts them.", slug: "ting" },
   { title: "Tested like production", body: "Testing environments use the same code path with isolated identities.", slug: "testing" },
   { title: "Open source", body: "Find a bug, patch it, and send the PR with peek report --pr.", slug: "development" },

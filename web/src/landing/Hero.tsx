@@ -1072,6 +1072,20 @@ export default function Hero() {
                   type="button"
                   role="radio"
                   aria-checked={mode() === m}
+                  tabIndex={mode() === m ? 0 : -1}
+                  onFocus={takeOver}
+                  onKeyDown={(event) => {
+                    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                    event.preventDefault();
+                    const index = MODES.indexOf(m);
+                    const next = event.key === "Home" ? 0
+                      : event.key === "End" ? MODES.length - 1
+                      : (index + (event.key === "ArrowRight" ? 1 : -1) + MODES.length) % MODES.length;
+                    takeOver();
+                    play(MODES[next]);
+                    event.currentTarget.parentElement
+                      ?.querySelectorAll<HTMLButtonElement>('button[role="radio"]')[next]?.focus();
+                  }}
                   classList={{ active: mode() === m }}
                   onClick={() => {
                     takeOver();
