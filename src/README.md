@@ -25,7 +25,7 @@ BLUEPRINT §5.2). It holds the application secret and separately approved, encry
 | `app.rs` | router, request middleware (`X-Request-ID`, `Cache-Control: no-store`, envelope for every error, logs, `http.completed`) |
 | `plane.rs` | production vs testing plane, resolved only from the IAM-validated test secret; generation fence |
 | `auth.rs` | bearer verification (the §2.7 checks) and per-route scopes |
-| `iam.rs` | the IAM seam: `IamPlane`/`IamConnector` traits over the vendored `silicon-iam-client` 5.0.0 candidate |
+| `iam.rs` | the IAM seam: `IamPlane`/`IamConnector` traits over the published `silicon-iam-client` 5.2.1 SDK |
 | `obo.rs` | dedicated consent, encrypted roots, durable rotation keys and operation destination binding |
 | `ting.rs` | bearer-authorized enrollment, revocation, deliveries and provider errors |
 | `elevenlabs.rs`, `openai.rs`, `deepgram.rs`, `github.rs` | TTS connection tokens, OpenAI transcription, legacy Deepgram BYO key validation, and bug reports |

@@ -3,7 +3,7 @@
 //! [`IamPlane`] is everything peek-server asks IAM, for one data plane
 //! (production, or one testing environment). [`IamConnector`] hands out the
 //! production plane and resolves testing planes from a peek test app secret.
-//! The production implementation wraps `silicon-iam-client` 5.0.0; tests run
+//! The production implementation wraps `silicon-iam-client` 5.2.1; tests run
 //! the same implementation against a local mock IAM base URL.
 
 use std::{sync::Arc, time::Duration};

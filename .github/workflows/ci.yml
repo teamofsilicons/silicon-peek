@@ -14,6 +14,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: "1.98.0"
+  RUSTUP_TOOLCHAIN: "1.98.0"
 
 jobs:
   rust-linux:
@@ -60,6 +61,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+          rust-version: ${{ env.RUST_TOOLCHAIN }}
 
   web:
     name: Website and docs build

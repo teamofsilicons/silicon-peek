@@ -1,6 +1,6 @@
 # IAM 5 migration candidate
 
-This candidate follows the [IAM 5 migration guide](https://docs.iam.teamofsilicons.com/migrating-to-iam-5/) and vendors the reviewed SDK at `f1e9c4768029aacabe337ca41be52e05023d1631`. It requires the coordinated IAM 5 and Ting reusable-token receiver rollout. Local implementation does not establish that those production services have switched.
+This candidate follows the [IAM 5 migration guide](https://docs.iam.teamofsilicons.com/migrating-to-iam-5/) and uses the published `silicon-iam-client` 5.2.1 SDK. It requires the coordinated IAM 5 and Ting reusable-token receiver rollout. Local implementation does not establish that those production services have switched.
 
 Ordinary application login selects exactly one actor and organization. Peek refuses legacy multi-organization, unscoped, mismatched-organization and OBO-scoped login credentials. The application secret stays in peek-server; ordinary access and refresh credentials remain in the caller's local session store. Login never enrolls a Ting recipient or starts endpoint consent.
 

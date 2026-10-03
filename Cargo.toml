@@ -17,7 +17,7 @@ authors = ["Team of Silicons"]
 # `tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }`.
 [workspace.dependencies]
 silicon-peek-client = { path = "crates/client", version = "=0.2.0" }
-silicon-iam-client = { path = "vendor/silicon-iam-client", version = "=5.0.0" }
+silicon-iam-client = "=5.2.1"
 space-station = "=0.1.1"
 
 aes-gcm = "0.10.3"

@@ -55,7 +55,7 @@ External contracts peek relies on:
 |---|---|---|
 | Silicon Stemcell | 6.0.1 context verification; existing discovery/login contract (`<app> iam --json`, `login <SLT>`, `login status --json`, `logout`, `config set`) | installs and logs peek in on connect |
 | Honeycomb | 0.6.0 or newer | package installs and updates, and the macOS install script (package format 1, Manifest A); the installer refuses older versions |
-| IAM | 5.0.0 (bare app ids such as `peek`) | ordinary sessions are org scoped; reusable Ting authority comes from explicit endpoint consent |
+| IAM | 5.2.1 (bare app ids such as `peek`) | ordinary sessions are org scoped; reusable Ting authority comes from explicit endpoint consent |
 | Ting | ≥ 0.1.6 for type registration | the nine event types |
 
 ## Skew is normal
