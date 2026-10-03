@@ -156,8 +156,11 @@ jobs:
             echo "signed=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No signing identity secret: compiling Peek.app only. peek never ships ad-hoc builds, so no Peek.app.zip or Honeycomb package is produced."
-            MACOSX_DEPLOYMENT_TARGET=26.0 cargo build --locked --release -p silicon-peek-daemon
-            mkdir -p dist && cp target/release/peekd dist/peekd
+            for target in aarch64-apple-darwin x86_64-apple-darwin; do
+              MACOSX_DEPLOYMENT_TARGET=26.0 cargo build --locked --release -p silicon-peek-daemon --target "$target"
+            done
+            mkdir -p dist
+            lipo -create target/aarch64-apple-darwin/release/peekd target/x86_64-apple-darwin/release/peekd -output dist/peekd
             (cd apps/mac && xcodegen generate --spec project.yml)
             xcodebuild -project apps/mac/Peek.xcodeproj -scheme Peek -configuration Release \
               -destination 'generic/platform=macOS' -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO build
