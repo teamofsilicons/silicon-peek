@@ -155,9 +155,11 @@ async fn visual_defaults_are_persistent_absolute_and_atomic() {
         .await;
     assert_eq!(set.code, 0, "{}", set.stderr);
     assert_eq!(set.json()["position"], 3);
+    let drawing = std::path::PathBuf::from(set.json()["drawing"].as_str().expect("drawing path"));
+    assert!(drawing.is_absolute());
     assert_eq!(
-        set.json()["drawing"],
-        env.home.join("logo.js").to_str().expect("path")
+        drawing.canonicalize().expect("existing drawing"),
+        env.home.join("logo.js")
     );
     for patch in [
         r#"{"position":9}"#,
