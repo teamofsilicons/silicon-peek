@@ -13,3 +13,5 @@ with an `arc` prefix; controls retain existing click, busy, validation and autho
 Peek’s native macOS settings use SwiftUI’s own grouped forms, capsule buttons,
 segmented pickers and adaptive system colors. Their spacing and hierarchy follow the
 same direction; no web runtime or UIArc CSS was embedded in the native application.
+
+The static build also ships the MIT notice at `/licenses/uiarc-MIT.txt`; the source CSS retains an attribution comment.
