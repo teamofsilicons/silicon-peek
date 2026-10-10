@@ -1,6 +1,6 @@
-//! Ting operations use separately approved reusable root access tokens.
-//! The same token is forwarded to Ting, which verifies its registered endpoint
-//! on every call. Retry bytes and destination remain bound to the original action.
+//! Ting enrollment uses a user proof; delivery and revocation use app proofs.
+//! Every proof is short-lived, addressed to Ting, and scoped to one operation.
+//! Retry bytes and the account UUID remain bound to the original action.
 
 use axum::http::StatusCode;
 use bytes::Bytes;
@@ -98,7 +98,7 @@ async fn post(
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header(
             reqwest::header::AUTHORIZATION,
-            format!("Proof {}", authority.proof_token.expose()),
+            format!("Bearer {}", authority.proof_token.expose()),
         )
         .body(body.to_vec());
     let transport = |e: &reqwest::Error| {
@@ -235,11 +235,10 @@ async fn call(
             let mut outbound = original.clone();
             outbound.as_object_mut().map(|o| o.remove("account_id"));
             if outbound.get("for").is_some() {
-                outbound["for"] = json!(authority.user.as_ref().ok_or_else(obo::required)?.id);
+                outbound["for"] = json!(principal.account);
             }
-            // Preserve the canonical client bytes when consent selected the
-            // original destination; only a provider-selected destination needs
-            // rewriting. Both forms stay identical across token refresh.
+            // The authenticated account UUID is stable across handle changes
+            // and remains identical when a retry receives a fresh proof.
             let body = if outbound == original {
                 body.to_vec()
             } else {
@@ -250,9 +249,7 @@ async fn call(
             if endpoint == Endpoint::Register && matches!(reply.status, 200 | 201) {
                 let value: Value = serde_json::from_slice(&reply.body)
                     .map_err(|_| ting_rejected("Ting returned an unreadable enrollment", None))?;
-                if value.get("for").and_then(Value::as_str)
-                    != authority.user.as_ref().map(|a| a.id.as_str())
-                {
+                if value.get("for").and_then(Value::as_str) != Some(principal.account.as_str()) {
                     return Err(ting_rejected(
                         "Ting enrolled a different provider account",
                         None,
@@ -334,7 +331,7 @@ pub(crate) async fn enroll(
             })?;
             if !valid_id(&sub.id)
                 || sub.app_id != silicon_peek_client::APP_ID
-                || silicon_peek_client::identity::ActorId::parse(&sub.recipient).is_err()
+                || sub.recipient != principal.account.as_str()
                 || !sub.active
             {
                 return Err(ting_rejected(
@@ -449,13 +446,6 @@ pub(crate) async fn send(
                 status: "unavailable",
             }),
         },
-        401 => Err(Failed {
-            error: ting_rejected(
-                "Ting refused peek's credentials for the delivery",
-                reply.error_code().as_deref(),
-            ),
-            status: "rejected",
-        }),
         _ => {
             let (error, status) = classify_failure(&reply);
             Err(Failed { error, status })

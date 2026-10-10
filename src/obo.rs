@@ -1,4 +1,4 @@
-//! Short-lived ACCOUNTS user-verification proofs for Ting.
+//! Short-lived Accounts user and app verification proofs for Ting.
 use crate::{
     accounts::upstream,
     auth::Principal,
@@ -8,7 +8,9 @@ use crate::{
     store,
 };
 use axum::http::StatusCode;
-use silicon_accounts_client::{IssueUserVerification, IssuedProof, ProofKind};
+use silicon_accounts_client::{
+    IssueAppVerification, IssueUserVerification, IssuedProof, ProofKind,
+};
 use silicon_peek_client::ErrorCode;
 
 pub(crate) fn required() -> ApiError {
@@ -44,24 +46,44 @@ pub(crate) async fn access(
         }
     }
     let accounts = plane.accounts()?;
-    let request = IssueUserVerification {
-        subject_token: principal.access_token.expose().to_owned(),
-        receiving_app: "ting".to_owned(),
-        scopes: vec![endpoint.to_owned()],
-        access_ttl_seconds: Some(600),
-    };
-    let proof = accounts
-        .app()
-        .issue_user_verification(&request, None)
+    let app = accounts.app();
+    let enrollment = endpoint == "subscriptions.register";
+    let proof = if enrollment {
+        app.issue_user_verification(
+            &IssueUserVerification {
+                subject_token: principal.access_token.expose().to_owned(),
+                receiving_app: "ting".to_owned(),
+                scopes: vec![endpoint.to_owned()],
+                access_ttl_seconds: Some(600),
+            },
+            None,
+        )
         .await
-        .map_err(|e| upstream(&e, "authorize Ting delivery", false))?;
-    if proof.kind != Some(ProofKind::UserVerification)
+    } else {
+        app.issue_app_verification(
+            &IssueAppVerification {
+                receiving_app: "ting".to_owned(),
+                scopes: vec![endpoint.to_owned()],
+                access_ttl_seconds: Some(600),
+            },
+            None,
+        )
+        .await
+    }
+    .map_err(|e| upstream(&e, "authorize Ting delivery", false))?;
+    let expected_kind = if enrollment {
+        ProofKind::UserVerification
+    } else {
+        ProofKind::AppVerification
+    };
+    if proof.kind != Some(expected_kind)
         || proof.issuing_app.as_deref() != Some("peek")
         || proof.receiving_app.as_deref() != Some("ting")
-        || proof
-            .user
-            .as_ref()
-            .is_none_or(|u| u.uuid != principal.account.as_str())
+        || (enrollment
+            && proof
+                .user
+                .as_ref()
+                .is_none_or(|u| u.uuid != principal.account.as_str()))
         || !proof.scopes.iter().any(|s| s == endpoint)
     {
         return Err(ApiError::new(
