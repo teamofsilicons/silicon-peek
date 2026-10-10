@@ -95,20 +95,19 @@ function InstallSection() {
       </div>
       <ol class="steps">
         <li>
-          <strong>Silicon Apps</strong>
-          <span>Installed if missing. Keeps every installed app up to date.</span>
+          <strong>A verified native release</strong>
+          <span>Downloads the latest GitHub release and checks its checksum and code signatures.</span>
         </li>
         <li>
           <strong>The peek CLI</strong>
           <span>
-            <code>silicon-apps install peek</code>. Updated automatically from then on.
+            Installed into <code>~/.local/bin</code>, ready for account sign-in and commands.
           </span>
         </li>
         <li>
           <strong>Peek.app</strong>
           <span>
-            Installed by the same command into ~/Applications, Developer ID signature verified, and started. It lives in the menu bar
-            with updates delivered by Silicon Apps.
+            Installed into <code>~/Applications</code>, its Developer ID signature verified, and started in the menu bar.
           </span>
         </li>
         <li>
@@ -117,8 +116,9 @@ function InstallSection() {
         </li>
       </ol>
       <p class="fine">
-        Needs macOS 26 or newer on Apple silicon or Intel. On Linux and Windows, <code>silicon-apps install peek</code> installs
-        the CLI for its account commands. <a href={docsHref("platforms")}>Platforms</a>
+        Needs macOS 26 or newer on Apple silicon or Intel. Rerun this installer for native updates. On Linux, use{" "}
+        <code>silicon-apps install peek</code>. Windows CLI binaries are available from{" "}
+        <a href={`${REPO_URL}/releases`}>GitHub releases</a>. <a href={docsHref("platforms")}>Platforms</a>
       </p>
     </section>
   );
@@ -183,11 +183,11 @@ function CarbonsSection() {
   );
 }
 
-const INSTALL = `silicon-apps install peek
+const INSTALL = `${INSTALL_COMMAND}
 silicon-accounts login --app peek --json | jq -r .slt | peek login --token-file -`;
 const REGISTER = `# one position per Silicon (1 top, then clockwise)
 peek register side 5
-# your face on the Carbon's screen
+# optional: customize your face on the Carbon's screen
 peek register drawing ./cassette.js`;
 const SEND = `peek send --speak "Found 3 GB of old builds." \\
   --ask '{"question":"Delete old builds?",
@@ -220,7 +220,7 @@ function SiliconsSection() {
     <section class="section silicons" id="silicons" aria-labelledby="silicons-title">
       <div class="section-head">
         <p class="kicker">For Silicons</p>
-        <h2 id="silicons-title">Three commands and a flow branch.</h2>
+        <h2 id="silicons-title">Install, sign in, and send.</h2>
         <p>
           <code>peek send</code> returns immediately, so it never blocks your turn. The Carbon's answer comes back later as a Ting
           event, carrying the ISI that asked in <code>metadata.isi</code>.
@@ -230,14 +230,14 @@ function SiliconsSection() {
         <li>
           <h3>Install Peek and sign in</h3>
           <p>
-            Install through Silicon Apps, then use your own Silicon Accounts identity.
+            On macOS, run the native installer, then use your own Silicon Accounts identity.
           </p>
           <CodeBlock label="install and sign in" code={INSTALL} lang="sh" />
         </li>
         <li>
-          <h3>Claim a position and register a drawing</h3>
+          <h3>Choose a position</h3>
           <p>
-            <code>peek send</code> refuses to run until both are set, and says exactly which command to run.
+            Register one of eight positions for your account. A custom drawing is optional and can be added later.
           </p>
           <CodeBlock label="once" code={REGISTER} lang="sh" />
         </li>

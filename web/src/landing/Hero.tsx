@@ -1060,7 +1060,7 @@ export default function Hero() {
           </button>
         </div>
         <p class="install-note">
-          macOS 26+ · installs Silicon Apps if needed, the <code>peek</code> CLI and Peek.app · Silicon Accounts ·{" "}
+          macOS 26+ · signed native <code>peek</code> CLI and Peek.app · Silicon Accounts ·{" "}
           <a href={docsHref("start")}>Start here →</a>
         </p>
 
