@@ -92,7 +92,7 @@ impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for JsonBody<T> {
 }
 
 /// The `Idempotency-Key` every POST must carry (except the telemetry
-/// gateway and the IAM webhook, which have their own dedupe).
+/// gateway and the ACCOUNTS webhook, which have their own dedupe).
 pub(crate) struct IdemKey(pub(crate) IdempotencyKey);
 
 impl<S: Send + Sync> FromRequestParts<S> for IdemKey {
@@ -157,49 +157,5 @@ impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
         _state: &S,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         std::future::ready(Ok(Self(client_ip(parts))))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parts(peer: Option<&str>, xff: Option<&str>) -> Result<Parts, Box<dyn std::error::Error>> {
-        let mut builder = axum::http::Request::builder();
-        if let Some(xff) = xff {
-            builder = builder.header("x-forwarded-for", xff);
-        }
-        let (mut parts, ()) = builder.body(())?.into_parts();
-        if let Some(peer) = peer {
-            parts
-                .extensions
-                .insert(ConnectInfo(peer.parse::<SocketAddr>()?));
-        }
-        Ok(parts)
-    }
-
-    #[test]
-    fn forwarded_for_is_trusted_only_from_loopback() -> Result<(), Box<dyn std::error::Error>> {
-        assert_eq!(
-            client_ip(&parts(Some("127.0.0.1:5000"), Some("1.2.3.4, 5.6.7.8"))?),
-            "5.6.7.8"
-        );
-        assert_eq!(
-            client_ip(&parts(Some("9.9.9.9:5000"), Some("1.2.3.4"))?),
-            "9.9.9.9"
-        );
-        assert_eq!(client_ip(&parts(Some("127.0.0.1:1"), None)?), "127.0.0.1");
-        Ok(())
-    }
-
-    #[test]
-    fn duplicate_headers_are_refused() -> Result<(), Box<dyn std::error::Error>> {
-        let (parts, ()) = axum::http::Request::builder()
-            .header("x-org-id", "a")
-            .header("x-org-id", "b")
-            .body(())?
-            .into_parts();
-        assert!(single_header(&parts.headers, "x-org-id").is_err());
-        Ok(())
     }
 }

@@ -134,6 +134,7 @@ ${notFound ? "" : `<link rel="alternate" type="text/markdown" href="${markdownPa
 <header class="topbar">
 <a class="brand" href="/" aria-label="peek home">${mark}<strong>peek</strong><span>Docs</span></a>
 <div id="docs-tools"></div>
+<div id="docs-account"></div>
 <nav class="external" aria-label="Site"><a href="/">Home</a><a href="${REPO_URL}">GitHub ↗</a><a class="install" href="/#install">Install</a></nav>
 </header>
 <div class="layout">
@@ -197,7 +198,7 @@ const llms = [
   "",
   "> Peek is a local, voice-first way for Carbons and Silicons to exchange quick messages on a Mac. A Silicon claims one of eight screen positions, registers a JavaScript drawing, and uses the `peek` CLI to speak, show up to three text or image elements, or ask one question. The Carbon answers by voice, keyboard or click, and the answer returns to the Silicon as a Ting event.",
   "",
-  `Install (macOS 26+): \`curl -fsSL ${SITE_URL}/install.sh | sh\`. CLI only (Linux, Windows): \`honeycomb install 'peek'\`. Offline docs: \`peek docs <topic>\`.`,
+  `Install (macOS 26+): \`curl -fsSL ${SITE_URL}/install.sh | sh\`. CLI only (Linux, Windows): \`silicon-apps install peek\`. Offline docs: \`peek docs <topic>\`.`,
   "",
   "## Docs",
   "",

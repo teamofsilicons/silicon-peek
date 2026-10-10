@@ -91,10 +91,7 @@ pub(crate) async fn ingest(
 ) -> ApiResult<StatusCode> {
     let config = &state.0.config;
     let opted_out = single_header(&headers, headers::TELEMETRY)?.is_some_and(is_off_value);
-    if !config.telemetry.enabled
-        || opted_out
-        || single_header(&headers, headers::TESTING_KEY)?.is_some()
-    {
+    if !config.telemetry.enabled || opted_out {
         return Ok(StatusCode::NO_CONTENT);
     }
     let origin = single_header(&headers, header::ORIGIN.as_str())?;

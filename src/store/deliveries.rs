@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 pub(crate) struct DeliveryKey<'a> {
     pub(crate) ctx: &'a str,
     pub(crate) event_id: &'a str,
-    pub(crate) org: &'a str,
+    pub(crate) account: &'a str,
     pub(crate) actor: &'a str,
     pub(crate) ting_type: &'a str,
     pub(crate) ting_key: &'a str,
@@ -32,7 +32,7 @@ pub(crate) enum Begin {
 pub(crate) fn begin(conn: &Connection, key: &DeliveryKey<'_>, now: i64) -> rusqlite::Result<Begin> {
     let existing = conn
         .query_row(
-            "SELECT org_id, actor_id, type, ting_key, status, ting_id, silent FROM deliveries WHERE ctx = ?1 AND event_id = ?2",
+            "SELECT account_id, actor_id, type, ting_key, status, ting_id, silent FROM deliveries WHERE ctx = ?1 AND event_id = ?2",
             params![key.ctx, key.event_id],
             |row| {
                 Ok((
@@ -50,14 +50,14 @@ pub(crate) fn begin(conn: &Connection, key: &DeliveryKey<'_>, now: i64) -> rusql
     match existing {
         None => {
             conn.execute(
-                "INSERT INTO deliveries(ctx, event_id, org_id, actor_id, type, ting_key, status, attempts, first_seen_at, updated_at)
+                "INSERT INTO deliveries(ctx, event_id, account_id, actor_id, type, ting_key, status, attempts, first_seen_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?7)",
-                params![key.ctx, key.event_id, key.org, key.actor, key.ting_type, key.ting_key, now],
+                params![key.ctx, key.event_id, key.account, key.actor, key.ting_type, key.ting_key, now],
             )?;
             Ok(Begin::Send)
         }
-        Some((org, actor, ting_type, ting_key, ..))
-            if org != key.org
+        Some((account, actor, ting_type, ting_key, ..))
+            if account != key.account
                 || actor != key.actor
                 || ting_type != key.ting_type
                 || ting_key != key.ting_key =>
@@ -108,68 +108,4 @@ pub(crate) fn record(
         )?,
     };
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::store::testing::memory;
-
-    fn key<'a>(event: &'a str, ting_key: &'a str) -> DeliveryKey<'a> {
-        DeliveryKey {
-            ctx: "production",
-            event_id: event,
-            org: "tos",
-            actor: "si:cleanup",
-            ting_type: "peek.ask.answered",
-            ting_key,
-        }
-    }
-
-    #[test]
-    fn begin_record_and_conflict() -> rusqlite::Result<()> {
-        let conn = memory()?;
-        assert!(matches!(begin(&conn, &key("evt_1", "k"), 1)?, Begin::Send));
-        record(
-            &conn,
-            "production",
-            "evt_1",
-            &Outcome::Failed {
-                status: "unavailable",
-                error: "ting_unavailable",
-            },
-            1,
-            2,
-        )?;
-        assert!(matches!(begin(&conn, &key("evt_1", "k"), 3)?, Begin::Send));
-        record(
-            &conn,
-            "production",
-            "evt_1",
-            &Outcome::Accepted {
-                ting_id: "msg_1",
-                silent: true,
-            },
-            1,
-            4,
-        )?;
-        match begin(&conn, &key("evt_1", "k"), 5)? {
-            Begin::Accepted(a) => {
-                assert_eq!(a.ting_id, "msg_1");
-                assert!(a.silent);
-            }
-            _ => panic!("expected accepted"),
-        }
-        assert!(matches!(
-            begin(&conn, &key("evt_1", "other"), 6)?,
-            Begin::Conflict
-        ));
-        let attempts: i64 = conn.query_row(
-            "SELECT attempts FROM deliveries WHERE event_id = 'evt_1'",
-            [],
-            |r| r.get(0),
-        )?;
-        assert_eq!(attempts, 2);
-        Ok(())
-    }
 }

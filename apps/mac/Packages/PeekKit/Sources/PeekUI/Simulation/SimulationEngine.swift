@@ -34,7 +34,7 @@ public struct SimulationLogEntry: Identifiable, Equatable, Sendable {
 ///    which the presenter hands to its speech player, driving `speech.level/progress/done`.
 ///
 /// Everything the bubble sends back (answers, dismissals, `speech.done`, voice recordings, …)
-/// lands in ``log``. Nothing reaches peekd, IAM, Ting, Deepgram or OpenAI.
+/// lands in ``log``. Nothing reaches peekd, Silicon Accounts, Ting, Deepgram or OpenAI.
 @MainActor
 @Observable
 public final class SimulationEngine {
@@ -54,7 +54,7 @@ public final class SimulationEngine {
     }
 
     /// The Silicon every simulated bubble belongs to.
-    public static let siliconKey = SiliconKey(context: .simulation, orgID: "simulation", actorID: "si:simulation")
+    public static let siliconKey = SiliconKey(context: .simulation, accountID: "simulation", actorID: "si:simulation")
     public static let displayName = "Simulation"
     public static let maxLogEntries = 500
 
@@ -152,7 +152,7 @@ public final class SimulationEngine {
 
         let key = Self.siliconKey
         let slot = SlotState(
-            index: scenario.position, context: key.context, actorID: key.actorID, orgID: key.orgID,
+            index: scenario.position, context: key.context, actorID: key.actorID, accountID: key.accountID,
             displayName: Self.displayName, initial: "S",
             drawing: DrawingRef(sha256: assets.cassetteSHA256, path: assets.cassette.path), hotkey: false)
         pipeline.presenter.updateSlots([slot])
@@ -311,7 +311,7 @@ public final class SimulationEngine {
     private func loadDrawing(assets: SimulationAssetPaths, slot: SlotIndex, pipeline: SimulationPipeline) async {
         let key = Self.siliconKey
         let request = DrawingLoadRequest(
-            context: key.context, orgID: key.orgID, actorID: key.actorID, slot: slot, scriptPath: assets.cassette.path,
+            context: key.context, accountID: key.accountID, actorID: key.actorID, slot: slot, scriptPath: assets.cassette.path,
             sha256: assets.cassetteSHA256)
         switch await pipeline.link.request(.drawingLoad(request)) {
         case .ok:

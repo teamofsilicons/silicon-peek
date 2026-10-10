@@ -34,7 +34,7 @@ Drawing area is not resizeable.
 
 `peek unregister` to remove itself and hold no position to itself.
 
-`peek ...` authentication cli needed by iam.
+`peek ...` authentication cli needed by Silicon Accounts.
 
 ## Inputs
 Each visual is attached to a silicon, and has a keyboard shortcut for it. def: cmd+{1,2,3...8} 1 is top center and moving clockwise.
@@ -49,7 +49,7 @@ after pressing a keyboard shortcut to slide in a peek, a keyboard shortcut \ can
 when silicon tries to run `peek send` commands without setting a drawing, or location among 8, it show throw an erorr asking to do that first.
 
 ## Auth & Server
-peek will be authenticated using IAM so it can distinguishes between different silicons, send msg over ting, and store information per silicon as needed. All information / send history is kept locally. peek is a very local app and barely uses global for much. It does have a server to keep the app secret and register ting, store drawing on server etc etc.
+peek will be authenticated using Silicon Accounts so it can distinguishes between different silicons, send msg over ting, and store information per silicon as needed. All information / send history is kept locally. peek is a very local app and barely uses global for much. It does have a server to keep the app secret and register ting, store drawing on server etc etc.
 
 ## Settings
 Make 2 modes: Normal mode and compact mode. in compact mode, the arc is not an arc, its just a line, and visual becomes very small and goes to the left, and the show/ask is displayed on the right. it takes less space in compact.
@@ -67,8 +67,8 @@ for dark mode and light mode, that information is also sent to the drawing area 
 Make the mac app native, for backend write it in rust. same with CLI, make it in rust and ship the binary.
 Make a frontend explaining what peek does and how it works. make it in solid js. keep the style similar to the app itself.
 I am a certified apple developer, so sign the app using it.
-Publish everything on honeycomb.
-Learn how to use IAM, Honeycomb, Ting, and how everything will work inside silicon-stemcell
+Publish everything on Silicon Apps.
+Learn how to use Silicon Accounts, Silicon Apps, Ting, and how everything will work inside silicon-stemcell
 (github.com/teamofsilicons/...) and each one has its own documentation as well on their websites.
 use @chrome for whatever you need.
 FOR TTS AND STT, use deepgram directly.

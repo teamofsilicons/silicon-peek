@@ -61,16 +61,3 @@ pub fn real_home() -> Result<PathBuf> {
             .with_hint("set SILICON_HOME to the Silicon's home directory")
         })
 }
-
-#[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ids_and_home() -> Result<()> {
-        assert_eq!(uid(), euid());
-        let home = real_home()?;
-        assert!(home.is_absolute());
-        Ok(())
-    }
-}

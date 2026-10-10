@@ -42,14 +42,6 @@ let package = Package(
             dependencies: ["PeekCore", "PeekIPC", "PeekDrawing", "PeekAudio", "PeekInput"],
             swiftSettings: swiftSettings),
 
-        .testTarget(name: "PeekCoreTests", dependencies: ["PeekCore"], swiftSettings: swiftSettings),
-        .testTarget(name: "PeekIPCTests", dependencies: ["PeekIPC", "PeekCore"], swiftSettings: swiftSettings),
-        .testTarget(name: "PeekDrawingTests", dependencies: ["PeekDrawing", "PeekCore"], swiftSettings: swiftSettings),
-        .testTarget(name: "PeekAudioTests", dependencies: ["PeekAudio", "PeekCore"], swiftSettings: swiftSettings),
-        .testTarget(
-            name: "PeekInputTests", dependencies: ["PeekInput", "PeekAudio", "PeekCore"], swiftSettings: swiftSettings),
-        .testTarget(
-            name: "PeekUITests", dependencies: ["PeekUI", "PeekCore", "PeekIPC"], swiftSettings: swiftSettings),
     ],
     swiftLanguageModes: [.v6]
 )

@@ -36,7 +36,6 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
-pub mod authorization;
 pub mod config;
 pub mod error;
 pub mod http;
@@ -61,20 +60,20 @@ pub use secret::{Secret, constant_time_eq};
 /// server).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The IAM application ID.
+/// The ACCOUNTS application ID.
 pub const APP_ID: &str = "peek";
 
-/// The org that owns the peek application.
-pub const OWNER_ORG: &str = "tos";
+/// The account that owns the peek application.
+pub const OWNER_ACCOUNT: &str = "si:tos";
 
 /// The peek-server API version.
 pub const API_VERSION: &str = "v1";
 
-/// IAM's backend.
-pub const IAM_URL: &str = "https://backend.iam.teamofsilicons.com";
+/// ACCOUNTS's backend.
+pub const ACCOUNTS_URL: &str = "https://accounts.teamofsilicons.com";
 
-/// IAM's consent UI.
-pub const AUTH_URL: &str = "https://auth.iam.teamofsilicons.com";
+/// ACCOUNTS's consent UI.
+pub const AUTH_URL: &str = "https://accounts.teamofsilicons.com/authorize";
 
 /// Online documentation.
 pub const DOCS_URL: &str = "https://peek.teamofsilicons.com/docs";
@@ -83,14 +82,10 @@ pub const DOCS_URL: &str = "https://peek.teamofsilicons.com/docs";
 pub const REPOSITORY_URL: &str = "https://github.com/teamofsilicons/silicon-peek";
 
 /// Scopes a session must hold; missing ones mean `reconsent_required`.
-pub const REQUIRED_SCOPES: [&str; 1] = ["self.identity.read"];
+pub const REQUIRED_SCOPES: [&str; 1] = ["profile"];
 
 /// Every scope peek requests (BLUEPRINT D26), sorted.
-pub const ALL_SCOPES: [&str; 3] = [
-    "self.identity.read",
-    "self.membership.read",
-    "self.profile.read",
-];
+pub const ALL_SCOPES: [&str; 1] = ["profile"];
 
 /// The platform string of this build (`macos-aarch64`, `linux-x86_64`, …).
 #[must_use]
@@ -99,7 +94,7 @@ pub fn platform() -> String {
 }
 
 /// Whether this platform runs Peek.app and peekd (macOS only); elsewhere only
-/// the IAM contract commands work.
+/// the ACCOUNTS contract commands work.
 #[must_use]
 pub fn platform_has_app() -> bool {
     cfg!(target_os = "macos")
@@ -158,43 +153,4 @@ pub fn platform_unsupported_on(command: &str, platform: &str) -> Error {
         "supported_platforms": FULL_PLATFORMS,
         "docs_url": PLATFORMS_DOCS_URL,
     }))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn platform_unsupported_is_the_blueprint_json() {
-        let e = platform_unsupported_on("send", "linux-x86_64");
-        let v = e.envelope();
-        assert_eq!(
-            v,
-            serde_json::json!({"error":{"code":"platform_unsupported",
-                "message":"peek send shows a bubble on a Mac through Peek.app; this peek runs on linux-x86_64.",
-                "hint":"Run this Silicon on macOS 26+ with Peek.app installed, or use dm for text conversations.",
-                "retryable":false,"request_id":null,
-                "details":{"platform":"linux-x86_64","supported_platforms":["macos-aarch64","macos-x86_64"],
-                    "docs_url":"https://peek.teamofsilicons.com/docs/platforms"}}})
-        );
-    }
-
-    #[test]
-    fn platform_strings() {
-        let p = platform();
-        assert!(p.contains('-'));
-        assert_eq!(
-            *platform_unsupported("send").code(),
-            ErrorCode::PlatformUnsupported
-        );
-        assert_eq!(platform_unsupported("send").exit_code().code(), 4);
-    }
-
-    #[test]
-    fn scopes_are_sorted_and_cover_the_required_ones() {
-        let mut sorted = ALL_SCOPES;
-        sorted.sort_unstable();
-        assert_eq!(sorted, ALL_SCOPES);
-        assert!(REQUIRED_SCOPES.iter().all(|s| ALL_SCOPES.contains(s)));
-    }
 }

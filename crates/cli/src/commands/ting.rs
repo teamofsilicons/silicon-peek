@@ -20,7 +20,7 @@ pub async fn enroll(g: &Globals, out: Out) -> Result<()> {
     let session = g.session(crate::context::store()?, false).await?;
     let stored = session.store.read_session()?;
     let before = stored.usable_slot(&session.slot_key, session.store.dir())?;
-    g.session_org(before)?;
+    g.session_account(before)?;
     let expected = before.context_id()?.to_owned();
     super::fresh(&session).await?;
     authorization::perform(
@@ -79,50 +79,4 @@ async fn retry_parked_deliveries(store: &Store, slot_key: &SlotKey, expected: &s
             .ok()
     };
     let _ = tokio::time::timeout(Duration::from_secs(4), task).await;
-}
-
-/// Explicit feature approval; ordinary authentication and queued work stay independent.
-pub async fn permission(g: &Globals, out: Out, command: crate::cli::TingCommand) -> Result<()> {
-    use crate::cli::TingCommand;
-    use silicon_peek_client::runtime::authorization::{self, Action};
-    let action = match command {
-        TingCommand::Authorize => Action::Start,
-        TingCommand::AuthorizationStatus => Action::Status,
-        TingCommand::CancelAuthorization => Action::Cancel,
-        TingCommand::CompleteAuthorization { code_file } => {
-            g.check_stdin(&[("--code-file", code_file.as_deref() == Some("-"))])?;
-            Action::Complete(
-                code_file
-                    .as_deref()
-                    .map(|path| crate::input::read_secret("--code-file", path))
-                    .transpose()?,
-            )
-        }
-        TingCommand::Enroll => return enroll(g, out).await,
-    };
-    let session = g.session(crate::context::store()?, false).await?;
-    let stored = session.store.read_session()?;
-    let before = stored.usable_slot(&session.slot_key, session.store.dir())?;
-    g.session_org(before)?;
-    let expected = before.context_id()?.to_owned();
-    if !matches!(action, Action::Cancel) {
-        super::fresh(&session).await?;
-    }
-    let result = authorization::perform(
-        &session.store,
-        &session.client,
-        &session.slot_key,
-        &expected,
-        action.clone(),
-    )
-    .await?;
-    out.value(&json!({"context_id": expected, "request":result}), |value| {
-        let request = &value["request"];
-        if request.is_null() { if matches!(action, Action::Cancel) { "Permission review cancelled locally. Your queued work is retained.".into() } else { "No permission review saved. Run peek ting authorize to start.".into() } }
-        else if request["completed"] == true { "Ting permission approved. Run peek ting enroll explicitly to enable deliveries and retry queued answers.".into() }
-        else if let Some(url) = request["authorization"]["authorization_url"].as_str() {
-            format!("Review Ting permission in IAM: {url}\nThen: peek ting complete-authorization --code-file - (keep the same profile, org and testing environment)")
-        } else { format!("Permission request status: {}", request["authorization"]["status"]) }
-    });
-    Ok(())
 }

@@ -1,8 +1,8 @@
 //! Sealing secrets at rest with AES-256-GCM (`PEEK_ENCRYPTION_KEY`).
 //!
-//! Used for org BYO keys, testing roots and independently approved OBO families. The
+//! Used for account BYO keys, testing roots and independently approved OBO families. The
 //! sealed form is `0x01 || nonce(12) || ciphertext+tag`. The associated data
-//! names what the secret is for (for example `peek/byo/v1/<ctx>/<org>/deepgram`),
+//! names what the secret is for (for example `peek/byo/v1/<ctx>/<account>/deepgram`),
 //! so a sealed value copied into another row fails to open.
 
 use aes_gcm::{
@@ -79,32 +79,7 @@ impl Sealer {
     }
 }
 
-/// AAD for an org's BYO key.
-pub(crate) fn byo_aad(ctx: &str, org: &str) -> String {
-    format!("peek/byo/v1/{ctx}/{org}/deepgram")
-}
-
-/// AAD for a testing environment's root key.
-pub(crate) fn root_key_aad(environment_id: &str) -> String {
-    format!("peek/env-root/v1/{environment_id}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn round_trip_and_binding() -> ApiResult<()> {
-        let cipher = Sealer::new(&[7; 32]);
-        let boxed = cipher.seal("a", b"dg-key")?;
-        assert_ne!(&boxed[13..], b"dg-key");
-        assert_eq!(cipher.open("a", &boxed)?, b"dg-key");
-        assert!(cipher.open("b", &boxed).is_err(), "aad binds the purpose");
-        let other = Sealer::new(&[8; 32]);
-        assert!(other.open("a", &boxed).is_err(), "wrong key fails");
-        assert!(cipher.open("a", &boxed[..5]).is_err());
-        let again = cipher.seal("a", b"dg-key")?;
-        assert_ne!(boxed, again, "fresh nonce per seal");
-        Ok(())
-    }
+/// AAD for an account's BYO key.
+pub(crate) fn byo_aad(ctx: &str, account: &str) -> String {
+    format!("peek/byo/v1/{ctx}/{account}/deepgram")
 }

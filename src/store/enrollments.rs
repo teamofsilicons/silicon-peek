@@ -19,15 +19,15 @@ impl Enrollment {
 pub(crate) fn record(
     conn: &Connection,
     ctx: &str,
-    org: &str,
+    account: &str,
     actor: &str,
     subscription_id: &str,
     now: i64,
 ) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO ting_enrollments(ctx, org_id, actor_id, subscription_id, registered_at, revoked_at) VALUES (?1, ?2, ?3, ?4, ?5, NULL)
-         ON CONFLICT(ctx, org_id, actor_id) DO UPDATE SET subscription_id = excluded.subscription_id, registered_at = excluded.registered_at, revoked_at = NULL",
-        params![ctx, org, actor, subscription_id, now],
+        "INSERT INTO ting_enrollments(ctx, account_id, actor_id, subscription_id, registered_at, revoked_at) VALUES (?1, ?2, ?3, ?4, ?5, NULL)
+         ON CONFLICT DO UPDATE SET actor_id = excluded.actor_id, subscription_id = excluded.subscription_id, registered_at = excluded.registered_at, revoked_at = NULL",
+        params![ctx, account, actor, subscription_id, now],
     )?;
     Ok(())
 }
@@ -36,12 +36,12 @@ pub(crate) fn record(
 pub(crate) fn get(
     conn: &Connection,
     ctx: &str,
-    org: &str,
+    account: &str,
     actor: &str,
 ) -> rusqlite::Result<Option<Enrollment>> {
     conn.query_row(
-        "SELECT subscription_id, revoked_at FROM ting_enrollments WHERE ctx = ?1 AND org_id = ?2 AND actor_id = ?3",
-        params![ctx, org, actor],
+        "SELECT subscription_id, revoked_at FROM ting_enrollments WHERE ctx = ?1 AND account_id = ?2",
+        params![ctx, account],
         |row| {
             Ok(Enrollment {
                 subscription_id: row.get(0)?,
@@ -56,13 +56,13 @@ pub(crate) fn get(
 pub(crate) fn mark_revoked(
     conn: &Connection,
     ctx: &str,
-    org: &str,
+    account: &str,
     actor: &str,
     now: i64,
 ) -> rusqlite::Result<usize> {
     conn.execute(
-        "UPDATE ting_enrollments SET revoked_at = ?4 WHERE ctx = ?1 AND org_id = ?2 AND actor_id = ?3 AND revoked_at IS NULL",
-        params![ctx, org, actor, now],
+        "UPDATE ting_enrollments SET revoked_at = ?3 WHERE ctx = ?1 AND account_id = ?2 AND revoked_at IS NULL",
+        params![ctx, account, now],
     )
 }
 
@@ -70,11 +70,11 @@ pub(crate) fn mark_revoked(
 pub(crate) fn delete(
     conn: &Connection,
     ctx: &str,
-    org: &str,
+    account: &str,
     actor: &str,
 ) -> rusqlite::Result<usize> {
     conn.execute(
-        "DELETE FROM ting_enrollments WHERE ctx = ?1 AND org_id = ?2 AND actor_id = ?3",
-        params![ctx, org, actor],
+        "DELETE FROM ting_enrollments WHERE ctx = ?1 AND account_id = ?2",
+        params![ctx, account],
     )
 }

@@ -601,16 +601,16 @@ public struct DrawingErrorRequest: UIRequest, Equatable {
     public typealias Reply = IPCAck
 
     public var context: PeekContext
-    public var orgID: String
+    public var accountID: String
     public var actorID: String
     public var reason: DrawingFailureReason
     public var message: String
     public var stack: String?
 
-    public init(context: PeekContext, orgID: String, actorID: String, reason: DrawingFailureReason, message: String,
+    public init(context: PeekContext, accountID: String, actorID: String, reason: DrawingFailureReason, message: String,
                 stack: String?) {
         self.context = context
-        self.orgID = orgID
+        self.accountID = accountID
         self.actorID = actorID
         self.reason = reason
         self.message = message
@@ -619,7 +619,7 @@ public struct DrawingErrorRequest: UIRequest, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case context
-        case orgID = "org_id"
+        case accountID = "account_id"
         case actorID = "actor_id"
         case reason
         case message
@@ -629,7 +629,7 @@ public struct DrawingErrorRequest: UIRequest, Equatable {
     public func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(context, forKey: .context)
-        try c.encode(orgID, forKey: .orgID)
+        try c.encode(accountID, forKey: .accountID)
         try c.encode(actorID, forKey: .actorID)
         try c.encode(reason, forKey: .reason)
         try c.encode(message, forKey: .message)
@@ -1152,27 +1152,27 @@ public struct DrawingValidateRequest: Codable, Sendable, Equatable {
 public struct DrawingLoadRequest: Codable, Sendable, Equatable {
     public static let op = "drawing.load"
     public var context: PeekContext
-    public var orgID: String
+    public var accountID: String
     public var actorID: String
     public var slot: SlotIndex?
     public var scriptPath: String
     public var sha256: String
 
-    public init(context: PeekContext, orgID: String, actorID: String, slot: SlotIndex?, scriptPath: String,
+    public init(context: PeekContext, accountID: String, actorID: String, slot: SlotIndex?, scriptPath: String,
                 sha256: String) {
         self.context = context
-        self.orgID = orgID
+        self.accountID = accountID
         self.actorID = actorID
         self.slot = slot
         self.scriptPath = scriptPath
         self.sha256 = sha256
     }
 
-    public var siliconKey: SiliconKey { SiliconKey(context: context, orgID: orgID, actorID: actorID) }
+    public var siliconKey: SiliconKey { SiliconKey(context: context, accountID: accountID, actorID: actorID) }
 
     enum CodingKeys: String, CodingKey {
         case context
-        case orgID = "org_id"
+        case accountID = "account_id"
         case actorID = "actor_id"
         case slot
         case scriptPath = "script_path"

@@ -179,7 +179,6 @@ pub async fn start(cfg: DaemonConfig) -> Result<DaemonHandle> {
         tokio::spawn(Arc::clone(&shared).run_telemetry()),
     ];
     if shared.cfg.updates_enabled {
-        tasks.push(tokio::spawn(Arc::clone(&shared).run_updates()));
         tasks.push(tokio::spawn(Arc::clone(&shared).run_maintenance()));
     }
     if shared.cfg.launch_ui {
@@ -246,14 +245,6 @@ impl DaemonHandle {
     /// As `update_once`.
     pub async fn update_now(&self) -> Result<crate::update::UpdateOutcome> {
         self.shared.update_once().await
-    }
-
-    /// Runs the CLI watchdog now.
-    ///
-    /// # Errors
-    /// Database failures.
-    pub async fn watchdog_now(&self) -> Result<usize> {
-        self.shared.cli_watchdog().await
     }
 
     /// Whether Peek.app is connected.

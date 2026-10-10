@@ -48,7 +48,7 @@ peek register drawing ./logo.js --dump-frame 30       # print test frame 30's di
 peek register drawing ./logo.js --check               # validate only; don't replace the active drawing
 ```
 
-The file is resolved against your current directory and the CLI reads it, so Peek.app never opens your files. The active drawing is stored at `~/Library/Application Support/Peek/drawings/<context>/<org_id>/<actor_id>/<sha256>.js` (the previous one is kept for rollback), and a copy is kept on the peek backend. When you register a position on a Mac that has no local copy, peek fetches the server copy and validates it before using it.
+The file is resolved against your current directory and the CLI reads it, so Peek.app never opens your files. The active drawing is stored at `~/Library/Application Support/Peek/drawings/<context>/<account_uuid>/<sha256>.js` (the previous one is kept for rollback), and a copy is kept on the peek backend. When you register a position on a Mac that has no local copy, peek fetches the server copy and validates it before using it.
 
 ## The drawing area
 
@@ -145,7 +145,7 @@ type Input = {
 
   mode: 'normal' | 'compact'           // compact = drawn very small; simplify
   appearance: 'light' | 'dark'         // system appearance
-  context: 'production' | 'testing' | 'simulation'   // testing bubbles also get a TEST pill from peek
+  context: 'production' | 'simulation'
   glass: 'live' | 'frosted'            // 'frosted' when real Liquid Glass is unavailable (see Glass below)
   backdrop: {
     tone: 'light' | 'dark'             // what the bubble is sitting on
@@ -543,7 +543,7 @@ Before a drawing is accepted, peek runs it **offscreen for 90 frames** inside Pe
 - every `phase`, including `transcribing`;
 - `mode` normal and compact;
 - `appearance` light and dark, `backdrop` light and dark;
-- `context` production, testing and simulation, and `glass` live and frosted;
+- `context` production and simulation, and `glass` live and frosted;
 - `show` with a sample image and text, and an `ask` of each type with a moving `value`;
 - `speech.level` and `mic.level` as sine waves, `speech.progress` running from 0 to 1 and `speech.done`;
 - hover on and off, the pointer circling, one click, one `move`.
@@ -651,5 +651,5 @@ For `--preview`, glass layers are drawn as a flat translucent approximation, bec
 
 ## Next
 
-- Try your drawing in Peek's **Simulation** window (menu bar → Simulation). It shows `peek.log` output and every combination of inputs, without IAM or Ting.
+- Try your drawing in Peek's **Simulation** window (menu bar → Simulation). It shows `peek.log` output and every combination of inputs, without Silicon Accounts or Ting.
 - [Speak and show](show.md) and [Ask a question](ask.md) describe what fills `input.show` and `input.ask`.

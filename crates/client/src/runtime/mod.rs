@@ -18,7 +18,6 @@ pub mod refresh;
 pub mod session;
 pub mod store;
 pub mod sys;
-pub mod testing;
 
 use std::path::Path;
 
@@ -31,7 +30,7 @@ pub use store::{Store, StoreLock};
 
 use crate::{
     error::{Error, ErrorCode, Result},
-    identity::{ActorId, OrgId, SlotKey},
+    identity::{AccountId, ActorId, SlotKey},
     ipc::AuthBlock,
 };
 
@@ -44,8 +43,8 @@ pub struct VerifiedHome {
     pub slot_key: SlotKey,
     /// The Silicon, from the store slot (never from request fields).
     pub actor_id: ActorId,
-    /// Its org, from the store slot.
-    pub org_id: OrgId,
+    /// Its account, from the store slot.
+    pub account_id: AccountId,
     /// Its display name, when known.
     pub display_name: Option<String>,
     /// Whether the slot records an active Ting enrollment (`None` when it
@@ -97,7 +96,7 @@ pub fn authenticate_home(auth: &AuthBlock) -> Result<VerifiedHome> {
     }
     Ok(VerifiedHome {
         actor_id: slot.actor.public_id.clone(),
-        org_id: slot.org_id.clone(),
+        account_id: slot.account_id.clone(),
         display_name: slot.display_name.clone(),
         ting_subscribed: slot.ting.as_ref().map(|t| t.subscribed),
         slot_key,

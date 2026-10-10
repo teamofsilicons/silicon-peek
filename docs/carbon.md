@@ -8,7 +8,7 @@ This page is for the human at the Mac. Peek shows bubbles from your Silicons at 
 curl -fsSL https://peek.teamofsilicons.com/install.sh | sh
 ```
 
-You need macOS 26 or newer. The script installs Honeycomb if it is missing, then runs `honeycomb install 'peek'`, which installs the `peek` CLI and, on a Mac, puts Peek.app into `~/Applications` (after checking its Developer ID signature) and starts it. Peek has no Dock icon; look for it in the menu bar. If you already have Honeycomb, `honeycomb install 'peek'` alone does the same.
+You need macOS 26 or newer. The script installs Silicon Apps if it is missing, then runs `silicon-apps install 'peek'`, which installs the `peek` CLI and, on a Mac, puts Peek.app into `~/Applications` (after checking its Developer ID signature) and starts it. Peek has no Dock icon; look for it in the menu bar. If you already have Silicon Apps, `silicon-apps install 'peek'` alone does the same.
 
 The first time Peek starts, macOS may say a background item was added, or ask you to approve it. Open **System Settings → General → Login Items & Extensions** and allow Peek. Peek's helper (`peekd`) runs in the background so Silicons can reach you even when no bubble is open. If you do not approve it, Peek still works while the app is running, and shows a one-time notice.
 
@@ -125,16 +125,14 @@ Settings has five tabs:
 | General | Backdrop | Desktop picture, or Screen contents (samples the real screen under each bubble; needs Screen Recording permission) | Desktop picture |
 | General | Hotkeys | ⌘, ⌃⌘, ⌥⌘, ⇧⌘, ⌃⌥⌘ or ⌃⌥, each followed by 1 … 8 | ⌃⌘1 … ⌃⌘8 |
 | General | Share usage and diagnostics | On or off. Content is never included. See [Telemetry](telemetry.md). | On |
-| General | Keep Silicons' peek CLI up to date | The helper's hourly fallback to Honeycomb's updater | On |
+| General | Keep Silicons' peek CLI up to date | The helper's hourly fallback to Silicon Apps's updater | On |
 | Voice | Speaking voice | ElevenLabs voice; your Silicon can set a voice and delivery instructions through the CLI | George (`JBFqnCBsd6RMkjVDRZzb`) |
 | Voice | Listening language | Automatic (your macOS languages), a fixed language, or any BCP 47 tag | Automatic |
-| Testing | Show test peeks | Whether bubbles from testing environments appear; also lists the environments in use | On |
 | Startup | Launch at login, background helper | Status only, with a hint and **Open Login Items…** when macOS needs your approval | – |
 | Diagnostics | – | Versions (app, helper, macOS, QuickJS, glass mode), the helper's socket, microphone permission, `settings.json` and the end of the helper's log | – |
 
-**Simulation** (menu bar → Simulation…, or General → Open Simulation…) lets you try every combination (position, speak, show, each ask type, mode, appearance, backdrop) with built-in samples. It uses no network, no IAM, no Ting, no Deepgram, no ElevenLabs and no OpenAI, and its bubbles are labelled `SIMULATION`. A voice answer in Simulation is recorded but never transcribed.
+**Simulation** (menu bar → Simulation…, or General → Open Simulation…) lets you try every combination (position, speak, show, each ask type, mode, appearance, backdrop) with built-in samples. It uses no network, no Silicon Accounts, no Ting, no Deepgram, no ElevenLabs and no OpenAI, and its bubbles are labelled `SIMULATION`. A voice answer in Simulation is recorded but never transcribed.
 
-**Test bubbles** come from a Silicon running against a testing environment. They carry a `TEST · <environment name>` pill and a dashed ring, and show "Sent to test silicon" after you answer. A real bubble always takes priority over a test bubble at the same position.
 
 ## Ask your Silicon to use peek
 
@@ -150,7 +148,7 @@ Answers arrive as Ting events of type peek.ask.answered. Docs: peek docs silicon
 
 ## Updates and uninstall
 
-Peek updates itself. The CLI is updated by Honeycomb; the app and its helper update from the newest build any Silicon has installed, never downgrade, and wait until no bubble, recording or question is on screen.
+Peek updates itself. The CLI is updated by Silicon Apps; the app and its helper update from the newest build any Silicon has installed, never downgrade, and wait until no bubble, recording or question is on screen.
 
 To remove Peek.app, its login item and its helper:
 
@@ -158,7 +156,7 @@ To remove Peek.app, its login item and its helper:
 peek app uninstall
 ```
 
-`honeycomb uninstall 'peek'` removes only the CLI; it does not remove the app. Local history and caches live in `~/Library/Application Support/Peek/` and `~/Library/Caches/Peek/`; delete those folders to remove them.
+`silicon-apps uninstall 'peek'` removes only the CLI; it does not remove the app. Local history and caches live in `~/Library/Application Support/Peek/` and `~/Library/Caches/Peek/`; delete those folders to remove them.
 
 ## Next
 

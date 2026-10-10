@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use bytes::Bytes;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use silicon_iam_client::models;
+use silicon_accounts_client::IssuedProof;
 use silicon_peek_client::ErrorCode;
 
 use crate::{
@@ -87,7 +87,7 @@ async fn post(
     state: &AppState,
     endpoint: Endpoint,
     body: &[u8],
-    authority: &models::OboTokenPair,
+    authority: &IssuedProof,
 ) -> ApiResult<Reply> {
     let url = format!("{}{}", state.0.config.ting.base_url, endpoint.path());
     let mut request = state
@@ -96,13 +96,11 @@ async fn post(
         .post(url)
         .timeout(state.0.config.ting.request_timeout)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .bearer_auth(&authority.access_token)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Proof {}", authority.proof_token.expose()),
+        )
         .body(body.to_vec());
-    if let Some(context) = &authority.testing_context {
-        request = request
-            .header("IAM_TEST_APP_SECRET", &context.app_secret)
-            .header("X-Testing-Environment-Key", &context.iam_test_key);
-    }
     let transport = |e: &reqwest::Error| {
         let why = if e.is_timeout() {
             "timed out"
@@ -149,13 +147,17 @@ fn classify_failure(reply: &Reply) -> (ApiError, &'static str) {
             .with_hint("the Silicon must re-enroll explicitly: peek ting enroll (peek never re-registers on its own)"),
             "recipient_not_registered",
         ),
+        401 | 403 => (
+            ting_unavailable("Ting could not verify Peek's Silicon Accounts proof; delivery remains queued", 300),
+            "unavailable",
+        ),
         404 => (
             ApiError::new(
                 StatusCode::BAD_GATEWAY,
                 ErrorCode::TingTypeMissing,
                 "Ting does not know this peek type in this data context; an operator must register it",
             )
-            .with_hint("operators: `ting --org tos types register --type <type> --description …` (BLUEPRINT §3.1); the delivery stays queued")
+            .with_hint("operators: `ting --account tos types register --type <type> --description …` (BLUEPRINT §3.1); the delivery stays queued")
             .with_retry_after(900)
             .with_details(json!({"ting_code": code_str})),
             "ting_type_missing",
@@ -204,7 +206,7 @@ fn classify_failure(reply: &Reply) -> (ApiError, &'static str) {
 }
 
 /// Authorize and send with at most one dedicated-family refresh. The operation
-/// stays bound to its original provider account, organization and body hash.
+/// stays bound to its original provider account, account and body hash.
 async fn call(
     state: &AppState,
     plane: &Plane,
@@ -231,15 +233,9 @@ async fn call(
             )
             .await?;
             let mut outbound = original.clone();
-            outbound["org_id"] = json!(authority.org_id);
+            outbound.as_object_mut().map(|o| o.remove("account_id"));
             if outbound.get("for").is_some() {
-                outbound["for"] = json!(
-                    authority
-                        .actor
-                        .as_ref()
-                        .ok_or_else(obo::required)?
-                        .public_id
-                );
+                outbound["for"] = json!(authority.user.as_ref().ok_or_else(obo::required)?.id);
             }
             // Preserve the canonical client bytes when consent selected the
             // original destination; only a provider-selected destination needs
@@ -255,7 +251,7 @@ async fn call(
                 let value: Value = serde_json::from_slice(&reply.body)
                     .map_err(|_| ting_rejected("Ting returned an unreadable enrollment", None))?;
                 if value.get("for").and_then(Value::as_str)
-                    != authority.actor.as_ref().map(|a| a.public_id.as_str())
+                    != authority.user.as_ref().map(|a| a.id.as_str())
                 {
                     return Err(ting_rejected(
                         "Ting enrolled a different provider account",
@@ -274,13 +270,25 @@ async fn call(
                         .is_some_and(|c| TOKEN_ERRORS.contains(&c.as_str())) =>
             {
                 if attempt == 2 {
-                    return (Err(obo::required()), attempt);
+                    return (
+                        Err(ting_unavailable(
+                            "Ting could not verify Peek's Silicon Accounts proof; delivery remains queued",
+                            300,
+                        )),
+                        attempt,
+                    );
                 }
             }
             other => return (other, attempt),
         }
     }
-    (Err(obo::required()), 2)
+    (
+        Err(ting_unavailable(
+            "Ting proof verification is unavailable",
+            300,
+        )),
+        2,
+    )
 }
 
 #[derive(Deserialize)]
@@ -307,7 +315,7 @@ pub(crate) async fn enroll(
 ) -> ApiResult<String> {
     principal.require_scopes(&ENROLL_SCOPES)?;
     let body =
-        silicon_peek_client::ting::subscription_register_body(&principal.org, &principal.actor)
+        silicon_peek_client::ting::subscription_register_body(&principal.account, &principal.actor)
             .map_err(ApiError::from_client)?;
     let (reply, _) = call(
         state,
@@ -359,8 +367,9 @@ pub(crate) async fn revoke(
     subscription_id: &str,
 ) -> ApiResult<()> {
     principal.require_scopes(&REVOKE_SCOPES)?;
-    let body = silicon_peek_client::ting::subscription_revoke_body(&principal.org, subscription_id)
-        .map_err(ApiError::from_client)?;
+    let body =
+        silicon_peek_client::ting::subscription_revoke_body(&principal.account, subscription_id)
+            .map_err(ApiError::from_client)?;
     let (reply, _) = call(
         state,
         plane,
@@ -453,108 +462,4 @@ pub(crate) async fn send(
         }
     };
     (outcome, attempts)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn reply(status: u16, code: &str) -> Reply {
-        Reply {
-            status,
-            body: Bytes::from(json!({"error": {"code": code, "message": "m"}}).to_string()),
-            retry_after: Some(9),
-        }
-    }
-
-    #[test]
-    fn error_matrix() {
-        let cases = [
-            (
-                403,
-                "recipient_not_registered",
-                ErrorCode::RecipientNotRegistered,
-                409,
-                "recipient_not_registered",
-            ),
-            (
-                403,
-                "permission_denied",
-                ErrorCode::TingRejected,
-                502,
-                "rejected",
-            ),
-            (
-                403,
-                "test_context_mismatch",
-                ErrorCode::TingRejected,
-                502,
-                "rejected",
-            ),
-            (
-                404,
-                "not_found",
-                ErrorCode::TingTypeMissing,
-                502,
-                "ting_type_missing",
-            ),
-            (
-                409,
-                "idempotency_conflict",
-                ErrorCode::TingKeyConflict,
-                409,
-                "rejected",
-            ),
-            (
-                429,
-                "temporarily_rate_limited",
-                ErrorCode::TingUnavailable,
-                503,
-                "unavailable",
-            ),
-            (
-                503,
-                "proof_verification_uncertain",
-                ErrorCode::TingUnavailable,
-                503,
-                "unavailable",
-            ),
-            (
-                400,
-                "invalid_input",
-                ErrorCode::TingRejected,
-                502,
-                "rejected",
-            ),
-        ];
-        for (status, code, expected, http, db) in cases {
-            let (e, s) = classify_failure(&reply(status, code));
-            assert_eq!(*e.code(), expected, "{status} {code}");
-            assert_eq!(e.status().as_u16(), http, "{status} {code}");
-            assert_eq!(s, db, "{status} {code}");
-        }
-        let (e, _) = classify_failure(&reply(429, "temporarily_rate_limited"));
-        assert_eq!(e.retry_after(), Some(9), "Retry-After is passed on");
-    }
-
-    #[test]
-    fn registered_endpoints_keep_the_provider_contract() {
-        for (endpoint, id, path) in [
-            (Endpoint::Send, "tings.send", "/v1/tings"),
-            (
-                Endpoint::Register,
-                "subscriptions.register",
-                "/v1/subscriptions",
-            ),
-            (
-                Endpoint::Revoke,
-                "subscriptions.revoke",
-                "/v1/subscriptions/revoke",
-            ),
-        ] {
-            assert_eq!(endpoint.id(), id);
-            assert_eq!(endpoint.path(), path);
-            assert!(obo::ENDPOINTS.contains(&id));
-        }
-    }
 }

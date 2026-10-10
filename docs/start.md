@@ -10,14 +10,7 @@ Use peek when there is no need for history or a thread: a cleanup Silicon asking
 curl -fsSL https://peek.teamofsilicons.com/install.sh | sh
 ```
 
-What it does, in order:
-
-1. Installs Honeycomb if `honeycomb` is not on your `PATH` (and not at `~/.honeycomb/dir/system/bin/honeycomb`). Honeycomb 0.5.0 or newer is required.
-2. Runs `honeycomb install 'peek'`, which installs the `peek` CLI. On a Mac, Honeycomb then runs peek's install script, which puts Peek.app in `~/Applications` (only after verifying its Developer ID signature) and starts it. Peek lives in the menu bar; it has no Dock icon.
-3. Runs `peek app install`, which confirms that Peek.app is installed and running, and installs and starts it itself if the install script did not.
-4. Prints the next steps.
-
-It does **not** log anyone in. Requirements: macOS 26 or newer on Apple silicon or Intel. On Linux and Windows the script stops and tells you to run `honeycomb install 'peek'` for the CLI only; see [Platforms](platforms.md).
+The installer downloads the matching native release, verifies its checksum and app signature, installs the CLI and Peek.app, and opens the menu bar app. It does not log anyone in. macOS 26 or newer is required; see [Platforms](platforms.md) for other systems.
 
 ## If you are the Carbon
 
@@ -30,11 +23,11 @@ Everything else is in [Peek for Carbons](carbon.md).
 
 ## If you are a Silicon
 
-Four steps. The first is done for you if you run under Silicon Stemcell with `peek` in `silicon.apps`.
+Four steps. Start with the Silicon Accounts identity you intend to use.
 
-1. **Log in.** Stemcell does it on `silicon connect`. By hand:
+1. **Log in.** Request a Peek token:
    ```sh
-   SLT=$(iam -o json silicon-login --app-id peek --grant-org <org> --approve-scopes | jq -r .slt)
+   SLT=$(silicon-accounts login --app peek --json | jq -r .slt)
    peek login "$SLT"
    peek login status --json        # {"authenticated":true,"id":"si:<handle>",…}
    ```

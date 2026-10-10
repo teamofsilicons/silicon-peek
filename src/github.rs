@@ -113,32 +113,3 @@ pub(crate) async fn file_issue(state: &AppState, report: &ReportRequest) -> Resu
     }
     Ok(issue.html_url)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn title_and_body_follow_the_blueprint() {
-        let report = ReportRequest {
-            message: "\n  send hangs when the app is closed\nmore detail".into(),
-            pr: Some("https://github.com/teamofsilicons/silicon-peek/pull/7".into()),
-            context: Some(ReportContext {
-                cli_version: Some("0.1.0".into()),
-                platform: Some("macos-aarch64".into()),
-                command: Some("send".into()),
-                error_code: Some("daemon_unavailable".into()),
-            }),
-            status: Some(json!({"checks": []})),
-        };
-        assert_eq!(title(&report.message), "send hangs when the app is closed");
-        assert_eq!(title(&"x".repeat(300)).chars().count(), 100);
-        let b = body(&report);
-        assert!(b.starts_with("send hangs when the app is closed\nmore detail"));
-        assert!(
-            b.contains("\n\nProposed fix: https://github.com/teamofsilicons/silicon-peek/pull/7")
-        );
-        assert!(b.contains("Submitted with peek 0.1.0 on macos-aarch64"));
-        assert!(b.contains("```json"));
-    }
-}

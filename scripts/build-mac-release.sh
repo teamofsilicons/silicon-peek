@@ -9,7 +9,7 @@
 #   4. With NOTARY_PROFILE: notarytool submit --wait, staple, validate.
 #   5. ditto -c -k --norsrc --noextattr --noqtn --noacl --keepParent → dist/Peek.app.zip; refuse
 #      AppleDouble entries; unpack with plain ditto -x -k and verify again (CDHash unchanged).
-#   6. Write dist/Peek.app.build.json, which scripts/package-honeycomb.py turns into Peek.app.info.
+#   6. Write dist/Peek.app.build.json, which scripts/package-apps.py turns into Peek.app.info.
 #
 # Environment:
 #   SIGN_IDENTITY     identity name or SHA-1; default: Developer ID Application for PEEK_TEAM_ID if the
@@ -85,7 +85,7 @@ fi
 [[ -f $ROOT/apps/mac/project.yml ]] || die "apps/mac/project.yml is missing" "the Mac app lives in apps/mac (BLUEPRINT §8.1)"
 [[ -f $ENTITLEMENTS ]] || die "$ENTITLEMENTS is missing" "restore apps/mac/Resources/Peek.entitlements (BLUEPRINT §8.9)"
 
-versions=$(python3 "$ROOT/scripts/package-honeycomb.py" --check-versions)
+versions=$(python3 "$ROOT/scripts/package-apps.py" --check-versions)
 VERSION=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' <<<"$versions")
 BUILD=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["bundle_version"])' <<<"$versions")
 

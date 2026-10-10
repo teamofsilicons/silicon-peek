@@ -6,7 +6,7 @@ use rusqlite::{Connection, params};
 pub(crate) struct NewReport<'a> {
     pub(crate) id: &'a str,
     pub(crate) ctx: &'a str,
-    pub(crate) org: Option<&'a str>,
+    pub(crate) account: Option<&'a str>,
     pub(crate) actor: Option<&'a str>,
     pub(crate) message: &'a str,
     pub(crate) pr: Option<&'a str>,
@@ -18,12 +18,12 @@ pub(crate) struct NewReport<'a> {
 /// Stores a report as `stored`.
 pub(crate) fn insert(conn: &Connection, r: &NewReport<'_>) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO reports(id, ctx, org_id, actor_id, message, pr, context, attached_status, created_at, status)
+        "INSERT INTO reports(id, ctx, account_id, actor_id, message, pr, context, attached_status, created_at, status)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'stored')",
         params![
             r.id,
             r.ctx,
-            r.org,
+            r.account,
             r.actor,
             r.message,
             r.pr,

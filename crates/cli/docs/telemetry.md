@@ -24,7 +24,6 @@ The helper (peekd) keeps working for a home after a command returns: it delivers
 - The opt-out stays until a command of that home runs without it and hands the helper its telemetry, or until `peek config …` syncs without it. An opt-out in `config.json` is never lifted this way.
 - `--no-telemetry` covers only its own process and is not forwarded.
 
-The IAM SDK inside peek's backend has its own process-wide switch, `PEEK_IAM_SDK_TELEMETRY`, which follows `PEEK_TELEMETRY` unless an operator sets it. It records no content either.
 
 ## Where it goes
 
@@ -52,7 +51,7 @@ Table keys exist **only** on the backend. They are never in the CLI, the helper,
 - **Tables:** only `peekclidaemon`, `peekfrontendanalytics` and `peekfrontendevents`. Any other table gets `403 telemetry_table_unavailable`; `peekbackend` is written by the backend alone.
 - **Origin:** a request that carries an `Origin` header must come from an origin in the backend's `PEEK_WEB_ORIGINS` (in production, `https://peek.teamofsilicons.com`, which reaches it through the same-origin `/api` rewrite); anything else gets `403 origin_not_allowed`. The CLI and the helper send no `Origin`.
 - **Size and rate:** 1–40 events and at most 64 KiB per request (`invalid_input`, `payload_too_large`), and 6,000 events per minute in total (`429 rate_limited` with `Retry-After`).
-- **Silent drops, still `204`:** when the table has no key configured on the backend, when the request carries `X-Peek-Telemetry: off`, when it comes from a testing environment (`X-Testing-Environment-Key`), and when the backend's `PEEK_TELEMETRY` is off. Nothing is forwarded in those cases, and the sender cannot tell, by design.
+- **Silent drops, still `204`:** when the table has no key configured on the backend, when the request carries `X-Peek-Telemetry: off`, and when the backend's `PEEK_TELEMETRY` is off. Nothing is forwarded in those cases, and the sender cannot tell, by design.
 
 ## What is recorded
 
@@ -60,7 +59,7 @@ Every event is self-contained:
 
 ```jsonc
 {"schema_version":1,"app":"peek","service":"peek-backend|peek-cli|peek-daemon|peek-mac|peek-web",
- "source":"backend|cli|daemon|mac|web","version":"0.1.2","environment":"production|testing|development",
+ "source":"backend|cli|daemon|mac|web","version":"0.1.2","environment":"production|development",
  "instance_id":"<uuidv7 per process>","trace_id":"<uuidv7 created by the CLI and carried in X-Peek-Trace-Id>",
  "step":"send.validate","event":"send.displayed","progress":1,"outcome":"ok|error|skipped|timeout",
  "duration_ms":412,"error_code":null,"isi":"deliberate",
@@ -94,23 +93,22 @@ Counts and lengths (for example `speak_chars`, `options_count`) are recorded bec
 
 ## Testing contexts
 
-Events from a testing environment are tagged `environment:"testing"` and are never written to the production tables; the gateway drops them or keeps them local, bounded at 1,000. Tests of peek itself inject a fake event sink and never reach Space Station.
 
 ## Verify (operators)
 
 With a Space Station session for org `tos`:
 
 ```sh
-spacestation --org tos query "SELECT record.source::String s, record.event::String e, count() n FROM peekclidaemon GROUP BY s,e ORDER BY n DESC"
-spacestation --org tos query "SELECT record.source::String s, record.event::String e, count() n FROM peekbackend GROUP BY s,e ORDER BY n DESC"
-spacestation --org tos query "SELECT record.source::String s, record.event::String e, count() n FROM peekfrontendanalytics GROUP BY s,e ORDER BY n DESC"
-spacestation --org tos query "SELECT record.source::String s, record.event::String e, count() n FROM peekfrontendevents GROUP BY s,e ORDER BY n DESC"
+spacestation query "SELECT record.source::String s, record.event::String e, count() n FROM peekclidaemon GROUP BY s,e ORDER BY n DESC"
+spacestation query "SELECT record.source::String s, record.event::String e, count() n FROM peekbackend GROUP BY s,e ORDER BY n DESC"
+spacestation query "SELECT record.source::String s, record.event::String e, count() n FROM peekfrontendanalytics GROUP BY s,e ORDER BY n DESC"
+spacestation query "SELECT record.source::String s, record.event::String e, count() n FROM peekfrontendevents GROUP BY s,e ORDER BY n DESC"
 ```
 
-To confirm an opt-out, count the CLI's completion events, run a few commands with `PEEK_TELEMETRY=off` (for example `PEEK_TELEMETRY=off peek iam --json`), wait a minute, and count again. The number must not change:
+To confirm an opt-out, count the CLI's completion events, run a few commands with `PEEK_TELEMETRY=off` (for example `PEEK_TELEMETRY=off peek accounts --json`), wait a minute, and count again. The number must not change:
 
 ```sh
-spacestation --org tos query "SELECT count() n FROM peekclidaemon WHERE record.event::String = 'command.finished'"
+spacestation query "SELECT count() n FROM peekclidaemon WHERE record.event::String = 'command.finished'"
 ```
 
 ## Next

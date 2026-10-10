@@ -1,15 +1,15 @@
 #!/bin/sh
-# peek install hook: honeycomb.yaml targets.macos-*.install_script (Honeycomb >= 0.5.0).
+# peek install hook: apps.yaml targets.macos-*.install_script for Silicon Apps.
 #
 # Contract
-#   * Always exits 0. A failed step never fails `honeycomb install`, so it never fails
-#     `silicon connect` (Stemcell treats a non-zero Honeycomb exit as a failed
+#   * Always exits 0. A failed step never fails `silicon-apps install`, so it never fails
+#     `silicon connect` (Stemcell treats a non-zero Silicon Apps exit as a failed
 #     connection). Each step is reported on stderr as
 #       peek install-app: [ok|skip|degraded] <step>: <detail>
 #     and appended to "$SUPPORT/install-status.txt", because Stemcell discards
-#     Honeycomb's stderr when the install succeeds. `peek app status` shows that file.
-#   * Idempotent. Honeycomb runs it after every `honeycomb install` that changes the
-#     installed version (including Stemcell's install on each connect), never on update.
+#     Silicon Apps's stderr when the install succeeds. `peek app status` shows that file.
+#   * Idempotent. Silicon Apps runs it after every `silicon-apps install` that changes the
+#     installed version, including updates.
 #   * Never blocks and never holds the caller's pipes: no prompts (stdin is /dev/null
 #     under Stemcell), no network, bounded waits, no child left running on our fds.
 #   * Works with PATH removed (Stemcell) and without an Aqua session (SSH, CI).
@@ -17,13 +17,14 @@
 #     it offers the bundled build and Peek.app updates itself (same Team ID, quit first).
 #   * Serialized with the peek CLI and Peek.app through flock(2) on
 #     "$SUPPORT/install.lock" (lockf(1) takes the same BSD lock as Rust File::lock).
-# Test hooks: PEEK_INSTALL_APPLICATIONS_DIR, PEEK_INSTALL_SUPPORT_DIR, PEEK_INSTALL_NO_LAUNCH=1.
+# Local overrides: PEEK_INSTALL_APPLICATIONS_DIR, PEEK_INSTALL_SUPPORT_DIR, PEEK_INSTALL_NO_LAUNCH=1.
 #
-# Referenced by honeycomb.yaml Manifest A (install_script on both macOS targets, peek >= 0.1.2):
-# `honeycomb install peek` runs it, so Peek.app is installed (first copy only, Developer ID
-# verified) and launched right away. Updates stay peekd's job. The peek CLI's ensure_app()
+# Referenced by apps.yaml Manifest A (install_script on both macOS targets, peek >= 0.1.2):
+# `silicon-apps install peek` runs it, so Peek.app is installed (first copy only, Developer ID
+# verified) and launched right away. Silicon Apps owns network downloads; peekd applies
+# the locally bundled signed offer. The peek CLI's ensure_app()
 # performs the same steps as the fallback for `peek login` and every Mac command.
-# Reviewed copy of the version tested in notes/gap-honeycomb-app-distribution §3.5, with two
+# Reviewed copy of the version tested in notes/gap-silicon-apps-app-distribution §3.5, with two
 # hardening changes: the watchdog in bounded() also stops its own sleep, so no process outlives
 # a finished command, and the final rename re-checks that no Peek.app appeared meanwhile, so the
 # staged bundle can never be moved *into* an existing one.
@@ -70,7 +71,7 @@ resolve() {
     support=${PEEK_INSTALL_SUPPORT_DIR:-"$real_home/Library/Application Support/Peek"}
     app="$apps/Peek.app"
     offers="$support/offers"
-    pkg=${HONEYCOMB_PACKAGE_DIR:-$(cd "$(/usr/bin/dirname "$0")" && pwd -P)}
+    pkg=$(cd "$(/usr/bin/dirname "$0")" && pwd -P)
     zip="$pkg/Peek.app.zip"
     info="$pkg/Peek.app.info"
     # shellcheck disable=SC2015  # either step failing means degraded; say always succeeds
@@ -94,7 +95,7 @@ install_locked() {
     case "$build" in ''|*[!0-9]*) say degraded payload "bundle_version '$build' in $info is not an integer"; return 0 ;; esac
     os=$(/usr/bin/sw_vers -productVersion 2>/dev/null)
     if [ -n "$min_os" ] && [ -n "$os" ] && [ "${os%%.*}" -lt "${min_os%%.*}" ] 2>/dev/null; then
-        say degraded os "macOS $os is older than Peek's minimum $min_os; the peek CLI still handles iam/login/config"
+        say degraded os "macOS $os is older than Peek's minimum $min_os; the peek CLI still handles accounts/login/config"
         return 0
     fi
 
@@ -191,7 +192,7 @@ main() {
         return 0
     fi
     printf 'run\t%s\t%s %s from %s\n' "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        "${HONEYCOMB_APP_ID:-peek}" "${HONEYCOMB_APP_VERSION:-?}" "$pkg" >> "$STATUS_FILE" 2>/dev/null
+        "${APPS_APP_ID:-peek}" "${APPS_APP_VERSION:-?}" "$pkg" >> "$STATUS_FILE" 2>/dev/null
     ( PEEK_INSTALL_LOCKED=1; export PEEK_INSTALL_LOCKED
       bounded 150 /usr/bin/lockf -s -k -t 30 "$support/install.lock" /bin/sh "$0" "$@" </dev/null )
     locked=$?

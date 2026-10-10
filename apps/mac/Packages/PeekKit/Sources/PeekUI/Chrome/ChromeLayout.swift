@@ -28,14 +28,11 @@ import PeekCore
 /// What the chrome shows. Built by the slot manager from the bubble's state.
 public struct ChromeContent: Sendable, Equatable {
     public enum Badge: Sendable, Equatable {
-        /// `TEST · <environment name>` (gap-testing §9.3).
-        case test(name: String)
         /// `SIMULATION` (§8.11).
         case simulation
 
         public var text: String {
             switch self {
-            case .test(let name): name.isEmpty ? "TEST" : "TEST · \(name)"
             case .simulation: "SIMULATION"
             }
         }
@@ -741,7 +738,7 @@ extension ChromeContent {
         var requests: [RowRequest] = []
         var fieldWidth = preferredFieldWidth
         if let badge {
-            // The badge never shrinks: a truncated "SIMULATI…" or "TEST · …" label defeats its purpose.
+            // The badge never shrinks: a truncated "SIMULATI…" label defeats its purpose.
             let badgeWidth = min(third, (measurer.width(of: badge.text, font: .badge) + 18).rounded(.up))
             fieldWidth = min(fieldWidth, rowLength - badgeWidth - 2 * third * 0.05 - 8)
             requests.append(RowRequest(kind: .badge, sizing: .fixed(CGSize(width: badgeWidth, height: ChromeMetrics.badgeHeight)),

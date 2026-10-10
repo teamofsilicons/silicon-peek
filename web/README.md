@@ -9,7 +9,6 @@ npm ci
 npm run dev        # landing page at http://127.0.0.1:4317 (docs need a build)
 npm run build      # tsc, vite build, prerender docs, then check every page and link
 npm run preview    # the built site at http://127.0.0.1:4318, /docs included
-npm test           # unit tests for the docs build, arc geometry and telemetry transport
 ```
 
 What `npm run build` emits into `dist/`:
@@ -38,7 +37,7 @@ builds never send events. The footer switch stores the reader's choice in `local
 browser request only when its `Origin` is listed in the backend's `PEEK_WEB_ORIGINS`
 (`https://peek.teamofsilicons.com` in production; add your preview origin there for local tests), and
 answers `204` without forwarding anything when the table has no key on the backend, when telemetry is
-off, or for testing-environment traffic, so a quiet gateway is not proof that events arrived
+off, so a quiet gateway is not proof that events arrived
 (`../docs/telemetry.md`, "The gateway").
 
 Deploying is a mutating step owned by the operator (BLUEPRINT §9.3):

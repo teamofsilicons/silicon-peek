@@ -18,11 +18,7 @@ const GRANT_MAX_BYTES: usize = 32 * 1024;
 
 fn key<'a>(state: &'a AppState, plane: &Plane) -> ApiResult<&'a Secret> {
     let config = &state.0.config.deepgram;
-    let (key, variable) = if plane.is_testing() {
-        (&config.test_api_key, "PEEK_DEEPGRAM_TEST_API_KEY")
-    } else {
-        (&config.api_key, "PEEK_DEEPGRAM_API_KEY")
-    };
+    let (key, variable) = (&config.api_key, "PEEK_DEEPGRAM_API_KEY");
     key.as_ref().ok_or_else(|| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,

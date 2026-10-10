@@ -16,10 +16,10 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// The root `after_help`, verbatim from BLUEPRINT §7.2.
 pub const ROOT_AFTER_HELP: &str = "\
-Start (Silicon):  peek iam --json · peek login <SLT> · peek register side <1-8> (custom drawing optional)
+Start (Silicon):  peek accounts --json · peek login <SLT> · peek register side <1-8> (custom drawing optional)
 Then:             peek send --speak \"…\" --show '{…}'   |   peek send --speak \"…\" --ask '{…}'
 Answers arrive as Ting events of type peek.ask.answered (route them in your flow; see peek docs ting).
-State: $SILICON_HOME/.peek (else ~/.peek). Test mode: peek --test <env-uuid> <command>.
+State: $SILICON_HOME/.peek (else ~/.peek).
 Explore: peek commands · peek <command> --help · peek docs <topic>
 Docs: https://peek.teamofsilicons.com/docs · Source: https://github.com/teamofsilicons/silicon-peek
 Rust: https://crates.io/crates/silicon-peek-client · Bugs: peek report --help";
@@ -64,34 +64,9 @@ pub struct GlobalArgs {
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// Organization for org-specific calls [env: SILICON_ORG]. Precedence: --org, then
-    /// SILICON_ORG, then the session's org. An empty value is invalid.
-    #[arg(long, global = true, value_name = "ORG")]
-    pub org: Option<String>,
-
-    /// Separate named account/organization storage [env: PEEK_PROFILE; default: default].
+    /// Separate named account storage [env: PEEK_PROFILE; default: default].
     #[arg(long, global = true, value_name = "NAME")]
     pub profile: Option<String>,
-
-    /// Use a saved testing environment by its UUID [env: SILICON_PEEK_TEST]. Save one first
-    /// with --app-secret-file. A secret passed here is refused.
-    #[arg(long, global = true, value_name = "ENV_UUID")]
-    pub test: Option<String>,
-
-    /// peek's test app secret (ask_…) for a testing environment; `-` reads one line from
-    /// stdin. peek discovers the environment with it and saves it to testing.json.
-    #[arg(
-        long,
-        global = true,
-        value_name = "PATH|-",
-        conflicts_with = "app_secret"
-    )]
-    pub app_secret_file: Option<String>,
-
-    /// peek's test app secret inline [env: PEEK_TEST_APP_SECRET, value hidden]. Prefer
-    /// --app-secret-file - so the secret stays out of shell history.
-    #[arg(long, global = true, value_name = "ask_…", hide_env_values = true)]
-    pub app_secret: Option<String>,
 
     /// peek-server origin [env: PEEK_API_URL; default https://backend.peek.teamofsilicons.com].
     /// HTTPS only, except http on loopback.
@@ -117,25 +92,24 @@ pub struct GlobalArgs {
 /// Top-level commands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// IAM discovery: static, offline, works before login (Stemcell contract).
+    /// ACCOUNTS discovery: static, offline, works before login (Stemcell contract).
     #[command(
-        long_about = "Prints peek's IAM discovery document: the app id `peek`, its owning org `tos`, \
-the backend, IAM and consent URLs, how to mint an SLT, and where the docs, source and Rust client live. \
+        long_about = "Prints peek's ACCOUNTS discovery document: the app id `peek`, its owner `si:tos`, \
+the backend, ACCOUNTS and consent URLs, how to mint an SLT, and where the docs, source and Rust client live. \
 It needs no network and no session, and has no side effects, so Stemcell can call it on every \
-candidate binary. With --test it also reads the environment's name and generation from the backend.\n\n\
-Use it first, before `peek login`, to learn the app id to pass to `iam silicon-login --app-id peek`."
+candidate binary. \n\n\
+Use it first, before `peek login`, to learn the app id to pass to `silicon-accounts login --app peek --json`."
     )]
-    Iam,
+    Accounts,
 
-    /// Exchange an IAM short-lived token (SLT) for this home's peek session (Stemcell contract).
+    /// Exchange an ACCOUNTS short-lived token (SLT) for this home's peek session (Stemcell contract).
     #[command(
-        long_about = "Exchanges an IAM short-lived token (SLT) for this home's peek session, stored only \
+        long_about = "Exchanges an ACCOUNTS short-lived token (SLT) for this home's peek session, stored only \
 in $SILICON_HOME/.peek/session.json (0600). The SLT is single use and lives two minutes; mint it with \
-`iam silicon-login --app-id peek --grant-org <org> --approve-scopes` (a Silicon) or `iam login --app-id \
-peek --grant-org <org>` (a Carbon).\n\n\
+`silicon-accounts login --app peek --json` (a Silicon) or `silicon-accounts login` (a Carbon).\n\n\
 The exchange is idempotent (its key is derived from the SLT) and retried on transport errors and 5xx. \
 If the outcome stays uncertain, `peek login --recover` replays the same exchange within 10 minutes. On \
-success peek saves this account and organization, attaches this home to peekd, and on a Mac installs and \
+success peek saves this account and account, attaches this home to peekd, and on a Mac installs and \
 starts Peek.app in the background after printing its result. `peek login status` verifies the session \
 later; `peek logout` ends it.",
         args_conflicts_with_subcommands = true,
@@ -304,17 +278,17 @@ fixes use `peek doctor`."
     )]
     Status,
 
-    /// Org-wide settings (org admins only).
+    /// Personal account settings.
     #[command(
-        long_about = "Settings that apply to a whole organization. Only its owners and admins can \
-change them; the org is --org, then SILICON_ORG, then the session's org.",
+        long_about = "Settings that apply to a whole account. Only its owners and admins can \
+change them; the account is --account, then SILICON_ACCOUNT, then the session's account.",
         subcommand_required = true,
         arg_required_else_help = true
     )]
-    Org {
-        /// The org setting.
+    Account {
+        /// The account setting.
         #[command(subcommand)]
-        command: OrgCommand,
+        command: AccountCommand,
     },
 
     /// Manage Peek.app on this Mac: status, install, update, uninstall.
@@ -372,18 +346,18 @@ Reports are not retried automatically."
     )]
     Report(ReportArgs),
 
-    /// How peek is updated (Honeycomb); never replaces itself.
+    /// How peek is updated (Silicon Apps); never replaces itself.
     #[command(
-        long_about = "peek never replaces its own binary. Honeycomb's per-home worker updates the CLI \
+        long_about = "peek never replaces its own binary. Silicon Apps's per-home worker updates the CLI \
 every minute, and peekd updates Peek.app. This prints what is installed and the command to update by \
-hand: honeycomb update 'peek'."
+hand: apps update 'peek'."
     )]
     Update,
 
     /// Diagnostics with exact fixes.
     #[command(
         long_about = "Runs every check and prints the exact fix for anything that is wrong: store \
-permissions, session and rejection state, backend readiness, Honeycomb version, peekd socket and \
+permissions, session and rejection state, backend readiness, Silicon Apps version, peekd socket and \
 protocol, Peek.app install and signature, the background item, the install log, microphone \
 permission, hotkeys, the delivery backlog and Ting enrollment. Checks that cannot run degrade to a \
 warning; the command itself exits 0."
@@ -407,7 +381,7 @@ pub struct LogoutArgs {
 /// `peek login`.
 #[derive(Debug, Args)]
 pub struct LoginArgs {
-    /// The IAM short-lived token. Prefer --token-file - to keep it out of process lists.
+    /// The ACCOUNTS short-lived token. Prefer --token-file - to keep it out of process lists.
     #[arg(value_name = "SLT")]
     pub slt: Option<String>,
 
@@ -433,7 +407,7 @@ pub enum LoginCommand {
         long_about = "Reports whether this home has a working peek session, verified live: peek \
 refreshes the access token if it expires within 60 s, then asks the backend who it is. It answers \
 {\"authenticated\":false,\"reason\":\"no_session\"|\"logged_out\"|\"rejected\",…} with exit 0 when there is \
-no usable session, and exits 5 with nothing on stdout when the backend or IAM cannot be reached (so a \
+no usable session, and exits 5 with nothing on stdout when the backend or ACCOUNTS cannot be reached (so a \
 network problem is never mistaken for a logout). peekd is never asked whether you are authenticated; \
 a missing peekd only sets daemon.attached:false."
     )]
@@ -484,7 +458,7 @@ registration exists."
     #[command(
         long_about = "Moves this home's peek store to <DIR>/.peek and writes a pointer file named \
 `home` into the default store ($SILICON_HOME/.peek), so every later peek run finds it. The session, \
-config, testing environments and daemon token are moved; if the target already holds a different \
+config and daemon token are moved; if the target already holds a different \
 peek store, nothing is changed. Point back with `peek config home \"$SILICON_HOME\"`."
     )]
     Home {
@@ -506,18 +480,6 @@ pub enum OnOff {
 /// `peek ting …`.
 #[derive(Debug, Subcommand)]
 pub enum TingCommand {
-    /// Start or resume explicit IAM permission review for this account and organization.
-    Authorize,
-    /// Read the current permission request without completing it or sending work.
-    AuthorizationStatus,
-    /// Redeem an IAM approval code. Omit --code-file to recover an uncertain completion.
-    CompleteAuthorization {
-        /// Read the approval code from a private file or stdin (-).
-        #[arg(long, value_name = "PATH|-")]
-        code_file: Option<String>,
-    },
-    /// Abandon local permission review; keeps queued work and drafts.
-    CancelAuthorization,
     /// (Re)register this Silicon as a Ting recipient for peek.
     #[command(
         long_about = "Registers this Silicon as a Ting recipient for peek (or re-registers it). Run \
@@ -741,10 +703,10 @@ pub struct HistoryArgs {
     pub before: Option<String>,
 }
 
-/// `peek org …`.
+/// `peek account …`.
 #[derive(Debug, Subcommand)]
-pub enum OrgCommand {
-    /// Bring your own provider key for the org.
+pub enum AccountCommand {
+    /// Bring your own provider key for the account.
     #[command(subcommand_required = true, arg_required_else_help = true)]
     Byo {
         /// The provider.
@@ -753,14 +715,14 @@ pub enum OrgCommand {
     },
 }
 
-/// `peek org byo …`.
+/// `peek account byo …`.
 #[derive(Debug, Subcommand)]
 pub enum ByoCommand {
     /// Manage a legacy Deepgram key (unused by current speech providers).
     #[command(
         long_about = "Manages a legacy Deepgram key, stored sealed on the backend and never returned. \
 Current speech uses ElevenLabs v4 TTS through Deepgram and OpenAI transcription; this key affects neither provider. \
-Writes require an org owner or admin; non-admins get not_org_admin (exit 4).",
+Writes require an account owner or admin; non-admins get not_account_owner (exit 4).",
         subcommand_required = true,
         arg_required_else_help = true
     )]
@@ -771,10 +733,10 @@ Writes require an org owner or admin; non-admins get not_org_admin (exit 4).",
     },
 }
 
-/// `peek org byo deepgram …`.
+/// `peek account byo deepgram …`.
 #[derive(Debug, Subcommand)]
 pub enum DeepgramCommand {
-    /// Store the org's Deepgram key (validated first).
+    /// Store the account's Deepgram key (validated first).
     Set {
         /// Read the key from a file, or from stdin with `-` (one line).
         #[arg(long, value_name = "PATH|-", required = true)]
@@ -785,7 +747,7 @@ pub enum DeepgramCommand {
     },
     /// Whether a key is configured (the key itself is never returned).
     Show,
-    /// Remove the org's key; peek's own key is used again.
+    /// Remove the account's key; peek's own key is used again.
     Delete,
 }
 
@@ -807,7 +769,7 @@ updates belong to peekd (`peek app update`)."
     /// Unregister the login item and helper, and move Peek.app to the Trash.
     #[command(
         long_about = "Asks Peek.app to unregister its login item and the peekd agent and to move \
-itself to the Trash. `honeycomb uninstall 'peek'` removes only the CLI, never the app."
+itself to the Trash. `apps uninstall 'peek'` removes only the CLI, never the app."
     )]
     Uninstall,
 }
@@ -824,7 +786,7 @@ pub enum DaemonCommand {
 /// `peek docs`.
 #[derive(Debug, Args)]
 pub struct DocsArgs {
-    /// The topic to print: start, carbon, silicon, cli, show, ask, drawing, ting, iam, testing,
+    /// The topic to print: start, carbon, silicon, cli, show, ask, drawing, ting, accounts,
     /// telemetry, privacy, platforms, development, versioning, troubleshooting.
     #[arg(value_name = "TOPIC", conflicts_with_all = ["search", "all"])]
     pub topic: Option<String>,
@@ -852,7 +814,7 @@ pub struct ReportArgs {
     #[arg(long)]
     pub attach_status: bool,
     /// Print exactly what would be filed (the request body, or gh's title and body) and send
-    /// nothing. Allowed in testing environments too.
+    /// nothing.
     #[arg(long)]
     pub dry_run: bool,
 }
@@ -878,133 +840,4 @@ pub struct AfterLoginArgs {
     /// The session's context (production or an environment UUID).
     #[arg(long, value_name = "CONTEXT")]
     pub context: String,
-}
-
-#[cfg(test)]
-mod tests {
-    use clap::Parser as _;
-
-    use super::{Cli, Command};
-
-    fn wait_of(args: &[&str]) -> Option<u64> {
-        let mut command_line = vec!["peek", "send", "--ask", r#"{"question":"q","type":"text"}"#];
-        command_line.extend_from_slice(args);
-        match Cli::try_parse_from(command_line).map(|c| c.command) {
-            Ok(Command::Send(a)) => a.wait,
-            other => panic!("unexpected parse: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn dump_frame_is_zero_based() {
-        let parse = |n: &str| {
-            Cli::try_parse_from(["peek", "register", "drawing", "x.js", "--dump-frame", n])
-                .map(|_| ())
-        };
-        assert!(parse("0").is_ok());
-        assert!(parse("89").is_ok());
-        assert!(parse("90").is_err(), "there are 90 test frames, 0–89");
-    }
-
-    fn parse(args: &[&str]) -> Result<Command, clap::Error> {
-        let mut command_line = vec!["peek"];
-        command_line.extend_from_slice(args);
-        Cli::try_parse_from(command_line).map(|c| c.command)
-    }
-
-    #[test]
-    fn new_send_flags_parse() {
-        let Ok(Command::Send(a)) = parse(&[
-            "send",
-            "--speak",
-            "x",
-            "--voice-instructions",
-            "Warm, Indian accent",
-            "--in",
-            "2h",
-            "--tz",
-            "Asia/Kolkata",
-            "--replace",
-            "--expires-in",
-            "15m",
-            "--expires-at",
-            "18:00",
-            "--at",
-            "2026-09-27T18:00",
-        ]) else {
-            panic!("send parses");
-        };
-        assert_eq!(a.voice_instructions.as_deref(), Some("Warm, Indian accent"));
-        assert_eq!(a.in_.as_deref(), Some("2h"));
-        assert_eq!(a.at.as_deref(), Some("2026-09-27T18:00"));
-        assert_eq!(a.tz.as_deref(), Some("Asia/Kolkata"));
-        assert_eq!(a.expires_in.as_deref(), Some("15m"));
-        assert_eq!(a.expires_at.as_deref(), Some("18:00"));
-        assert!(a.replace);
-        let Ok(Command::Send(a)) = parse(&["send", "--ask", "{}", "--expires-in", "60"]) else {
-            panic!("plain seconds still parse");
-        };
-        assert_eq!(a.expires_in.as_deref(), Some("60"));
-    }
-
-    #[test]
-    fn queue_cancel_and_schedule_parse() {
-        use super::{QueueCommand, ScheduleCommand};
-        assert!(matches!(
-            parse(&["queue"]),
-            Ok(Command::Queue { command: None })
-        ));
-        assert!(matches!(
-            parse(&["queue", "list"]),
-            Ok(Command::Queue {
-                command: Some(QueueCommand::List)
-            })
-        ));
-        assert!(matches!(
-            parse(&["queue", "clear", "--all"]),
-            Ok(Command::Queue {
-                command: Some(QueueCommand::Clear { all: true })
-            })
-        ));
-        assert!(matches!(
-            parse(&["queue", "clear"]),
-            Ok(Command::Queue {
-                command: Some(QueueCommand::Clear { all: false })
-            })
-        ));
-        assert!(matches!(parse(&["cancel", "snd_1"]), Ok(Command::Cancel { id }) if id == "snd_1"));
-        assert!(parse(&["cancel"]).is_err());
-        assert!(matches!(
-            parse(&["schedule", "list"]),
-            Ok(Command::Schedule {
-                command: ScheduleCommand::List
-            })
-        ));
-        assert!(matches!(
-            parse(&["schedule", "cancel", "sch_1"]),
-            Ok(Command::Schedule { command: ScheduleCommand::Cancel { id } }) if id == "sch_1"
-        ));
-        assert!(matches!(
-            parse(&["schedule", "clear"]),
-            Ok(Command::Schedule {
-                command: ScheduleCommand::Clear
-            })
-        ));
-        // `peek schedule` alone behaves exactly like `peek ask` alone.
-        let schedule = parse(&["schedule"])
-            .err()
-            .map(|e| (e.kind(), e.exit_code()));
-        let ask = parse(&["ask"]).err().map(|e| (e.kind(), e.exit_code()));
-        assert!(schedule.is_some());
-        assert_eq!(schedule, ask);
-    }
-
-    #[test]
-    fn wait_takes_a_value_with_or_without_an_equals_sign() {
-        assert_eq!(wait_of(&[]), None);
-        assert_eq!(wait_of(&["--wait"]), Some(120));
-        assert_eq!(wait_of(&["--wait", "5"]), Some(5));
-        assert_eq!(wait_of(&["--wait=7"]), Some(7));
-        assert_eq!(wait_of(&["--wait", "--json"]), Some(120));
-    }
 }

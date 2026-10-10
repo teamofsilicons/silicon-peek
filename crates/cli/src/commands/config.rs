@@ -15,7 +15,7 @@ use silicon_peek_client::{
         fs::{read_private, remove_file, write_atomic},
         store::{
             CONFIG_FILE, DAEMON_TOKEN_FILE, HOME_POINTER_FILE, SESSION_FILE, STORE_DIR,
-            TESTING_FILE, set_home_pointer, silicon_home,
+            set_home_pointer, silicon_home,
         },
     },
     schema::send::Notify,
@@ -131,10 +131,9 @@ async fn sync(g: &Globals, store: &Store, config: &Config) {
     let _ = tokio::time::timeout(Duration::from_secs(4), task).await;
 }
 
-const MOVABLE: [&str; 5] = [
+const MOVABLE: [&str; 4] = [
     SESSION_FILE,
     CONFIG_FILE,
-    TESTING_FILE,
     DAEMON_TOKEN_FILE,
     "feature-consent.json",
 ];

@@ -14,11 +14,7 @@ Values are read from stdin (never argv), validated per key, and written atomical
 0600. No value is ever printed: reports name keys only. Unknown PEEK_* keys are rendered with a
 warning (newer servers may read them); any other unknown key is refused.
 
-Optional keys may be "" (not configured). PEEK_HONEYCOMB_SERVICE_TOKEN may be empty too: the
-server then answers 503 on the Honeycomb lifecycle participant routes (no testing environments),
-and this tool warns. PEEK_DEEPGRAM_MIP_OPT_OUT remains "true" for legacy key validation.
-PEEK_BYO_DEEPGRAM_HOSTS is optional and may even be left out (secrets written before it existed):
-"" or absent keeps the default *.deepgram.com for org BYO base URLs.
+Optional keys may be empty when that integration is not configured.
 """
 
 from __future__ import annotations
@@ -124,34 +120,25 @@ def _byo_hosts(value: str) -> str | None:
 SPEC: dict[str, tuple[bool, bool, Callable[[str], str | None]]] = {
     "PEEK_BIND": (True, False, _one_of("127.0.0.1:8080")),
     "PEEK_DATABASE_PATH": (True, False, _under_data_dir),
-    "PEEK_TEST_DATABASE_PATH": (True, False, _under_data_dir),
     "PEEK_PUBLIC_ORIGIN": (True, False, _https_origin),
     "PEEK_WEB_ORIGINS": (True, False, _origins),
-    "PEEK_IAM_BASE_URL": (True, False, _https_origin),
-    "PEEK_IAM_APP_ID": (True, False, _one_of("peek")),
-    # Empty until `honeycomb apps create` (P5); /readyz then reports iam_config: missing.
-    "PEEK_IAM_APP_SECRET": (False, True, _pattern(r"ask_[A-Za-z0-9_-]{16,}", "an IAM app secret starting with ask_")),
-    "PEEK_IAM_WEBHOOK_SECRET": (True, True, HEX64),
-    "PEEK_IAM_WEBHOOK_KEY_VERSION": (True, False, _int_range(1, 1_000_000)),
-    "PEEK_IAM_REQUEST_TIMEOUT_SECONDS": (True, False, _int_range(1, 120)),
+    "PEEK_ACCOUNTS_BASE_URL": (True, False, _https_origin),
+    "PEEK_ACCOUNTS_APP_ID": (True, False, _one_of("peek")),
+    "PEEK_ACCOUNTS_APP_SECRET": (True, True, _pattern(r"[\x21-\x7e]{16,512}", "a Silicon Accounts app secret")),
+    "PEEK_ACCOUNTS_WEBHOOK_SECRET": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "a Silicon Accounts webhook secret")),
     "PEEK_TING_BASE_URL": (True, False, _https_origin),
     "PEEK_TING_REQUEST_TIMEOUT_SECONDS": (True, False, _int_range(1, 120)),
-    "PEEK_HONEYCOMB_URL": (True, False, _https_origin),
-    # Optional: without it the lifecycle participant routes answer 503 (warned about below).
-    "PEEK_HONEYCOMB_SERVICE_TOKEN": (False, True, _pattern(r"[\x21-\x7e]{32,512}", "32-512 visible ASCII characters")),
     "PEEK_ENCRYPTION_KEY": (True, True, HEX64),
-    # Current speech providers; production and testing use separate credentials.
+    # Speech providers.
     "PEEK_ELEVENLABS_AGENT_URL": (False, False, _wss_url),
     "PEEK_OPENAI_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "an OpenAI API key")),
-    "PEEK_OPENAI_TEST_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "an OpenAI API key")),
     "PEEK_OPENAI_BASE_URL": (False, False, _https_origin),
-    # Deepgram mints direct ElevenLabs TTS connection tokens; org BYO keys remain inactive.
+    # Deepgram mints direct ElevenLabs TTS connection tokens; account BYO keys remain inactive.
     "PEEK_DEEPGRAM_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "a Deepgram API key")),
-    "PEEK_DEEPGRAM_TEST_API_KEY": (False, True, _pattern(r"[\x21-\x7e]{16,512}", "a Deepgram API key")),
     "PEEK_DEEPGRAM_BASE_URL": (True, False, _https_origin),
     "PEEK_DEEPGRAM_TOKEN_TTL_SECONDS": (True, False, _int_range(1, 3600)),
     "PEEK_DEEPGRAM_MIP_OPT_OUT": (True, False, _one_of("true")),
-    # Optional: hosts an org's own Deepgram key may name as its --base-url ("" or absent → *.deepgram.com).
+    # Optional: hosts an account's own Deepgram key may name as its --base-url ("" or absent → *.deepgram.com).
     "PEEK_BYO_DEEPGRAM_HOSTS": (False, False, _byo_hosts),
     "PEEK_GITHUB_ISSUES_TOKEN": (False, True, _pattern(r"[\x21-\x7e]{20,512}", "a fine-grained GitHub token")),
     "PEEK_GITHUB_REPO": (True, False, _one_of("teamofsilicons/silicon-peek")),
@@ -178,11 +165,6 @@ SPEC: dict[str, tuple[bool, bool, Callable[[str], str | None]]] = {
     "RUST_LOG": (True, False, _pattern(r"[A-Za-z0-9_=,.:\-]+", "a tracing filter such as info,peek=info")),
     # Optional additions of the P0 server (all may be ""):
     "PEEK_ENVIRONMENT": (False, False, _one_of("production", "development")),
-    # Leave "" in production (the IAM SDK then follows PEEK_TELEMETRY).
-    "PEEK_IAM_SDK_TELEMETRY": (False, False, _one_of("on", "off")),
-    # The rotation overlap (BLUEPRINT §2.10): both or neither.
-    "PEEK_IAM_WEBHOOK_PREVIOUS_SECRET": (False, True, HEX64),
-    "PEEK_IAM_WEBHOOK_PREVIOUS_KEY_VERSION": (False, False, _int_range(1, 1_000_000)),
     "PEEK_GITHUB_API_URL": (False, False, _https_origin),
 }
 
@@ -192,15 +174,10 @@ SPEC: dict[str, tuple[bool, bool, Callable[[str], str | None]]] = {
 MAY_BE_ABSENT = frozenset({
     "PEEK_BYO_DEEPGRAM_HOSTS",
     "PEEK_ELEVENLABS_AGENT_URL",
-    "PEEK_OPENAI_API_KEY", "PEEK_OPENAI_TEST_API_KEY", "PEEK_OPENAI_BASE_URL",
+    "PEEK_OPENAI_API_KEY", "PEEK_OPENAI_BASE_URL", "PEEK_ACCOUNTS_WEBHOOK_SECRET",
 })
 
-EMPTY_WARNINGS: dict[str, str] = {
-    "PEEK_HONEYCOMB_SERVICE_TOKEN": (
-        "must not be empty for testing environments; the Honeycomb lifecycle participant routes answer 503 "
-        "until it is set"
-    ),
-}
+EMPTY_WARNINGS: dict[str, str] = {}
 
 
 def quote(value: str) -> str:
@@ -251,14 +228,6 @@ def validate(document: object) -> tuple[dict[str, str], list[str], list[str]]:
             problem = check(value)
             if problem:
                 problems.append(f"{key}: {problem}")
-    previous_secret = values.get("PEEK_IAM_WEBHOOK_PREVIOUS_SECRET", "")
-    previous_version = values.get("PEEK_IAM_WEBHOOK_PREVIOUS_KEY_VERSION", "")
-    if previous_secret and not previous_version:
-        problems.append(
-            "PEEK_IAM_WEBHOOK_PREVIOUS_KEY_VERSION: is required when PEEK_IAM_WEBHOOK_PREVIOUS_SECRET is set"
-        )
-    if previous_version and previous_version == values.get("PEEK_IAM_WEBHOOK_KEY_VERSION"):
-        problems.append("PEEK_IAM_WEBHOOK_PREVIOUS_KEY_VERSION: must differ from PEEK_IAM_WEBHOOK_KEY_VERSION")
     if problems:
         message = "invalid runtime configuration:\n  " + "\n  ".join(problems)
         if warnings:

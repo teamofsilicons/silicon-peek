@@ -39,6 +39,7 @@ current_link=/opt/peek/current
 local_healthz=http://127.0.0.1:8080/healthz
 previous=$(readlink -e "$current_link" || true)
 backup=$(mktemp -d /var/tmp/peek-deploy-backup.XXXXXX)
+database_path=""
 managed=(
     /etc/peek/runtime.env /etc/peek/backup.env /etc/caddy/Caddyfile /usr/local/bin/caddy
     /etc/systemd/system/peek-server.service /etc/systemd/system/caddy.service
@@ -48,7 +49,7 @@ for target in "${managed[@]}"; do
     if [[ -f $target ]]; then cp -p "$target" "$backup/$(basename "$target")"; fi
 done
 
-# --- rollback (deploy/tests/test_deploy.py runs this block on its own) ---
+# --- rollback ---
 # Puts a saved file back without ever writing through the file in place: a copy next to it, then
 # an atomic rename. Writing into a running executable (Caddy) fails with ETXTBSY, and a restore
 # interrupted halfway must not leave a truncated file behind.
@@ -69,6 +70,13 @@ rollback() {
         local incomplete=0 target saved
         printf 'peek install: failed (status %s); restoring the previous state\n' "$status" >&2
         systemctl stop peek-server
+        if [[ -n $database_path && -f $backup/peek.sqlite ]]; then
+            rm -f "$database_path-wal" "$database_path-shm"
+            if ! restore_file "$backup/peek.sqlite" "$database_path"; then
+                printf 'peek install: rollback: could not restore the database\n' >&2
+                incomplete=1
+            fi
+        fi
         for target in "${managed[@]}"; do
             saved=$backup/$(basename "$target")
             if [[ -f $saved ]]; then
@@ -147,6 +155,25 @@ for unit in peek-server.service caddy.service peek-backup.service peek-backup.ti
 done
 /usr/local/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 chmod 0755 "$release" "$release/peek-server"
+
+# Freeze writes and snapshot SQLite before the new binary can migrate its schema.
+# Rollback restores this snapshot before restarting the previous binary.
+database_path=$(python3 - <<'PYDB'
+import pathlib, shlex
+values = dict(line.split("=", 1) for line in pathlib.Path('/etc/peek/runtime.env').read_text().splitlines() if '=' in line)
+print(shlex.split(values.get('PEEK_DATABASE_PATH', '"/var/lib/peek/peek.sqlite"'))[0])
+PYDB
+)
+systemctl stop peek-server
+if [[ -f $database_path ]]; then
+    python3 - "$database_path" "$backup/peek.sqlite" <<'PYDB'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as source, sqlite3.connect(sys.argv[2]) as target:
+    source.backup(target)
+PYDB
+    chown --reference="$database_path" "$backup/peek.sqlite"
+    chmod --reference="$database_path" "$backup/peek.sqlite"
+fi
 
 ln -sfn "$release" "$current_link.next"
 mv -Tf "$current_link.next" "$current_link"

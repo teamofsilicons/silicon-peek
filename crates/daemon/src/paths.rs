@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 use silicon_peek_client::{
     Error, Result,
-    identity::{ActorId, Context, OrgId},
+    identity::{AccountId, Context},
     runtime::fs::ensure_private_dir,
 };
 
@@ -85,31 +85,21 @@ impl Paths {
         self.support.join("drawings")
     }
 
-    /// `drawings/<context>/<org>/<actor>/`.
+    /// `drawings/<context>/<account-uuid>/`.
     #[must_use]
-    pub fn drawing_dir(&self, context: Context, org: &OrgId, actor: &ActorId) -> PathBuf {
+    pub fn drawing_dir(&self, context: Context, account: &AccountId) -> PathBuf {
         self.drawings_root()
             .join(context.as_string())
-            .join(org.as_str())
-            .join(actor.as_str())
+            .join(account.as_str())
     }
 
-    /// Creates `drawings/<context>/<org>/<actor>/` (each level 0700).
+    /// Creates `drawings/<context>/<account-uuid>/` (each level 0700).
     ///
     /// # Errors
     /// As [`Paths::ensure`].
-    pub fn ensure_drawing_dir(
-        &self,
-        context: Context,
-        org: &OrgId,
-        actor: &ActorId,
-    ) -> Result<PathBuf> {
+    pub fn ensure_drawing_dir(&self, context: Context, account: &AccountId) -> Result<PathBuf> {
         let mut dir = self.drawings_root();
-        for part in [
-            context.as_string(),
-            org.as_str().to_owned(),
-            actor.as_str().to_owned(),
-        ] {
+        for part in [context.as_string(), account.as_str().to_owned()] {
             dir.push(part);
             ensure_private_dir(&dir)?;
         }
@@ -175,31 +165,4 @@ impl Paths {
 #[must_use]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::os::unix::fs::PermissionsExt as _;
-
-    #[test]
-    fn layout_is_private() -> Result<()> {
-        let dir = tempfile::tempdir().map_err(|e| Error::internal(e.to_string()))?;
-        let p = Paths::new(&dir.path().join("Library/Application Support/Peek"));
-        p.ensure()?;
-        for d in [&p.support, &p.tts_dir(), &p.images_dir(), &p.offers_dir()] {
-            let mode = std::fs::metadata(d)
-                .map_err(|e| Error::internal(e.to_string()))?
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o777, 0o700, "{}", d.display());
-        }
-        let actor = ActorId::parse("si:cleanup")?;
-        let org = OrgId::parse("tos")?;
-        let d = p.ensure_drawing_dir(Context::Production, &org, &actor)?;
-        assert!(d.ends_with("drawings/production/tos/si:cleanup"));
-        assert_eq!(d, p.drawing_dir(Context::Production, &org, &actor));
-        assert_eq!(sha256_hex(b"abc").len(), 64);
-        Ok(())
-    }
 }

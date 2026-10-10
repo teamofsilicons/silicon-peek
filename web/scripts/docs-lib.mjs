@@ -1,5 +1,4 @@
-// Shared helpers for build-docs.mjs and check-docs.mjs. Pure functions only, so they are unit-tested
-// in docs-lib.test.mjs.
+// Shared helpers for documentation generation and link validation.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,7 +21,7 @@ export function loadManifest() {
   return manifest;
 }
 
-/** The 16 topics advertised by `peek docs` (BLUEPRINT §7.6), in order. */
+/** The topics advertised by `peek docs` (BLUEPRINT §7.6), in order. */
 export const REQUIRED_TOPICS = [
   "start",
   "carbon",
@@ -32,8 +31,7 @@ export const REQUIRED_TOPICS = [
   "ask",
   "drawing",
   "ting",
-  "iam",
-  "testing",
+  "accounts",
   "telemetry",
   "privacy",
   "platforms",

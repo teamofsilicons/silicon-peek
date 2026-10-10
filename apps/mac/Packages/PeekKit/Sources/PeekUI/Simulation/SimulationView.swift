@@ -130,7 +130,6 @@ private struct SimulationControls: View {
                     }
                     Picker("Context", selection: $engine.scenario.context) {
                         Text("Simulation").tag(InputContext.simulation)
-                        Text("Testing").tag(InputContext.testing)
                         Text("Production").tag(InputContext.production)
                     }
                 } header: {
@@ -253,7 +252,7 @@ private struct SimulationOutput: View {
             .padding(.vertical, 8)
             SimulationLogList(entries: engine.log)
             Divider()
-            Text("Isolated local data · no live services. Nothing is sent to peekd, IAM, Ting, Deepgram or OpenAI.")
+            Text("Isolated local data · no live services. Nothing is sent to peekd, Silicon Accounts, Ting, Deepgram or OpenAI.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 14)

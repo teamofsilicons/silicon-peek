@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use silicon_peek_client::{
     Error, ErrorCode, Result, Secret,
     api::{Me, TingEnrollment},
-    identity::{ApiUrl, Context, OrgId, SlotKey},
+    identity::{ApiUrl, Context, SlotKey},
     ipc::{
         AuthBlock,
         cli::{Attach, Detach, DetachReason, StatusOp},
@@ -105,18 +105,18 @@ fn relogin_next() -> &'static str {
 
 /// The authenticated `login status` shape (BLUEPRINT §2.6).
 fn authenticated(session: &Session, slot: &SessionSlot, daemon: DaemonInfo) -> Value {
-    let org_ids = if slot.org_ids.is_empty() {
-        vec![slot.org_id.clone()]
+    let account_ids = if slot.account_ids.is_empty() {
+        vec![slot.account_id.clone()]
     } else {
-        slot.org_ids.clone()
+        slot.account_ids.clone()
     };
     let subscribed = slot.ting.as_ref().is_some_and(|t| t.subscribed);
     let mut v = json!({
         "authenticated": true,
         "id": slot.actor.public_id,
         "actor": slot.actor,
-        "org_id": slot.org_id,
-        "org_ids": org_ids,
+        "account_id": slot.account_id,
+        "account_ids": account_ids,
         "membership_id": slot.membership_id,
         "authority": slot.actor.actor_type.as_str(),
         "custody": "client",
@@ -124,11 +124,10 @@ fn authenticated(session: &Session, slot: &SessionSlot, daemon: DaemonInfo) -> V
         "reconsent_required": slot.reconsent_required,
         "access_expires_at": Timestamp::from_unix(slot.access_expires_at),
         "logged_in_at": Timestamp::from_unix(slot.logged_in_at),
-        "family_expires_at_estimate": slot.family_expires_at_estimate(),
+        "family_expires_at": slot.family_expires_at(),
         "refresh_pending": slot.pending_refresh_key.is_some(),
         "ting": ting_value(slot.ting.as_ref()),
         "daemon": daemon.value(),
-        "testing_environment_id": session.context.testing_id().map(|u| u.hyphenated().to_string()),
         "api_url": session.api,
         "store": session.store.dir().display().to_string(),
         "validated": true,
@@ -148,7 +147,6 @@ fn signed_out(session_api: &ApiUrl, context: Context, reason: &str) -> Value {
         "id": null,
         "reason": reason,
         "api_url": session_api,
-        "testing_environment_id": context.testing_id().map(|u| u.hyphenated().to_string()),
     })
 }
 
@@ -166,7 +164,7 @@ fn human_status(v: &Value) -> String {
         let mut s = match reason {
             "logged_out" => "not authenticated: this home logged out of peek".to_owned(),
             "rejected" => format!(
-                "not authenticated: IAM rejected this home's session ({})",
+                "not authenticated: ACCOUNTS rejected this home's session ({})",
                 v["rejection"]["code"].as_str().unwrap_or("unknown")
             ),
             _ => "not authenticated: no peek session in this home".to_owned(),
@@ -177,17 +175,17 @@ fn human_status(v: &Value) -> String {
     let daemon = &v["daemon"];
     let ting = &v["ting"];
     let mut s = format!(
-        "authenticated as {} ({}) in org {}{}\n\
+        "authenticated as {} ({}) in account {}{}\n\
          membership: {}\n\
          scopes: {}\n\
-         access expires: {}   logged in: {}   family expires (estimate): {}\n\
+         access expires: {}   logged in: {}   family expires: {}\n\
          ting: {}\n\
          peekd: {}\n\
          api: {}\n\
          store: {}",
         v["id"].as_str().unwrap_or_default(),
         v["authority"].as_str().unwrap_or_default(),
-        v["org_id"].as_str().unwrap_or_default(),
+        v["account_id"].as_str().unwrap_or_default(),
         v["display_name"]
             .as_str()
             .map(|n| format!(", shown as \"{n}\""))
@@ -203,7 +201,7 @@ fn human_status(v: &Value) -> String {
             .unwrap_or_default(),
         v["access_expires_at"].as_str().unwrap_or_default(),
         v["logged_in_at"].as_str().unwrap_or_default(),
-        v["family_expires_at_estimate"].as_str().unwrap_or_default(),
+        v["family_expires_at"].as_str().unwrap_or_default(),
         if ting["subscribed"] == true {
             format!(
                 "subscribed ({})",
@@ -223,19 +221,16 @@ fn human_status(v: &Value) -> String {
         v["api_url"].as_str().unwrap_or_default(),
         v["store"].as_str().unwrap_or_default(),
     );
-    if let Some(t) = v["testing_environment_id"].as_str() {
-        let _ = write!(s, "\ntesting environment: {t}");
-    }
     s
 }
 
-/// Maps a transport/5xx/IAM failure to the §2.6 exit-5 error.
+/// Maps a transport/5xx/ACCOUNTS failure to the §2.6 exit-5 error.
 fn unavailable(e: Error) -> Error {
-    let iam = matches!(
+    let accounts = matches!(
         e.code(),
-        ErrorCode::IamUnavailable | ErrorCode::IamMisconfigured
+        ErrorCode::AccountsUnavailable | ErrorCode::AccountsMisconfigured
     );
-    let transient = iam
+    let transient = accounts
         || e.is_transport()
         || e.status().is_some_and(|s| s >= 500 || s == 429)
         || matches!(
@@ -247,8 +242,8 @@ fn unavailable(e: Error) -> Error {
     if !transient {
         return e;
     }
-    let code = if iam {
-        ErrorCode::IamUnavailable
+    let code = if accounts {
+        ErrorCode::AccountsUnavailable
     } else {
         ErrorCode::BackendUnavailable
     };
@@ -279,11 +274,11 @@ pub async fn run(g: &Globals, out: Out, args: LoginArgs) -> Result<()> {
         return Err(Error::invalid_input(
             "peek login needs an SLT: pass it as an argument, with --token-file <PATH|->, or use --recover",
         )
-        .with_hint("mint one: iam silicon-login --app-id peek --grant-org <org> --approve-scopes; then peek login '<SLT>'")
+        .with_hint("mint one: silicon-accounts login --app peek --json; then peek login '<SLT>'")
         .with_details(json!({"missing_argument": "SLT"})));
     };
     let session = g.session(crate::context::store()?, true).await?;
-    let org_hint = g.org(None)?;
+    let account_hint = g.account(None)?;
     let delays = default_login_delays();
     let outcome = match &slt {
         Some(slt) => {
@@ -292,7 +287,7 @@ pub async fn run(g: &Globals, out: Out, args: LoginArgs) -> Result<()> {
                 &session.client,
                 session.context,
                 slt,
-                org_hint.as_ref(),
+                account_hint.as_ref(),
                 &delays,
             )
             .await?
@@ -301,7 +296,7 @@ pub async fn run(g: &Globals, out: Out, args: LoginArgs) -> Result<()> {
             login::recover_login(&session.store, &session.client, session.context, &delays).await?
         }
     };
-    telemetry::note_actor(&outcome.slot.org_id, outcome.slot.actor_id());
+    telemetry::note_actor(&outcome.slot.account_id, outcome.slot.actor_id());
     let auth = auth_block(&session.store, &outcome.slot_key)?;
     telemetry::note_auth(&auth);
     let attached = attach_now(&auth).await;
@@ -349,45 +344,32 @@ pub async fn run(g: &Globals, out: Out, args: LoginArgs) -> Result<()> {
 
 /// The outcome of the live check behind `login status`.
 enum Verified {
-    /// The backend confirmed the (possibly refreshed) session; the org it
-    /// was asked for (`--org` / `SILICON_ORG`) when the session does not
-    /// cover that org.
-    Live(Box<(SessionSlot, Me, Option<OrgId>)>),
-    /// IAM rejected it; the slot is marked.
+    /// The backend confirmed the (possibly refreshed) session; the account it
+    /// was asked for (`--account` / `SILICON_ACCOUNT`) when the session does not
+    /// cover that account.
+    Live(Box<(SessionSlot, Me)>),
+    /// ACCOUNTS rejected it; the slot is marked.
     Rejected,
-}
-
-/// The org `login status` verifies with. Status is not an org-specific
-/// command: it must always answer in the §2.6 shape (Stemcell sets
-/// `SILICON_ORG` on every call and reads status before it re-grants or
-/// removes peek). So a requested org the session does not cover never fails
-/// the check: the session's own org is verified instead and the requested
-/// org is reported next to the result.
-fn status_org(g: &Globals, slot: &SessionSlot) -> (OrgId, Option<OrgId>) {
-    match g.session_org(slot) {
-        Ok(org) => (org, None),
-        Err(_) => (slot.org_id.clone(), g.org(None).ok().flatten()),
-    }
 }
 
 /// `fresh_session(60 s)`, then `GET /api/v1/auth/me`; a 401 forces one
 /// refresh and one retry, and a second 401 marks the slot rejected (§2.6).
-async fn verify(g: &Globals, session: &Session) -> Result<Verified> {
+async fn verify(_g: &Globals, session: &Session) -> Result<Verified> {
     let slot = match fresh(session).await {
         Ok(s) => s,
         Err(e) if *e.code() == ErrorCode::SessionRejected => return Ok(Verified::Rejected),
         Err(e) => return Err(unavailable(e)),
     };
-    let (org, requested) = status_org(g, &slot);
+    let account = slot.account_id.clone();
     let first = session
         .client
-        .with_session(slot.access_token.clone(), org.clone())
+        .with_session(slot.access_token.clone(), account.clone())
         .me()
         .await;
     match first {
         Ok(me) => {
             validate_me(&slot, &me)?;
-            return Ok(Verified::Live(Box::new((slot, me, requested))));
+            return Ok(Verified::Live(Box::new((slot, me))));
         }
         Err(e) if is_unauthenticated(&e) => {}
         Err(e) => return Err(unavailable(e)),
@@ -413,13 +395,13 @@ async fn verify(g: &Globals, session: &Session) -> Result<Verified> {
     }
     match session
         .client
-        .with_session(retried.access_token.clone(), org)
+        .with_session(retried.access_token.clone(), account)
         .me()
         .await
     {
         Ok(me) => {
             validate_me(&retried, &me)?;
-            Ok(Verified::Live(Box::new((retried, me, requested))))
+            Ok(Verified::Live(Box::new((retried, me))))
         }
         Err(e) if is_unauthenticated(&e) => {
             mark_rejected(session, &retried, &e).await?;
@@ -431,13 +413,13 @@ async fn verify(g: &Globals, session: &Session) -> Result<Verified> {
 
 fn validate_me(slot: &SessionSlot, me: &Me) -> Result<()> {
     if !me.authenticated
-        || me.actor != slot.actor
-        || me.org_id != slot.org_id
+        || me.actor.actor_type != slot.actor.actor_type
+        || me.account_id != slot.account_id
         || me.membership_id != slot.membership_id
     {
         return Err(Error::new(
             ErrorCode::UnexpectedResponse,
-            "session verification returned a different account or organization",
+            "session verification returned a different account",
         ));
     }
     Ok(())
@@ -460,6 +442,7 @@ async fn record_verification(
                 .filter(|s| s.refresh_token == slot.refresh_token);
             Ok(current.map(|s| {
                 s.verified_at = Some(now);
+                s.actor = me.actor.clone();
                 if me.display_name.is_some() {
                     s.display_name.clone_from(&me.display_name);
                 }
@@ -484,10 +467,6 @@ async fn record_verification(
 
 pub async fn status(g: &Globals, out: Out) -> Result<()> {
     let Some(store) = crate::context::existing_store()? else {
-        if g.is_testing()? {
-            // A testing environment must have been saved in this home.
-            let _ = g.session(crate::context::store()?, false).await?;
-        }
         let api = g.explicit_api()?.unwrap_or_else(ApiUrl::production);
         out.value(
             &signed_out(&api, Context::Production, "no_session"),
@@ -495,7 +474,7 @@ pub async fn status(g: &Globals, out: Out) -> Result<()> {
         );
         return Ok(());
     };
-    let mut session = g.session(store, false).await?;
+    let session = g.session(store, false).await?;
     let file = session.store.read_session()?;
     let key = session.slot_key.as_string();
     match file.slot(&session.slot_key) {
@@ -521,17 +500,13 @@ pub async fn status(g: &Globals, out: Out) -> Result<()> {
                 next(out, &[relogin_next()]);
                 return Ok(());
             }
-            telemetry::note_actor(&slot.org_id, slot.actor_id());
+            telemetry::note_actor(&slot.account_id, slot.actor_id());
         }
-    }
-    if session.testing.is_some() {
-        // Re-read the environment's generation (it changes when cleaned).
-        session = g.session(session.store.clone(), true).await?;
     }
     let Verified::Live(live) = verify(g, &session).await? else {
         return print_rejected(&session, out);
     };
-    let (slot, me, requested) = *live;
+    let (slot, me) = *live;
     let updated = record_verification(&session, &slot, &me).await?;
     let auth = auth_block(&session.store, &session.slot_key).ok();
     let daemon = match &auth {
@@ -541,25 +516,8 @@ pub async fn status(g: &Globals, out: Out) -> Result<()> {
         }
         None => DaemonInfo::default(),
     };
-    let mut value = authenticated(&session, &updated, daemon);
-    if let Some(requested) = &requested {
-        value["requested_org"] = json!(requested);
-        value["requested_org_authorized"] = json!(false);
-    }
+    let value = authenticated(&session, &updated, daemon);
     out.value(&value, human_status);
-    if let Some(requested) = requested {
-        out.hint(format!(
-            "this session is authorized for org(s) {}, not `{requested}` (--org / SILICON_ORG); log in for it: iam silicon-login --app-id peek --grant-org {requested} --approve-scopes; peek --org {requested} login '<SLT>'",
-            value["org_ids"]
-                .as_array()
-                .map(|a| a
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", "))
-                .unwrap_or_default()
-        ));
-    }
     sweep_revocations(&session.store, session.telemetry).await;
     Ok(())
 }
@@ -619,7 +577,7 @@ pub async fn logout(g: &Globals, args: &LogoutArgs, out: Out) -> Result<()> {
     // it must still exist when peekd cancels this actor's undelivered rows.
     let file = session.store.read_session()?;
     if let Ok(slot) = file.usable_slot(&session.slot_key, session.store.dir()) {
-        telemetry::note_actor(&slot.org_id, slot.actor_id());
+        telemetry::note_actor(&slot.account_id, slot.actor_id());
         if let Ok(auth) = auth_block(&session.store, &session.slot_key) {
             detach_now(&auth).await;
         }

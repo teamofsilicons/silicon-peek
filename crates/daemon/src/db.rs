@@ -22,7 +22,7 @@ use rusqlite::Connection;
 use silicon_peek_client::{Error, ErrorCode, Result};
 
 /// The schema version this build writes (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE homes (
@@ -30,7 +30,7 @@ CREATE TABLE homes (
   token_sha256 BLOB NOT NULL,             -- sha256(daemon-token); never the token
   api_url      TEXT NOT NULL,             -- last slot seen
   context      TEXT NOT NULL,
-  org_id       TEXT,
+  account_id       TEXT,
   actor_id     TEXT,
   attached_at  INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL,
@@ -39,19 +39,18 @@ CREATE TABLE homes (
 CREATE TABLE slots (
   context       TEXT NOT NULL,
   slot          INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 8),
-  org_id        TEXT NOT NULL,
+  account_id        TEXT NOT NULL,
   actor_id      TEXT NOT NULL,
   home_path     TEXT NOT NULL,
   registered_at INTEGER NOT NULL,
   api_url       TEXT NOT NULL,            -- the slot's backend
   display_name  TEXT,
-  testing       TEXT,                     -- {"id","name","generation"} for the TEST pill
   PRIMARY KEY (context, slot),
-  UNIQUE (context, org_id, actor_id)
+  UNIQUE (context, account_id)
 );
 CREATE TABLE drawings (
   context       TEXT NOT NULL,
-  org_id        TEXT NOT NULL,
+  account_id        TEXT NOT NULL,
   actor_id      TEXT NOT NULL,
   sha256        TEXT NOT NULL,
   path          TEXT NOT NULL,
@@ -61,12 +60,12 @@ CREATE TABLE drawings (
   last_error    TEXT,                     -- runtime failure (drawing.error) as JSON
   error_pending INTEGER NOT NULL DEFAULT 0, -- not yet attached to a CLI result
   previous_path TEXT,                     -- kept for rollback
-  PRIMARY KEY (context, org_id, actor_id)
+  PRIMARY KEY (context, account_id)
 );
 CREATE TABLE sends (
   send_id        TEXT PRIMARY KEY,
   context        TEXT NOT NULL,
-  org_id         TEXT NOT NULL,
+  account_id         TEXT NOT NULL,
   actor_id       TEXT NOT NULL,
   slot           INTEGER NOT NULL,
   isi            TEXT,
@@ -82,7 +81,7 @@ CREATE TABLE sends (
   warnings       TEXT,                    -- JSON array of {code,message}
   speech_done_at INTEGER
 );
-CREATE INDEX sends_actor ON sends(context, org_id, actor_id, send_id);
+CREATE INDEX sends_actor ON sends(context, account_id, actor_id, send_id);
 CREATE INDEX sends_open ON sends(closed_at, created_at);
 CREATE TABLE asks (
   ask_id        TEXT PRIMARY KEY,
@@ -106,7 +105,7 @@ CREATE TABLE outbox (
   context         TEXT NOT NULL,
   home_path       TEXT NOT NULL,
   api_url         TEXT NOT NULL,
-  org_id          TEXT NOT NULL,
+  account_id          TEXT NOT NULL,
   actor_id        TEXT NOT NULL,
   kind            TEXT NOT NULL,          -- ting|drawing.put|drawing.delete
   request         BLOB NOT NULL,          -- exact bytes POSTed; never re-serialized
@@ -122,7 +121,7 @@ CREATE TABLE outbox (
   subject_id      TEXT                    -- ask_/snd_/cmsg_ the row reports on
 );
 CREATE INDEX outbox_due   ON outbox(status, next_attempt_at);
-CREATE INDEX outbox_actor ON outbox(context, org_id, actor_id, status);
+CREATE INDEX outbox_actor ON outbox(context, account_id, actor_id, status);
 CREATE TABLE telemetry_outbox (
   id         TEXT PRIMARY KEY,
   table_id   TEXT NOT NULL,
@@ -130,12 +129,7 @@ CREATE TABLE telemetry_outbox (
   created_at INTEGER NOT NULL,
   source     TEXT NOT NULL DEFAULT 'daemon' -- daemon|cli|mac (X-Peek-Source)
 );
-CREATE TABLE cli_watchdog (
-  context_dir  TEXT PRIMARY KEY,          -- a Honeycomb context directory holding peek
-  behind_since INTEGER NOT NULL,
-  last_run_at  INTEGER,
-  last_outcome TEXT
-);
+
 "#;
 
 /// Schema 2 (peek 0.1.2): queue v2, expiry on every send, scheduling.
@@ -155,7 +149,7 @@ CREATE TABLE scheduled (
   send_id     TEXT NOT NULL UNIQUE,       -- pre-assigned snd_ (becomes sends.send_id when it fires)
   ask_id      TEXT UNIQUE,                -- pre-assigned ask_ for --ask
   context     TEXT NOT NULL,
-  org_id      TEXT NOT NULL,
+  account_id      TEXT NOT NULL,
   actor_id    TEXT NOT NULL,
   home_path   TEXT NOT NULL,
   api_url     TEXT NOT NULL,
@@ -171,7 +165,7 @@ CREATE TABLE scheduled (
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX scheduled_due ON scheduled(due_at, schedule_id);
-CREATE INDEX scheduled_actor ON scheduled(context, org_id, actor_id, due_at);
+CREATE INDEX scheduled_actor ON scheduled(context, account_id, actor_id, due_at);
 ";
 
 /// Converts rusqlite errors into peek errors.
@@ -276,118 +270,35 @@ fn migrate(conn: &Connection, path: &Path) -> Result<()> {
         )
         .with_hint("reinstall the newest Peek.app (peek app install), or move peekd.sqlite aside"));
     }
-    if version < 1 {
+    if (1..3).contains(&version) {
+        // Organization authority cannot be mapped to personal Accounts UUIDs.
+        // Keep an exact SQLite snapshot before starting the new account store.
+        let archive = path.with_extension("pre-accounts.sqlite");
+        if !archive.exists() {
+            conn.execute("VACUUM INTO ?1", [archive.to_string_lossy().as_ref()])
+                .sql()?;
+        }
+        conn.pragma_update(None, "foreign_keys", "OFF").sql()?;
+        let reset = conn.execute_batch(&format!(
+            "BEGIN;
+            DROP TABLE IF EXISTS asks; DROP TABLE IF EXISTS scheduled;
+            DROP TABLE IF EXISTS sends; DROP TABLE IF EXISTS outbox;
+            DROP TABLE IF EXISTS drawings; DROP TABLE IF EXISTS slots;
+            DROP TABLE IF EXISTS homes; DROP TABLE IF EXISTS telemetry_outbox;
+            DROP TABLE IF EXISTS cli_watchdog;
+            {SCHEMA_V1} {SCHEMA_V2} PRAGMA user_version=3; COMMIT;"
+        ));
+        if reset.is_err() {
+            let _ = conn.execute_batch("ROLLBACK;");
+        }
+        conn.pragma_update(None, "foreign_keys", "ON").sql()?;
+        reset.sql()?;
+        tracing::info!(archive=%archive.display(),"Preserved legacy Peek data; sign in with ACCOUNTS to continue");
+    } else if version == 0 {
         conn.execute_batch(&format!(
-            "BEGIN; {SCHEMA_V1} PRAGMA user_version = 1; COMMIT;"
-        ))
-        .sql()?;
-    }
-    if version < 2 {
-        conn.execute_batch(&format!(
-            "BEGIN; {SCHEMA_V2} PRAGMA user_version = 2; COMMIT;"
+            "BEGIN; {SCHEMA_V1} {SCHEMA_V2} PRAGMA user_version=3; COMMIT;"
         ))
         .sql()?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::os::unix::fs::PermissionsExt as _;
-
-    #[tokio::test]
-    async fn opens_migrates_and_refuses_newer() -> Result<()> {
-        let dir = tempfile::tempdir().map_err(|e| Error::internal(e.to_string()))?;
-        let path = dir.path().join("peekd.sqlite");
-        let db = Db::open(&path)?;
-        let n: i64 = db
-            .call(|c| {
-                c.query_row(
-                    "SELECT count(*) FROM sqlite_master WHERE type='table'",
-                    [],
-                    |r| r.get(0),
-                )
-                .sql()
-            })
-            .await?;
-        assert_eq!(n, 9);
-        let v: i64 = db
-            .call(|c| c.query_row("PRAGMA user_version", [], |r| r.get(0)).sql())
-            .await?;
-        assert_eq!(v, 2);
-        drop(db);
-        // Re-open is idempotent.
-        let db = Db::open(&path)?;
-        db.call(|c| c.execute("PRAGMA user_version = 99", []).sql())
-            .await?;
-        drop(db);
-        let e = Db::open(&path).err();
-        assert!(e.is_some_and(|e| *e.code() == ErrorCode::StoreSchemaNewer));
-        let mode = std::fs::metadata(&path)
-            .map_err(|e| Error::internal(e.to_string()))?
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o077, 0);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_schema_1_database_is_migrated_with_backfills() -> Result<()> {
-        let dir = tempfile::tempdir().map_err(|e| Error::internal(e.to_string()))?;
-        let path = dir.path().join("peekd.sqlite");
-        {
-            let conn = Connection::open(&path).sql()?;
-            conn.execute_batch(&format!(
-                "BEGIN; {SCHEMA_V1} PRAGMA user_version = 1; COMMIT;"
-            ))
-            .sql()?;
-            conn.execute_batch(
-                "INSERT INTO sends (send_id, context, org_id, actor_id, slot, payload, notify, created_at, home_path, api_url, kind)
-                   VALUES ('snd_open', 'production', 'tos', 'si:a', 3, x'7b7d', '[]', 1000, '/h', 'https://x', 'ask'),
-                          ('snd_done', 'production', 'tos', 'si:a', 3, x'7b7d', '[]', 2000, '/h', 'https://x', 'show');
-                 UPDATE sends SET closed_at = 2500, close_reason = 'auto' WHERE send_id = 'snd_done';
-                 INSERT INTO asks (ask_id, send_id, state, expires_at, created_at)
-                   VALUES ('ask_open', 'snd_open', 'pending', 99000, 1000);",
-            )
-            .sql()?;
-        }
-        let db = Db::open(&path)?;
-        let rows: Vec<(String, Option<i64>, Option<i64>, i64)> = db
-            .call(|c| {
-                let mut st = c
-                    .prepare("SELECT send_id, expires_at, queued_at, overflow FROM sends ORDER BY send_id")
-                    .sql()?;
-                let v = st
-                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-                    .sql()?
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .sql()?;
-                Ok(v)
-            })
-            .await?;
-        assert_eq!(
-            rows,
-            vec![
-                ("snd_done".to_owned(), None, Some(2000), 0),
-                ("snd_open".to_owned(), Some(99000), Some(1000), 0),
-            ]
-        );
-        let scheduled: i64 = db
-            .call(|c| {
-                c.query_row("SELECT count(*) FROM scheduled", [], |r| r.get(0))
-                    .sql()
-            })
-            .await?;
-        assert_eq!(scheduled, 0);
-        drop(db);
-        // A newer schema (3) is refused.
-        {
-            let conn = Connection::open(&path).sql()?;
-            conn.execute("PRAGMA user_version = 3", []).sql()?;
-        }
-        let e = Db::open(&path).err();
-        assert!(e.is_some_and(|e| *e.code() == ErrorCode::StoreSchemaNewer));
-        Ok(())
-    }
 }

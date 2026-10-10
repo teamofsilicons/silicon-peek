@@ -1,0 +1,10 @@
+{
+  "app_id": "peek",
+  "name": "Peek",
+  "author": "si:tos",
+  "visibility": "public",
+  "links": {
+    "website": "https://peek.teamofsilicons.com",
+    "developer_docs": "https://peek.teamofsilicons.com/docs"
+  }
+}

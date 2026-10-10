@@ -1,10 +1,13 @@
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { render } from "solid-js/web";
 import "@fontsource/ibm-plex-mono/400.css";
+import "../components/silicon-ui/foundation.css";
 import "../styles/tokens.css";
+import "../shared/theme.ts";
 import "../styles/docs.css";
 import { copyText } from "../shared/copy.ts";
 import TelemetryToggle from "../shared/TelemetryToggle.tsx";
+import AccountMenu from "../shared/AccountMenu.tsx";
 import { startTelemetry, track } from "../shared/telemetry.ts";
 
 // Progressive enhancement for the prerendered docs: search (⌘K or /), copy buttons, the mobile
@@ -258,3 +261,6 @@ const tools = document.getElementById("docs-tools");
 if (tools) render(() => <Tools />, tools);
 const toggle = document.getElementById("telemetry-toggle");
 if (toggle) render(() => <TelemetryToggle />, toggle);
+
+const account = document.getElementById("docs-account");
+if (account) render(() => <AccountMenu />, account);

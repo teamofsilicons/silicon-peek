@@ -1,12 +1,9 @@
 //! `peek-server`: the backend of [Peek](https://peek.teamofsilicons.com).
 //!
-//! It holds the IAM app secret and encrypted feature credentials: it exchanges SLTs,
-//! rotates and revokes app sessions (the tokens go straight back to the
-//! caller), introspects every bearer live, and stores independently approved Ting roots
-//! for enrollment and deliveries, mints direct TTS credentials and relays `OpenAI` STT, keeps each
-//! Silicon's drawing copy, files bug reports, relays client telemetry to Space
-//! Station, receives IAM webhooks and acts as a Honeycomb lifecycle
-//! participant for testing environments.
+//! It exchanges and rotates Silicon Accounts sessions, encrypts successful token
+//! responses for recovery, and introspects every bearer live. Account UUIDs own
+//! drawings and settings. Short-lived Accounts proofs authorize Ting operations;
+//! the server also brokers speech, bug reports, telemetry, and account webhooks.
 //!
 //! The binary (`src/main.rs`) only loads [`config::Config`], builds
 //! [`state::AppState`] and serves [`app::router`]. Everything else is internal;
@@ -18,6 +15,7 @@ pub mod config;
 pub mod state;
 pub mod telemetry;
 
+mod accounts;
 mod auth;
 mod crypto;
 mod db;
@@ -26,8 +24,6 @@ mod elevenlabs;
 mod error;
 mod extract;
 mod github;
-mod honeycomb;
-mod iam;
 mod idempotency;
 mod obo;
 mod openai;
@@ -36,4 +32,3 @@ mod ratelimit;
 mod routes;
 mod store;
 mod ting;
-mod webhook;

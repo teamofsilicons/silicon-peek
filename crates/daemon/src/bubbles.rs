@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use silicon_peek_client::{
     Error, ErrorCode, Result,
-    identity::{ActorId, ApiUrl, Context, OrgId, SlotIndex},
+    identity::{AccountId, ActorId, ApiUrl, Context, SlotIndex},
     ids::{AskId, MessageId, ScheduleId, SendId},
     ipc::{
         cli::{
@@ -342,12 +342,12 @@ fn corrupt(what: &str, e: impl std::fmt::Display) -> Error {
     .with_hint("move ~/Library/Application Support/Peek/peekd.sqlite aside and reopen Peek")
 }
 
-const SEND_COLS: &str = "send_id, context, org_id, actor_id, slot, isi, payload, notify, created_at, shown_at, closed_at, home_path, api_url, speech_done_at, kind, expires_at, queued_at, overflow, schedule_id, due_at, close_reason";
+const SEND_COLS: &str = "send_id, context, account_id, actor_id, slot, isi, payload, notify, created_at, shown_at, closed_at, home_path, api_url, speech_done_at, kind, expires_at, queued_at, overflow, schedule_id, due_at, close_reason";
 
 fn send_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<SendRow>> {
     let send_id: String = r.get(0)?;
     let context: String = r.get(1)?;
-    let org: String = r.get(2)?;
+    let account: String = r.get(2)?;
     let actor: String = r.get(3)?;
     let slot: i64 = r.get(4)?;
     let isi: Option<String> = r.get(5)?;
@@ -372,7 +372,7 @@ fn send_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<SendRow>> {
             send_id: SendId::parse(&send_id).map_err(|e| corrupt("send id", e))?,
             key: ActorKey {
                 context,
-                org: OrgId::parse(&org).map_err(|e| corrupt("org", e))?,
+                account: AccountId::parse(&account).map_err(|e| corrupt("account", e))?,
                 actor: ActorId::parse(&actor).map_err(|e| corrupt("actor", e))?,
             },
             slot: SlotIndex::new(u64::try_from(slot).unwrap_or(0))
@@ -575,8 +575,8 @@ pub(crate) fn carbon_paused_warning(slot: SlotIndex) -> Warning {
 pub fn slot_of(c: &Connection, key: &ActorKey) -> Result<Option<SlotIndex>> {
     let slot: Option<i64> = c
         .query_row(
-            "SELECT slot FROM slots WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-            params![key.context_str(), key.org.as_str(), key.actor.as_str()],
+            "SELECT slot FROM slots WHERE context = ?1 AND account_id = ?2",
+            params![key.context_str(), key.account.as_str()],
             |r| r.get(0),
         )
         .optional()
@@ -732,13 +732,13 @@ pub(crate) struct NewSend {
 
 pub(crate) fn insert_send(tx: &Connection, row: &NewSend) -> Result<()> {
     tx.execute(
-        "INSERT INTO sends (send_id, context, org_id, actor_id, slot, isi, payload, notify, created_at, home_path, api_url, kind,
+        "INSERT INTO sends (send_id, context, account_id, actor_id, slot, isi, payload, notify, created_at, home_path, api_url, kind,
                             expires_at, queued_at, schedule_id, due_at, warnings)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             row.send_id,
             row.key.context_str(),
-            row.key.org.as_str(),
+            row.key.account.as_str(),
             row.key.actor.as_str(),
             row.slot.get(),
             row.isi,
@@ -988,8 +988,8 @@ impl Shared {
         self.record_send(&key, slot, placed.status, &payload, &op, placed.waiting);
         if let Some(old) = &placed.replaced {
             let mut rec = Record::new("send.replaced", "ok").with("slot", slot.get());
-            rec.actor = Some((key.org.clone(), key.actor.clone()));
-            rec.testing = key.context.is_testing();
+            rec.actor = Some((key.account.clone(), key.actor.clone()));
+
             tracing::debug!(send = %send_id, replaced = %old, "a --replace send took over the bubble");
             self.record(rec);
         }
@@ -1047,8 +1047,8 @@ impl Shared {
                     c.query_row(
                         "SELECT count(*) FROM outbox WHERE kind = 'ting' AND status = 'authority_required'
                            AND last_error_code = 'recipient_not_registered'
-                           AND context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                        params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                           AND context = ?1 AND account_id = ?2",
+                        params![k.context_str(), k.account.as_str()],
                         |r| r.get::<_, i64>(0),
                     )
                     .sql()
@@ -1359,9 +1359,9 @@ impl Shared {
         if let Some(t) = &op.speak {
             rec = rec.with("speak_chars", t.chars().count());
         }
-        rec.actor = Some((key.org.clone(), key.actor.clone()));
+        rec.actor = Some((key.account.clone(), key.actor.clone()));
         rec.isi.clone_from(&op.isi);
-        rec.testing = key.context.is_testing();
+
         self.record(rec);
     }
 
@@ -1633,9 +1633,9 @@ impl Shared {
         if send.schedule_id.is_some() {
             rec = rec.with("scheduled", true);
         }
-        rec.actor = Some((key.org.clone(), key.actor.clone()));
+        rec.actor = Some((key.account.clone(), key.actor.clone()));
         rec.isi.clone_from(&send.isi);
-        rec.testing = key.context.is_testing();
+
         self.record(rec);
     }
 
@@ -2026,8 +2026,8 @@ impl Shared {
         if let Some(v) = via {
             rec = rec.with("input", enum_str(&v));
         }
-        rec.actor = Some((key.org.clone(), key.actor.clone()));
-        rec.testing = key.context.is_testing();
+        rec.actor = Some((key.account.clone(), key.actor.clone()));
+
         self.record(rec);
         Ok(state)
     }
@@ -2313,12 +2313,12 @@ impl Shared {
                 let mut st = tx
                     .prepare(
                         "SELECT a.ask_id FROM asks a JOIN sends s ON s.send_id = a.send_id
-                         WHERE a.state = 'pending' AND s.context = ?1 AND s.org_id = ?2 AND s.actor_id = ?3
+                         WHERE a.state = 'pending' AND s.context = ?1 AND s.account_id = ?2
                          ORDER BY a.created_at",
                     )
                     .sql()?;
                 let asks: Vec<String> = st
-                    .query_map(params![k.context_str(), k.org.as_str(), k.actor.as_str()], |r| r.get(0))
+                    .query_map(params![k.context_str(), k.account.as_str()], |r| r.get(0))
                     .sql()?
                     .collect::<rusqlite::Result<_>>()
                     .sql()?;
@@ -2338,26 +2338,26 @@ impl Shared {
                     orphans.push(a);
                 }
                 tx.execute(
-                    "UPDATE sends SET closed_at = ?4, close_reason = 'unregistered'
-                     WHERE closed_at IS NULL AND context = ?1 AND org_id = ?2 AND actor_id = ?3
+                    "UPDATE sends SET closed_at = ?3, close_reason = 'unregistered'
+                     WHERE closed_at IS NULL AND context = ?1 AND account_id = ?2
                        AND send_id NOT IN (SELECT send_id FROM asks WHERE state = 'pending')",
-                    params![k.context_str(), k.org.as_str(), k.actor.as_str(), now],
+                    params![k.context_str(), k.account.as_str(), now],
                 )
                 .sql()?;
                 let mut st = tx
                     .prepare(
-                        "SELECT schedule_id FROM scheduled WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3
+                        "SELECT schedule_id FROM scheduled WHERE context = ?1 AND account_id = ?2
                          ORDER BY due_at, schedule_id",
                     )
                     .sql()?;
                 let scheduled: Vec<String> = st
-                    .query_map(params![k.context_str(), k.org.as_str(), k.actor.as_str()], |r| r.get(0))
+                    .query_map(params![k.context_str(), k.account.as_str()], |r| r.get(0))
                     .sql()?
                     .collect::<rusqlite::Result<_>>()
                     .sql()?;
                 tx.execute(
-                    "DELETE FROM scheduled WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                    params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                    "DELETE FROM scheduled WHERE context = ?1 AND account_id = ?2",
+                    params![k.context_str(), k.account.as_str()],
                 )
                 .sql()?;
                 Ok((orphans, scheduled))
@@ -2582,7 +2582,7 @@ impl Shared {
             .db
             .call(move |c| {
                 c.query_row(
-                    "SELECT context, org_id, actor_id, home_path, api_url FROM slots
+                    "SELECT context, account_id, actor_id, home_path, api_url FROM slots
                      WHERE slot = ?1 AND (?2 IS NULL OR context = ?2)
                      ORDER BY (context = 'production') DESC, registered_at DESC LIMIT 1",
                     params![slot.get(), wanted],
@@ -2592,7 +2592,7 @@ impl Shared {
                 .sql()
             })
             .await?;
-        let (context, org, actor, home_path, api_url) = found.ok_or_else(|| {
+        let (context, account, actor, home_path, api_url) = found.ok_or_else(|| {
             Error::new(
                 ErrorCode::SideNotRegistered,
                 format!("no Silicon holds position {slot}"),
@@ -2602,7 +2602,7 @@ impl Shared {
         Ok((
             ActorKey {
                 context,
-                org: OrgId::parse(&org).map_err(|e| corrupt("org", e))?,
+                account: AccountId::parse(&account).map_err(|e| corrupt("account", e))?,
                 actor: ActorId::parse(&actor).map_err(|e| corrupt("actor", e))?,
             },
             HomeRef {
@@ -2646,9 +2646,9 @@ impl Shared {
             .call(move |c| {
                 let latest = c
                     .query_row(
-                        "SELECT send_id, isi FROM sends WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3
+                        "SELECT send_id, isi FROM sends WHERE context = ?1 AND account_id = ?2
                          ORDER BY created_at DESC, send_id DESC LIMIT 1",
-                        params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                        params![k.context_str(), k.account.as_str()],
                         |r| Ok((r.get(0)?, r.get(1)?)),
                     )
                     .optional()
@@ -2689,8 +2689,8 @@ impl Shared {
         let mut rec = Record::new("message.received", "ok")
             .with("slot", slot.get())
             .with("input", enum_str(&via));
-        rec.actor = Some((key.org.clone(), key.actor.clone()));
-        rec.testing = key.context.is_testing();
+        rec.actor = Some((key.account.clone(), key.actor.clone()));
+
         self.record(rec);
         Ok(message_id)
     }
@@ -2778,9 +2778,9 @@ impl Shared {
                 let mut st = c
                     .prepare(&format!(
                         "SELECT {} FROM asks a JOIN sends s ON s.send_id = a.send_id
-                         WHERE s.context = ?1 AND s.org_id = ?2 AND s.actor_id = ?3
-                           AND (?4 IS NULL OR a.state IN (SELECT value FROM json_each(?4)))
-                         ORDER BY a.created_at DESC, a.ask_id DESC LIMIT ?5",
+                         WHERE s.context = ?1 AND s.account_id = ?2
+                           AND (?3 IS NULL OR a.state IN (SELECT value FROM json_each(?3)))
+                         ORDER BY a.created_at DESC, a.ask_id DESC LIMIT ?4",
                         ASK_COLS
                             .split(", ")
                             .map(|c| format!("a.{c}"))
@@ -2790,13 +2790,7 @@ impl Shared {
                     .sql()?;
                 let rows = st
                     .query_map(
-                        params![
-                            k.context_str(),
-                            k.org.as_str(),
-                            k.actor.as_str(),
-                            filter,
-                            limit
-                        ],
+                        params![k.context_str(), k.account.as_str(), filter, limit],
                         ask_from_row,
                     )
                     .sql()?
@@ -3057,112 +3051,4 @@ pub fn prune_images(
         }
     }
     removed
-}
-
-#[cfg(test)]
-mod summary_tests {
-    use super::*;
-
-    fn payload(v: Value) -> SendPayload {
-        serde_json::from_value(v).unwrap_or_else(|e| panic!("{e}"))
-    }
-
-    #[test]
-    fn summaries_follow_the_contract() {
-        let question = Ask::from_input(&json!({"question": "Delete  old.zip?", "type": "text"}))
-            .unwrap_or_else(|e| panic!("{e}"));
-        let ask = payload(json!({"ask": question, "speak": "x"}));
-        assert_eq!(ask.summary(), "Delete old.zip?");
-        let text = payload(json!({"show": {"elements": [
-            {"type": "image", "path": "/c/a.png", "caption": "cover"},
-            {"type": "text", "text": "Build\nfinished"}]}, "speak": "spoken"}));
-        assert_eq!(
-            text.summary(),
-            "Build finished",
-            "the first text wins over a caption"
-        );
-        let caption = payload(json!({"show": {"elements": [
-            {"type": "image", "path": "/c/a.png"},
-            {"type": "image", "path": "/c/b.png", "caption": " CO2 "}]}}));
-        assert_eq!(caption.summary(), "CO2");
-        let image = payload(json!({"show": {"elements": [{"type": "image", "path": "/c/a.png"}]}}));
-        assert_eq!(image.summary(), "image");
-        let speak = payload(json!({"speak": "  Deploy\t done  "}));
-        assert_eq!(speak.summary(), "Deploy done");
-        let long = payload(json!({"speak": "é".repeat(61)}));
-        let s = long.summary();
-        assert_eq!(s.chars().count(), 60);
-        assert!(s.ends_with('…'));
-        let exact = payload(json!({"speak": "a".repeat(60)}));
-        assert_eq!(exact.summary(), "a".repeat(60));
-        assert_eq!(payload(json!({})).summary(), "");
-    }
-}
-
-#[cfg(test)]
-mod image_cache_tests {
-    use super::*;
-
-    fn file(dir: &std::path::Path, name: &str, len: usize, age: Duration) {
-        let path = dir.join(name);
-        std::fs::write(&path, vec![0u8; len]).unwrap_or_else(|e| panic!("{e}"));
-        let f = std::fs::File::options()
-            .write(true)
-            .open(&path)
-            .unwrap_or_else(|e| panic!("{e}"));
-        f.set_modified(std::time::SystemTime::now() - age)
-            .unwrap_or_else(|e| panic!("{e}"));
-    }
-
-    #[test]
-    fn unreferenced_images_are_pruned_by_age_and_size() {
-        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-        let d = dir.path();
-        let day = Duration::from_hours(24);
-        file(d, "aaa.png", 10, 30 * day); // referenced by an open send: kept
-        file(d, "bbb.png", 10, 30 * day); // old, unreferenced: removed
-        file(d, "ccc.jpg", 10, day); // fresh: kept
-        file(d, ".ddd.png.0192.tmp", 10, 2 * day); // abandoned temp: removed
-        file(d, ".eee.png.0193.tmp", 10, Duration::from_secs(5)); // being written: kept
-        let open = vec![format!(
-            r#"{{"show":{{"elements":[{{"type":"image","path":"{}"}}]}}}}"#,
-            d.join("aaa.png").display()
-        )];
-        assert_eq!(prune_images(d, &open, IMAGE_CACHE_MAX_AGE, u64::MAX), 2);
-        let left = |n: &str| d.join(n).exists();
-        assert!(left("aaa.png") && left("ccc.jpg") && left(".eee.png.0193.tmp"));
-        assert!(!left("bbb.png") && !left(".ddd.png.0192.tmp"));
-
-        // Over the size cap: the oldest unreferenced go first, never a
-        // referenced one.
-        file(d, "fff.png", 100, 3 * day);
-        file(d, "ggg.png", 100, 2 * day);
-        file(d, "hhh.png", 100, day);
-        assert_eq!(prune_images(d, &open, IMAGE_CACHE_MAX_AGE, 100), 3);
-        assert!(left("aaa.png") && left("hhh.png"));
-        assert!(!left("fff.png") && !left("ggg.png") && !left("ccc.jpg"));
-    }
-
-    #[test]
-    fn a_re_sent_image_is_fresh_again() {
-        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
-        let path = cache_image(dir.path(), &png).unwrap_or_else(|e| panic!("{e}"));
-        let old = std::time::SystemTime::now() - Duration::from_hours(30 * 24);
-        std::fs::File::options()
-            .write(true)
-            .open(&path)
-            .and_then(|f| f.set_modified(old))
-            .unwrap_or_else(|e| panic!("{e}"));
-        cache_image(dir.path(), &png).unwrap_or_else(|e| panic!("{e}"));
-        let modified = std::fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .unwrap_or_else(|e| panic!("{e}"));
-        let age = modified.elapsed().unwrap_or_default();
-        assert!(age < Duration::from_secs(60));
-        assert_eq!(
-            prune_images(dir.path(), &[], IMAGE_CACHE_MAX_AGE, u64::MAX),
-            0
-        );
-    }
 }

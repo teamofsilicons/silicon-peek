@@ -63,8 +63,7 @@ struct CaptionPillView: View {
     }
 }
 
-/// The leading `TEST · <environment>` or `SIMULATION` pill, with the environment's id and
-/// generation as its tooltip (gap-testing §9.3).
+/// Identifies the local simulation.
 struct BadgeView: View {
     let badge: ChromeContent.Badge
     let size: CGSize
@@ -76,7 +75,6 @@ struct BadgeView: View {
 
     static func tint(_ badge: ChromeContent.Badge) -> Color {
         switch badge {
-        case .test: Color.orange.opacity(0.8)
         case .simulation: Color(red: 0.38, green: 0.32, blue: 0.9).opacity(0.78)
         }
     }
@@ -91,19 +89,5 @@ struct BadgeView: View {
             .frame(width: size.width, height: size.height)
             .help(tooltip ?? badge.text)
             .accessibilityLabel(badge.text)
-    }
-}
-
-/// A dashed ring around a test Silicon's drawing (gap-testing §9.3).
-struct TestRingView: View {
-    let visualRect: CGRect
-
-    var body: some View {
-        Circle()
-            .strokeBorder(Color.orange.opacity(0.9), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
-            .frame(width: visualRect.width + 8, height: visualRect.height + 8)
-            .position(x: visualRect.midX, y: visualRect.midY)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
     }
 }

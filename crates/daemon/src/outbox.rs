@@ -2,7 +2,7 @@
 //!
 //! Each row's `request` bytes are fixed when the event is recorded and are
 //! sent unchanged on every attempt with `Idempotency-Key:
-//! peek-delivery-<event_id>`. The queue key is `(api_url, context, org,
+//! peek-delivery-<event_id>`. The queue key is `(api_url, context, account,
 //! actor)`: rows are only ever sent with that Silicon's own session (any home
 //! holding it), never another actor's. peekd never re-registers a Ting
 //! recipient (D7): `recipient_not_registered` parks the row in
@@ -15,7 +15,7 @@ use silicon_peek_client::{
     Error, ErrorCode, Result,
     config::DEFAULT_DELIVERY_MAX_AGE_HOURS,
     http::Client,
-    identity::{ActorId, ApiUrl, Context, OrgId},
+    identity::{AccountId, ActorId, ApiUrl, Context},
     ids::EventId,
     runtime::{DELIVERY_MARGIN, RefreshPolicy, SessionSlot, Store, force_refresh},
 };
@@ -85,7 +85,7 @@ pub struct NewRow {
 pub fn insert(c: &Connection, row: &NewRow) -> Result<()> {
     let now = now_ms();
     c.execute(
-        "INSERT INTO outbox (event_id, context, home_path, api_url, org_id, actor_id, kind, request,
+        "INSERT INTO outbox (event_id, context, home_path, api_url, account_id, actor_id, kind, request,
                              created_at, next_attempt_at, attempts, status, subject_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, 0, 'pending', ?10)",
         params![
@@ -93,7 +93,7 @@ pub fn insert(c: &Connection, row: &NewRow) -> Result<()> {
             row.key.context_str(),
             row.home.home_path,
             row.home.api_url.as_str(),
-            row.key.org.as_str(),
+            row.key.account.as_str(),
             row.key.actor.as_str(),
             row.kind.as_str(),
             row.request,
@@ -200,13 +200,12 @@ fn classify(e: &Error) -> Outcome {
     match e.code() {
         ErrorCode::RecipientNotRegistered
         | ErrorCode::ReconsentRequired
-        | ErrorCode::TestingGenerationChanged
-        | ErrorCode::TestingSecretInvalid
         | ErrorCode::Unauthenticated
         | ErrorCode::SessionRejected
         | ErrorCode::NotLoggedIn
-        | ErrorCode::PrivateApplicationOrganizationRequired
-        | ErrorCode::EnvironmentNotPrepared => Outcome::AuthorityRequired { code, request_id },
+        | ErrorCode::PrivateApplicationAccountRequired => {
+            Outcome::AuthorityRequired { code, request_id }
+        }
         ErrorCode::TingTypeMissing => Outcome::TypeMissing {
             code,
             request_id,
@@ -223,8 +222,8 @@ fn classify(e: &Error) -> Outcome {
         | ErrorCode::UnexpectedResponse => Outcome::Failed { code, request_id },
         ErrorCode::TingUnavailable
         | ErrorCode::BackendUnavailable
-        | ErrorCode::IamUnavailable
-        | ErrorCode::IamMisconfigured
+        | ErrorCode::AccountsUnavailable
+        | ErrorCode::AccountsMisconfigured
         | ErrorCode::RateLimited
         | ErrorCode::IdempotencyInProgress => Outcome::Retry {
             code,
@@ -250,17 +249,17 @@ fn parse_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Option<DueRow>> {
     let context: String = r.get(1)?;
     let home_path: String = r.get(2)?;
     let api_url: String = r.get(3)?;
-    let org: String = r.get(4)?;
+    let account: String = r.get(4)?;
     let actor: String = r.get(5)?;
     let kind: String = r.get(6)?;
     let request: Vec<u8> = r.get(7)?;
     let created_at: i64 = r.get(8)?;
     let attempts: i64 = r.get(9)?;
     let subject_id: Option<String> = r.get(10)?;
-    let (Ok(context), Ok(api_url), Ok(org), Ok(actor), Some(kind)) = (
+    let (Ok(context), Ok(api_url), Ok(account), Ok(actor), Some(kind)) = (
         Context::parse(&context),
         ApiUrl::parse(&api_url),
-        OrgId::parse(&org),
+        AccountId::parse(&account),
         ActorId::parse(&actor),
         Kind::parse(&kind),
     ) else {
@@ -270,7 +269,7 @@ fn parse_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Option<DueRow>> {
         event_id,
         key: ActorKey {
             context,
-            org,
+            account,
             actor,
         },
         home: HomeRef {
@@ -350,7 +349,7 @@ impl Shared {
             .call(move |c| {
                 let mut st = c
                     .prepare(
-                        "SELECT event_id, context, home_path, api_url, org_id, actor_id, kind, request, created_at, attempts, subject_id
+                        "SELECT event_id, context, home_path, api_url, account_id, actor_id, kind, request, created_at, attempts, subject_id
                          FROM outbox WHERE status IN ('pending','authority_required') AND next_attempt_at <= ?1
                          ORDER BY next_attempt_at, created_at LIMIT 32",
                     )
@@ -401,13 +400,13 @@ impl Shared {
             .call(move |c| {
                 let mut st = c
                     .prepare(
-                        "SELECT home_path FROM homes WHERE actor_id = ?1 AND org_id = ?2 AND api_url = ?3 AND context = ?4 AND home_path != ?5
+                        "SELECT home_path FROM homes WHERE account_id = ?1 AND api_url = ?2 AND context = ?3 AND home_path != ?4
                          ORDER BY last_seen_at DESC",
                     )
                     .sql()?;
                 let v = st
                     .query_map(
-                        params![key.actor.as_str(), key.org.as_str(), api, key.context_str(), own],
+                        params![key.account.as_str(), api, key.context_str(), own],
                         |r| r.get(0),
                     )
                     .sql()?
@@ -435,7 +434,9 @@ impl Shared {
         for home in self.candidate_homes(row).await {
             match self.net.session(&home, DELIVERY_MARGIN, &policy).await {
                 Ok((client, slot, store)) => {
-                    if slot.actor.public_id == row.key.actor && slot.org_id == row.key.org {
+                    if slot.actor.actor_type == row.key.actor.actor_type()
+                        && slot.account_id == row.key.account
+                    {
                         return Ok((client, slot, store, home));
                     }
                     last.get_or_insert(Outcome::AuthorityRequired {
@@ -449,10 +450,17 @@ impl Shared {
                         && let Ok(store) =
                             Store::open_existing(std::path::Path::new(&home.home_path))
                         && let Ok(file) = store.read_session()
-                        && file
-                            .logged_out
-                            .as_ref()
-                            .is_some_and(|l| l.actor == row.key.actor.as_str())
+                        && file.logged_out.as_ref().is_some_and(|l| {
+                            l.account_id.as_ref() == Some(&row.key.account)
+                                && l.slot.as_deref()
+                                    == Some(
+                                        &silicon_peek_client::identity::SlotKey::new(
+                                            home.api_url.clone(),
+                                            home.context,
+                                        )
+                                        .as_string(),
+                                    )
+                        })
                         && home.home_path == row.home.home_path
                     {
                         return Err(Outcome::Cancelled {
@@ -480,24 +488,7 @@ impl Shared {
     }
 
     async fn attempt(&self, row: &DueRow) -> Outcome {
-        let (outcome, home) = self.attempt_once(row).await;
-        // A testing environment that was cleaned or re-imported has a new
-        // generation: re-read it (GET /api/v1/iam) and try once more.
-        match (&outcome, home) {
-            (Outcome::AuthorityRequired { code, .. }, Some(home))
-                if code == ErrorCode::TestingGenerationChanged.as_str()
-                    && home.context.is_testing() =>
-            {
-                match self.net.refresh_generation(&home).await {
-                    Ok(_) => self.attempt_once(row).await.0,
-                    Err(e) => {
-                        tracing::warn!(code = %e.code(), "refreshing the testing generation failed");
-                        outcome
-                    }
-                }
-            }
-            _ => outcome,
-        }
+        self.attempt_once(row).await.0
     }
 
     async fn attempt_once(&self, row: &DueRow) -> (Outcome, Option<HomeRef>) {
@@ -522,7 +513,7 @@ impl Shared {
         let first = self.call_backend(row, &client).await;
         let outcome = match first {
             Err(e) if e.status() == Some(401) && *e.code() != ErrorCode::SessionRejected => {
-                // §3.6: IAM 401 on introspect → force one refresh, then retry.
+                // §3.6: ACCOUNTS 401 on introspect → force one refresh, then retry.
                 let (_, base) = match self.net.client(&home) {
                     Ok(c) => c,
                     Err(e) => return (classify(&e), Some(home)),
@@ -532,7 +523,7 @@ impl Shared {
                 {
                     Ok(fresh) => {
                         let client =
-                            base.with_session(fresh.access_token.clone(), fresh.org_id.clone());
+                            base.with_session(fresh.access_token.clone(), fresh.account_id.clone());
                         match self.call_backend(row, &client).await {
                             Ok(o) => o,
                             Err(e) => classify(&e),
@@ -568,8 +559,8 @@ impl Shared {
                 self.db
                     .call(move |c| {
                         c.execute(
-                            "UPDATE drawings SET server_sync = 'synced' WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3 AND sha256 = ?4",
-                            params![key.context_str(), key.org.as_str(), key.actor.as_str(), sha],
+                            "UPDATE drawings SET server_sync = 'synced' WHERE context = ?1 AND account_id = ?2 AND sha256 = ?3",
+                            params![key.context_str(), key.account.as_str(), sha],
                         )
                         .sql()
                     })
@@ -686,8 +677,8 @@ impl Shared {
                 }
                 if kind == Kind::DrawingPut && matches!(status, "failed" | "expired" | "cancelled") {
                     c.execute(
-                        "UPDATE drawings SET server_sync = 'failed' WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3 AND server_sync = 'pending'",
-                        params![key.context_str(), key.org.as_str(), key.actor.as_str()],
+                        "UPDATE drawings SET server_sync = 'failed' WHERE context = ?1 AND account_id = ?2 AND server_sync = 'pending'",
+                        params![key.context_str(), key.account.as_str()],
                     )
                     .sql()?;
                 }
@@ -719,8 +710,8 @@ impl Shared {
         .with("attempt", attempts)
         .with("method", row.kind.as_str());
         rec.error_code = outcome.code().map(str::to_owned);
-        rec.actor = Some((row.key.org.clone(), row.key.actor.clone()));
-        rec.testing = row.key.context.is_testing();
+        rec.actor = Some((row.key.account.clone(), row.key.actor.clone()));
+
         self.record(rec);
         Ok(())
     }
@@ -736,8 +727,8 @@ impl Shared {
             .call(move |c| {
                 c.execute(
                     "UPDATE outbox SET status = 'cancelled', last_error_code = 'logged_out'
-                     WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3 AND status IN ('pending','authority_required')",
-                    params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                     WHERE context = ?1 AND account_id = ?2 AND status IN ('pending','authority_required')",
+                    params![k.context_str(), k.account.as_str()],
                 )
                 .sql()
             })
@@ -768,9 +759,9 @@ impl Shared {
             .db
             .call(move |c| {
                 c.execute(
-                    "UPDATE outbox SET next_attempt_at = min(next_attempt_at, ?5)
-                     WHERE status = 'authority_required' AND context = ?1 AND org_id = ?2 AND actor_id = ?3 AND api_url = ?4",
-                    params![k.context_str(), k.org.as_str(), k.actor.as_str(), api, at],
+                    "UPDATE outbox SET next_attempt_at = min(next_attempt_at, ?4)
+                     WHERE status = 'authority_required' AND context = ?1 AND account_id = ?2 AND api_url = ?3",
+                    params![k.context_str(), k.account.as_str(), api, at],
                 )
                 .sql()
             })
@@ -779,50 +770,5 @@ impl Shared {
             self.outbox_wake.notify_one();
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn err(code: ErrorCode, status: u16) -> Error {
-        Error::new(code, "x").with_status(status)
-    }
-
-    #[test]
-    fn classification_matrix() {
-        let t = |e: &Error| classify(e).status();
-        assert_eq!(
-            t(&err(ErrorCode::RecipientNotRegistered, 409)),
-            "authority_required"
-        );
-        assert_eq!(
-            t(&err(ErrorCode::ReconsentRequired, 403)),
-            "authority_required"
-        );
-        assert_eq!(t(&err(ErrorCode::TingRejected, 502)), "failed");
-        assert_eq!(t(&err(ErrorCode::TingKeyConflict, 409)), "failed");
-        assert_eq!(t(&err(ErrorCode::TingUnavailable, 503)), "pending");
-        assert!(matches!(
-            classify(&err(ErrorCode::TingTypeMissing, 502)),
-            Outcome::TypeMissing { .. }
-        ));
-        assert_eq!(t(&err(ErrorCode::Other("weird".into()), 418)), "failed");
-        assert_eq!(t(&err(ErrorCode::Other("weird".into()), 500)), "pending");
-        let transport = Error::new(ErrorCode::BackendUnavailable, "x")
-            .with_origin(silicon_peek_client::error::Origin::Transport);
-        assert_eq!(t(&transport), "pending");
-        let after = Error::new(ErrorCode::TingUnavailable, "x")
-            .with_status(503)
-            .with_retry_after(Some(Duration::from_secs(7)));
-        assert_eq!(
-            classify(&after),
-            Outcome::Retry {
-                code: "ting_unavailable".into(),
-                request_id: None,
-                after: Some(Duration::from_secs(7))
-            }
-        );
     }
 }

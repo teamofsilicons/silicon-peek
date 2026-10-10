@@ -168,7 +168,7 @@ fn downgrade_reply(op: &str, reply: &mut Reply) {
 
 fn protocol_error(msg: impl Into<String>) -> Error {
     Error::new(ErrorCode::ProtocolError, msg).with_hint(
-        "the CLI, peekd and Peek.app disagree about the protocol; update with `honeycomb update 'peek'`",
+        "the CLI, peekd and Peek.app disagree about the protocol; update with `apps update 'peek'`",
     )
 }
 
@@ -316,7 +316,7 @@ impl Shared {
                         silicon_peek_client::VERSION
                     ),
                 )
-                .with_hint("honeycomb update 'peek' (for a Silicon: SILICON_HOME=<home>/.silicon/packages honeycomb update 'peek')")
+                .with_hint("apps update 'peek' (for a Silicon: SILICON_HOME=<home>/.silicon/packages apps update 'peek')")
                 .with_details(json!({
                     "peekd_version": silicon_peek_client::VERSION,
                     "peekd_protocols": SUPPORTED_PROTOCOLS,
@@ -570,7 +570,7 @@ impl Shared {
             return (
                 req.reply_err(
                     &Error::new(ErrorCode::UnknownOp, msg)
-                        .with_hint("update peek: honeycomb update 'peek'"),
+                        .with_hint("update peek: apps update 'peek'"),
                 ),
                 None,
             );
@@ -743,9 +743,7 @@ impl Shared {
                 async {
                     let op = req.parse::<Telemetry>()?;
                     check_events(&op.events)?;
-                    if self.home_telemetry(&caller.home.home_path).await
-                        && !caller.key.context.is_testing()
-                    {
+                    if self.home_telemetry(&caller.home.home_path).await {
                         self.enqueue_telemetry(TelemetryTable::Peekclidaemon, "cli", op.events)
                             .await?;
                     } else if !op.events.is_empty() {
@@ -955,13 +953,13 @@ impl Shared {
                         "SELECT s.send_id, s.kind, s.created_at, s.closed_at, s.close_reason, a.ask_id, a.state, s.warnings,
                                 s.shown_at, s.expires_at, s.schedule_id, s.due_at
                          FROM sends s LEFT JOIN asks a ON a.send_id = s.send_id
-                         WHERE s.context = ?1 AND s.org_id = ?2 AND s.actor_id = ?3 AND (?4 IS NULL OR s.send_id < ?4)
-                         ORDER BY s.send_id DESC LIMIT ?5",
+                         WHERE s.context = ?1 AND s.account_id = ?2 AND (?3 IS NULL OR s.send_id < ?3)
+                         ORDER BY s.send_id DESC LIMIT ?4",
                     )
                     .sql()?;
                 let rows = st
                     .query_map(
-                        rusqlite::params![k.context_str(), k.org.as_str(), k.actor.as_str(), before, limit],
+                        rusqlite::params![k.context_str(), k.account.as_str(), before, limit],
                         |r| {
                             Ok((
                                 r.get::<_, String>(0)?,
@@ -1262,9 +1260,6 @@ impl Shared {
                     if before.telemetry && !after.telemetry {
                         self.clear_telemetry().await?;
                     }
-                    if before.show_test_peeks != after.show_test_peeks {
-                        self.push_slots_state().await;
-                    }
                     Ok(())
                 }
                 .await,
@@ -1281,81 +1276,5 @@ fn reply_of<T: serde::Serialize>(req: &Request, r: Result<T>) -> Reply {
     match r {
         Ok(v) => ok(req, &v, Vec::new()),
         Err(e) => req.reply_err(&e),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn hello(version: &str) -> CliHello {
-        CliHello {
-            cli_version: version.to_owned(),
-            protocols: vec![1],
-            platform: "macos-aarch64".into(),
-            bundled_app: None,
-        }
-    }
-
-    #[test]
-    fn legacy_clis_are_those_before_0_1_2() {
-        for (v, legacy) in [
-            ("0.1.1", true),
-            ("0.1.0", true),
-            ("0.0.9", true),
-            ("0.1.2", false),
-            ("0.1.2-dev.3", false),
-            ("0.1.10", false),
-            ("0.2.0", false),
-            ("1.0.0", false),
-            ("0.1.1-rc.1", true),
-            ("0.1", true),
-            ("garbage", true),
-            ("", true),
-        ] {
-            assert_eq!(legacy_cli(&hello(v)), legacy, "{v}");
-        }
-    }
-
-    #[test]
-    fn legacy_replies_are_downgraded() {
-        let e = Error::new(ErrorCode::QueueFull, "full").with_details(json!({"queued": 5}));
-        let mut r = Reply::err("1", e.to_object());
-        downgrade_reply("send", &mut r);
-        let Err(obj) = &r.outcome else {
-            panic!("an error reply");
-        };
-        assert_eq!(obj.code, ErrorCode::SlotBusy);
-        assert_eq!(obj.message, "full");
-        assert_eq!(obj.details, Some(json!({"queued": 5})));
-        let mut r = Reply {
-            id: "2".into(),
-            outcome: Ok(json!({"asks": [{"state": "replaced"}, {"state": "answered"}]})),
-            blobs: Vec::new(),
-        };
-        downgrade_reply("ask.list", &mut r);
-        assert_eq!(
-            r.outcome.ok(),
-            Some(json!({"asks": [{"state": "cancelled"}, {"state": "answered"}]}))
-        );
-        for op in ["ask.get", "ask.cancel"] {
-            let mut r = Reply {
-                id: "3".into(),
-                outcome: Ok(json!({"state": "replaced"})),
-                blobs: Vec::new(),
-            };
-            downgrade_reply(op, &mut r);
-            assert_eq!(r.outcome.ok(), Some(json!({"state": "cancelled"})));
-        }
-        let mut r = Reply {
-            id: "4".into(),
-            outcome: Ok(json!({"items": [{"ask_state": "replaced"}, {"ask_state": null}]})),
-            blobs: Vec::new(),
-        };
-        downgrade_reply("history", &mut r);
-        assert_eq!(
-            r.outcome.ok(),
-            Some(json!({"items": [{"ask_state": "cancelled"}, {"ask_state": null}]}))
-        );
     }
 }

@@ -12,12 +12,11 @@ peek doctor --json       # {"checks":[{"name","status":"ok"|"warn"|"fail","detai
 | Check | What it looks at |
 |---|---|
 | `store` | this home's store permissions |
-| `session` | the session, and whether IAM rejected it |
+| `session` | the session, and whether Silicon Accounts rejected it |
 | `pending_login` | a login whose response was lost (`peek login --recover` finishes it within 10 minutes) |
 | `revocations` | logout revocations that could not reach the backend yet and are still being retried |
 | `ting` | Ting enrollment (`peek ting enroll` when it is missing) |
 | `backend` | the backend's `/readyz` |
-| `honeycomb` | the Honeycomb version (0.5.0 or newer) |
 | `app` | Peek.app: installed, signature, build (Mac only, like the rows below) |
 | `agent` | whether macOS approved the background item |
 | `install_log` | the last lines of the install log |
@@ -37,44 +36,41 @@ A check that has nothing to report (no pending login, no pending revocation) is 
 | `drawing_invalid` | 4 | Validation failed; the previous drawing stays active. | Fix the line in the error; re-run with `--check`. |
 | `drawing_too_large` | 2 | The file is over 256 KiB. | Shrink it; drawings are code, not assets. |
 | `queue_full` | 4 | One of your sends is on screen and five more wait behind it, the most a Silicon can queue (`details` lists them, and `details.held` says whether nothing moves because the Carbon is away, paused Peek or Peek.app is not running). | `peek queue`, then `peek cancel <SEND_ID>` or `peek queue clear`; or wait and retry (it is retryable). `--replace` still works because it adds nothing to the queue. |
-| `slot_busy` | 4 | The same as `queue_full`, under the name peek 0.1.1 used. A 0.1.2 helper sends it to CLIs older than 0.1.2. | As for `queue_full`; `honeycomb update 'peek'` gets you the new name and `peek queue`. |
+| `slot_busy` | 4 | The same as `queue_full`, under the name peek 0.1.1 used. A 0.1.2 helper sends it to CLIs older than 0.1.2. | As for `queue_full`; `silicon-apps update 'peek'` gets you the new name and `peek queue`. |
 | `schedule_full` | 4 | 500 sends are already scheduled for this Silicon. | `peek schedule list`, then `peek schedule cancel <ID>` or `peek schedule clear`. |
 | `send_not_found` | 4 | `peek cancel` got a well-formed id that is not one of your sends (or does not exist). | `peek queue` lists your sends with their ids. |
 | `schedule_not_found` | 4 | `peek schedule cancel` (or `peek cancel sch_…`) got an id that is not one of your scheduled sends. | `peek schedule list`. |
-| `nothing_to_send`, `conflicting_flags` | 2 | No `--speak`/`--show`/`--ask`, or flags that do not go together: `--show` with `--ask`, `--expires-in` with `--expires-at`, `--in` with `--at`, `--in`/`--at` with `--expires-in` or `--wait`, `--tz` without `--at`/`--expires-at`. | Send one intent per bubble; the message names the conflict and the hint the fix ([CLI reference](cli.md#peek-send)). |
+| `nothing_to_send`, `conflicting_flags` | 2 | No `--speak`/`--show`/`--ask`, or flags that do not go together: `--show` with `--ask`, `--expires-in` with `--expires-at`, `--in` with `--at`, `--in`/`--at` with `--expires-in` or `--wait`, `--tz` without `--at`/`--expires-at`. | Send one intent per bubble; the message names the conflict and the hint the fix ([CLI reference](cli.md#speak-show-and-ask)). |
 | `text_too_long`, `caption_too_long`, `question_too_long`, `speak_too_long` | 2 | Over 160, 50, 80 or 2000 characters. | Shorten it. |
 | `too_many_elements`, `too_many_options` | 2 | More than 3 show elements, or 6 options. | Split it, or ask a text question. |
 | `image_unreadable`, `image_unsupported`, `image_too_large` | 2 | The path (relative to your current directory) cannot be read, is not PNG/JPEG/HEIC/WebP/GIF, or is over 10 MiB. | Check the path and format. |
-| `invalid_input`, `invalid_json` | 2 | The input does not match the schema (for example an unknown field, or two options with the same label), or a duration, date-time or time zone does not parse, lies in the past or is out of range; `details.field` names the offending field or flag. | See [Speak and show](show.md), [Ask a question](ask.md) and [Durations and date-times](cli.md#durations-and-date-times). |
+| `invalid_input`, `invalid_json` | 2 | The input does not match the schema (for example an unknown field, or two options with the same label), or a duration, date-time or time zone does not parse, lies in the past or is out of range; `details.field` names the offending field or flag. | See [Speak and show](show.md), [Ask a question](ask.md) and [Durations and date-times](cli.md#speak-show-and-ask). |
 | `unknown_config_key` | 2 | `peek config set` (or `app_configs.peek`) has a key peek does not know. | Use a key from `details.valid_keys`. |
 | `invalid_silicon_home` | 2 | `SILICON_HOME` is set but empty or does not exist. | Point it at an existing directory, or unset it. |
 | `not_logged_in` | 3 | This home has no peek session. | Under Stemcell: `si auth setup peek`. By hand: mint an SLT, `peek login "$SLT"`. |
-| `session_rejected` | 3 | IAM rejected the session (revoked, reused or expired refresh). | Log in again; queued answers resume afterwards. |
+| `session_rejected` | 3 | Silicon Accounts rejected the session (revoked, reused or expired refresh). | Log in again; queued answers resume afterwards. |
 | `slt_rejected` | 3 | The SLT was already used, expired (2 minutes), or invalid. | Mint a new one. |
 | `login_attempt_expired` | 3 | `peek login --recover` ran more than 10 minutes later. | Mint a new SLT. |
-| `slt_is_public_id` | 2 | A public id such as `si:x` was passed as the SLT in production. | Use a real SLT; public ids work only in testing environments. |
 | `reconsent_required` | 3 | The session lacks a scope peek needs. | Log in again with `--approve-scopes`. |
 | `recipient_not_registered` | 4 | You are not a Ting recipient for peek, so answers cannot be delivered. | `peek ting enroll`; waiting answers are retried right away. |
 | `not_org_admin` | 4 | Managing the org's legacy Deepgram key needs owner or admin. | Ask an org admin. |
 | `ask_not_found` | 4 | No such ask for this Silicon on this Mac. | `peek ask list`. |
 | `platform_unsupported` | 4 | This command needs a Mac. | Run on macOS 26+, or use `dm` ([Platforms](platforms.md)). |
-| `cli_outdated` | 4 | This CLI is older than the helper's protocol. | `honeycomb update 'peek'`. |
-| `store_schema_newer` | 4 | A newer peek wrote this home's store. | `honeycomb update 'peek'`. |
+| `cli_outdated` | 4 | This CLI is older than the helper's protocol. | `silicon-apps update 'peek'`. |
+| `store_schema_newer` | 4 | A newer peek wrote this home's store. | `silicon-apps update 'peek'`. |
 | `peek_service_unavailable` | 5 | Peek.app or the helper did not answer within 10 s of being started. | `peek doctor`; the error includes the last helper log line. |
 | `daemon_unavailable` | 5 | The helper's socket did not answer. | `peek daemon restart`, then `peek doctor`. |
 | `no_gui_session` | 5 | Nobody is logged in at the Mac's desktop (for example, SSH only). | Log in at the Mac. |
 | `app_update_pending` | 5 | A newer app is being installed for this CLI, or Peek.app on the Mac is older than 0.1.2 and does not support an option you used yet (`--in`, `--at`, `--replace`, `--expires-at`, `--expires-in` on a speak or show, `--notify shown`, `peek queue`, `peek cancel`, `peek schedule`; `details.missing_features` names them). | Retry in a few seconds; the swap waits until the screen is idle. `peek app update` applies the bundled build now. Sends without the new options keep working meanwhile. |
-| `backend_unavailable`, `iam_unavailable` | 5 | The backend or IAM could not be reached. | Retry with backoff. `login status` prints nothing on stdout in this case, by design. |
-| `iam_misconfigured` | 5 | The backend cannot authenticate to IAM. | An operator problem; retry later or `peek report`. |
+| `backend_unavailable`, `accounts_unavailable` | 5 | The backend or Silicon Accounts could not be reached. | Retry with backoff. `login status` prints nothing on stdout in this case, by design. |
+| `accounts_misconfigured` | 5 | The backend cannot authenticate to Silicon Accounts. | An operator problem; retry later or `peek report`. |
 | `speech_unavailable` | 5 | `details.provider` identifies the provider. ElevenLabs TTS reasons include `not_configured`, `elevenlabs_rejected`, `elevenlabs_unavailable`; OpenAI transcription reasons include `not_configured`, `openai_rejected`, `openai_unavailable`. `deepgram_status` or `openai_status` gives the upstream HTTP status when available. | For TTS token failures, the operator checks that the Deepgram key has Member permissions or higher; speech access alone cannot mint temporary tokens. Also check model/voice access or the OpenAI key as appropriate. Bad voice, instructions, audio or request parameters can instead give `invalid_input`. Retry transient failures with backoff; legacy org Deepgram settings do not affect these providers. |
 | `ting_unavailable` | 5 | Ting is unreachable. | Nothing: deliveries retry automatically. |
 | `ting_type_missing` | 5 | A peek event type is not registered in this context (an operator step). | Nothing: the helper retries every 15 minutes; tell the operator. |
 | `rate_limited` | 5 | Too many requests. Peek adds no TTS concurrency cap; upstream provider limits still apply. | Wait for `Retry-After`, then retry. |
 | `unauthenticated` | 3 | The backend did not accept the session's access token. | peek refreshes once by itself; if it persists, log in again. |
 | `authority_required` | 3 | A delivery needs a fresh login, re-consent or Ting enrollment. | `peek login status --json` says which. |
-| `environment_not_prepared` | 4 | The testing environment was not imported for peek. | See [Testing environments](testing.md#provision-an-environment-operators). |
-| `unexpected_response` | 1 | The backend or the helper answered with a shape this CLI cannot read. | `honeycomb update 'peek'`; if it persists, `peek report`. |
-| `testing_secret_invalid`, `testing_generation_changed` | 3 | The testing environment's secret is wrong, or it was cleaned. | See [Testing environments](testing.md). |
+| `unexpected_response` | 1 | The backend or the helper answered with a shape this CLI cannot read. | `silicon-apps update 'peek'`; if it persists, `peek report`. |
 | `internal_error`, `store_corrupt` | 1 | A bug, or a damaged store file. | `peek report --attach-status`. |
 
 ## Symptoms
@@ -104,10 +100,9 @@ A check that has nothing to report (no pending login, no pending revocation) is 
 | The drawing shows a plain circle with an initial | No custom drawing is registered, or your drawing threw 10 times in a row, overran 30 times in 5 s, or ran out of memory | This is the built-in visual when no custom drawing is set. After a runtime failure, the next `peek send`, `peek register side` or `peek status` result has a `drawing_fallback_active` warning with the stack, and `peek status` shows `drawing.active: false` with `drawing.last_error`; fix it and `peek register drawing` again. |
 | Glass looks frosted, not clear | Live Liquid Glass is unavailable on this system (`input.glass === 'frosted'`) | Nothing to fix; peek falls back on purpose. |
 | macOS asks to let Peek access Documents, Desktop or Downloads | A `SILICON_HOME` lives there | Move the home out of those folders, or allow Peek in Privacy & Security → Files and Folders. |
-| `silicon connect` fails while installing peek | Honeycomb older than 0.5.0, or Honeycomb could not reach its registry | Update Honeycomb (`silicon update`) and connect again. peek is public, so no Honeycomb login is needed. |
-| The installer says Honeycomb is too old | Honeycomb < 0.5.0 | Stemcell users: `silicon update`. Otherwise `honeycomb self-update`. |
-| The installer says `honeycomb install 'peek' failed` | Honeycomb could not download the package (network, or a Honeycomb problem) | Run `honeycomb install 'peek'` yourself to see Honeycomb's error, then run the installer again. No Honeycomb login is needed. |
-| `honeycomb install 'peek'` finished but Peek.app did not start | Its install script never fails the install: it logs `[skip]` or `[degraded]` steps instead, for example when nobody is logged in at the Mac's desktop, or when the bundled app's signature could not be verified | `peek app install` (it starts the app, or says what is missing). The steps are in `~/Library/Application Support/Peek/install-status.txt` and in `peek app status --json` (`last_install_script`). |
+| `silicon connect` fails while installing peek | Silicon Apps older than 0.5.0, or Silicon Apps could not reach its registry | Update Silicon Apps (`silicon update`) and connect again. peek is public, so no Silicon Apps login is needed. |
+| The installer says `silicon-apps install 'peek' failed` | Silicon Apps could not download the package (network, or a Silicon Apps problem) | Run `silicon-apps install 'peek'` yourself to see Silicon Apps's error, then run the installer again. No Silicon Apps login is needed. |
+| `silicon-apps install 'peek'` finished but Peek.app did not start | Its install script never fails the install: it logs `[skip]` or `[degraded]` steps instead, for example when nobody is logged in at the Mac's desktop, or when the bundled app's signature could not be verified | `peek app install` (it starts the app, or says what is missing). The steps are in `~/Library/Application Support/Peek/install-status.txt` and in `peek app status --json` (`last_install_script`). |
 
 ## Logs
 
@@ -130,4 +125,4 @@ peek report "…" --pr https://github.com/teamofsilicons/silicon-peek/pull/<n>  
 
 A report becomes a public GitHub issue on `teamofsilicons/silicon-peek`. Use `--dry-run` to check what you would send, and never file test reports.
 
-See [Development](development.md) for building and testing a fix.
+See [Development](development.md) for building and verifying a fix.

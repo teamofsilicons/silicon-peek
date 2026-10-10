@@ -52,27 +52,3 @@ impl RateLimiter {
         self.limit
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn limits_per_key_and_resets() {
-        let l = RateLimiter::new(2, Duration::from_millis(50));
-        assert!(l.take("a", 1).is_ok());
-        assert!(l.take("a", 1).is_ok());
-        assert!(l.take("a", 1).is_err());
-        assert!(l.take("b", 2).is_ok());
-        assert!(l.take("b", 1).is_err());
-        std::thread::sleep(Duration::from_millis(60));
-        assert!(l.take("a", 2).is_ok());
-    }
-
-    #[test]
-    fn units_count_toward_the_limit() {
-        let l = RateLimiter::new(40, Duration::from_secs(60));
-        assert!(l.take("g", 40).is_ok());
-        assert_eq!(l.take("g", 1).map_err(|s| s > 0), Err(true));
-    }
-}

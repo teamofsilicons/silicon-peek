@@ -138,18 +138,16 @@ public enum HotkeyModifier: String, Codable, Sendable, CaseIterable {
 
 // MARK: - Contexts and identity
 
-/// Which world a slot, bubble or drawing belongs to. On the wire it is
-/// `"production"` or a testing environment UUID; `"simulation"` is local-only.
+/// Live account activity or the local-only simulation.
 public enum PeekContext: Hashable, Sendable, Codable, CustomStringConvertible {
     case production
-    case testing(environmentID: String)
     case simulation
 
     public init(rawValue: String) {
         switch rawValue {
         case "production": self = .production
         case "simulation": self = .simulation
-        default: self = .testing(environmentID: rawValue)
+        default: self = .production
         }
     }
 
@@ -157,7 +155,6 @@ public enum PeekContext: Hashable, Sendable, Codable, CustomStringConvertible {
         switch self {
         case .production: "production"
         case .simulation: "simulation"
-        case .testing(let id): id
         }
     }
 
@@ -165,7 +162,6 @@ public enum PeekContext: Hashable, Sendable, Codable, CustomStringConvertible {
     public var inputContext: InputContext {
         switch self {
         case .production: .production
-        case .testing: .testing
         case .simulation: .simulation
         }
     }
@@ -175,8 +171,8 @@ public enum PeekContext: Hashable, Sendable, Codable, CustomStringConvertible {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
         let raw = try container.decode(String.self)
-        guard !raw.isEmpty else {
-            throw DecodingError.dataCorruptedError(in: container, debugDescription: "context must not be empty")
+        guard raw == "production" || raw == "simulation" else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "context must be production or simulation")
         }
         self.init(rawValue: raw)
     }
@@ -190,7 +186,6 @@ public enum PeekContext: Hashable, Sendable, Codable, CustomStringConvertible {
 /// `input.context` (BLUEPRINT §0.1 item 4).
 public enum InputContext: String, Codable, Sendable, CaseIterable {
     case production
-    case testing
     case simulation
 }
 
@@ -198,20 +193,29 @@ public enum InputContext: String, Codable, Sendable, CaseIterable {
 /// not by slot, because the same script instance survives `register side` moves (visual.md A1).
 public struct SiliconKey: Hashable, Sendable, Codable, CustomStringConvertible {
     public var context: PeekContext
-    public var orgID: String
+    public var accountID: String
     public var actorID: String
 
-    public init(context: PeekContext, orgID: String, actorID: String) {
+    public init(context: PeekContext, accountID: String, actorID: String) {
         self.context = context
-        self.orgID = orgID
+        self.accountID = accountID
         self.actorID = actorID
     }
 
-    public var description: String { "\(actorID)[\(orgID)]@\(context.rawValue)" }
+    public var description: String { "\(actorID)@\(context.rawValue)" }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.context == rhs.context && lhs.accountID == rhs.accountID
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(context)
+        hasher.combine(accountID)
+    }
 
     enum CodingKeys: String, CodingKey {
         case context
-        case orgID = "org_id"
+        case accountID = "account_id"
         case actorID = "actor_id"
     }
 }
@@ -890,56 +894,39 @@ public struct DrawingRef: Codable, Sendable, Equatable {
     }
 }
 
-/// Testing-environment label for the `TEST · <name>` pill and its tooltip (gap-testing §9.3).
-/// Additive: not in the §1.6 table yet.
-public struct TestEnvironmentInfo: Codable, Sendable, Equatable {
-    public var id: String?
-    public var name: String
-    public var generation: Int?
-
-    public init(id: String? = nil, name: String, generation: Int? = nil) {
-        self.id = id
-        self.name = name
-        self.generation = generation
-    }
-}
-
-/// One registered slot in `slots.state`. Production and testing contexts may hold the same index.
+/// One registered slot in `slots.state`.
 public struct SlotState: Codable, Sendable, Equatable, Identifiable {
     public var index: SlotIndex
     public var context: PeekContext
     public var actorID: String
-    public var orgID: String
+    public var accountID: String
     public var displayName: String
     /// One grapheme for the fallback visual (visual.md A7).
     public var initial: String
     public var drawing: DrawingRef?
     /// Whether the UI should register this slot's hotkey.
     public var hotkey: Bool
-    public var environment: TestEnvironmentInfo?
 
-    public init(index: SlotIndex, context: PeekContext = .production, actorID: String, orgID: String,
-                displayName: String? = nil, initial: String? = nil, drawing: DrawingRef? = nil, hotkey: Bool = true,
-                environment: TestEnvironmentInfo? = nil) {
+    public init(index: SlotIndex, context: PeekContext = .production, actorID: String, accountID: String,
+                displayName: String? = nil, initial: String? = nil, drawing: DrawingRef? = nil, hotkey: Bool = true) {
         self.index = index
         self.context = context
         self.actorID = actorID
-        self.orgID = orgID
+        self.accountID = accountID
         let name = displayName ?? Self.defaultDisplayName(actorID)
         self.displayName = name
         self.initial = initial ?? Self.defaultInitial(name)
         self.drawing = drawing
         self.hotkey = hotkey
-        self.environment = environment
     }
 
     public var id: String { "\(context.rawValue)#\(index.rawValue)" }
-    public var siliconKey: SiliconKey { SiliconKey(context: context, orgID: orgID, actorID: actorID) }
+    public var siliconKey: SiliconKey { SiliconKey(context: context, accountID: accountID, actorID: actorID) }
 
     enum CodingKeys: String, CodingKey {
-        case index, context, drawing, hotkey, initial, environment
+        case index, context, drawing, hotkey, initial
         case actorID = "actor_id"
-        case orgID = "org_id"
+        case accountID = "account_id"
         case displayName = "display_name"
     }
 
@@ -948,7 +935,7 @@ public struct SlotState: Codable, Sendable, Equatable, Identifiable {
         index = try c.decode(SlotIndex.self, forKey: .index)
         context = try c.decodeIfPresent(PeekContext.self, forKey: .context) ?? .production
         actorID = try c.decode(String.self, forKey: .actorID)
-        orgID = try c.decode(String.self, forKey: .orgID)
+        accountID = try c.decode(String.self, forKey: .accountID)
         let name = try c.decodeIfPresent(String.self, forKey: .displayName).flatMap { $0.isEmpty ? nil : $0 }
             ?? Self.defaultDisplayName(actorID)
         displayName = name
@@ -956,7 +943,6 @@ public struct SlotState: Codable, Sendable, Equatable, Identifiable {
             ?? Self.defaultInitial(name)
         drawing = try c.decodeIfPresent(DrawingRef.self, forKey: .drawing)
         hotkey = try c.decodeIfPresent(Bool.self, forKey: .hotkey) ?? true
-        environment = try c.decodeIfPresent(TestEnvironmentInfo.self, forKey: .environment)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -964,12 +950,11 @@ public struct SlotState: Codable, Sendable, Equatable, Identifiable {
         try c.encode(index, forKey: .index)
         try c.encode(context, forKey: .context)
         try c.encode(actorID, forKey: .actorID)
-        try c.encode(orgID, forKey: .orgID)
+        try c.encode(accountID, forKey: .accountID)
         try c.encode(displayName, forKey: .displayName)
         try c.encode(initial, forKey: .initial)
         try c.encode(drawing, forKey: .drawing)
         try c.encode(hotkey, forKey: .hotkey)
-        try c.encodeIfPresent(environment, forKey: .environment)
     }
 
     /// `si:dj` → `dj`.
@@ -1028,7 +1013,7 @@ public enum DefaultVoices {
 
 // MARK: - Launch arguments
 
-/// Arguments Peek.app understands (§1.8, gap-honeycomb §4.2):
+/// Arguments Peek.app understands (§1.8, Silicon Apps install hook):
 /// * `--after-update <old build>` after a self-update swap;
 /// * `--launched-by <who>` when the CLI opened it (`open -g -j Peek.app --args --launched-by cli`);
 /// * `--uninstall` (`peek app uninstall`'s fallback): unregister the services, recycle the bundle, quit;

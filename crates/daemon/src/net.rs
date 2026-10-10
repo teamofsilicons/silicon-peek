@@ -113,63 +113,7 @@ impl Net {
             .http_client(self.http.clone())
             .build()?
             .with_telemetry(telemetry);
-        if let Context::Testing(id) = home.context {
-            let testing = store.read_testing()?;
-            let env = testing.get(id)?;
-            client = client.with_testing(env.app_secret.clone(), Some(env.generation));
-        }
         Ok((store, client))
-    }
-
-    /// After `409 testing_generation_changed`: re-reads the environment's
-    /// generation from `GET /api/v1/iam` (with the saved test secret) and
-    /// saves it to the home's testing.json under the store lock. Returns the
-    /// new generation.
-    ///
-    /// # Errors
-    /// `testing_secret_invalid` when the secret no longer names this
-    /// environment; transport and store failures.
-    pub async fn refresh_generation(&self, home: &HomeRef) -> Result<u64> {
-        let Context::Testing(id) = home.context else {
-            return Err(Error::internal(
-                "only a testing environment has a generation to refresh",
-            ));
-        };
-        let store = Store::open_existing(Path::new(&home.home_path))?;
-        let secret = store.read_testing()?.get(id)?.app_secret.clone();
-        let discovery = self
-            .api_client(&home.api_url)?
-            .with_testing(secret, None)
-            .discover()
-            .await?;
-        let found = discovery
-            .testing_environment_id
-            .or_else(|| discovery.testing_environment.as_ref().map(|t| t.id));
-        if found != Some(id) {
-            return Err(Error::new(
-                ErrorCode::TestingSecretInvalid,
-                format!("the saved test secret no longer names testing environment {id}"),
-            )
-            .with_hint("log in again with the environment's current peek test secret"));
-        }
-        let generation = discovery
-            .testing_generation
-            .or_else(|| discovery.testing_environment.as_ref().map(|t| t.generation))
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::UnexpectedResponse,
-                    "GET /api/v1/iam named the environment but no generation",
-                )
-            })?;
-        let lock = store.lock_async().await?;
-        let mut file = store.read_testing()?;
-        if let Some(env) = file.environments.get_mut(&id) {
-            env.generation = generation;
-        }
-        store.write_testing(&lock, &file)?;
-        drop(lock);
-        tracing::info!(environment = %id, generation, "testing environment generation changed; saved the new one");
-        Ok(generation)
     }
 
     /// A session usable for at least `margin` and a client carrying it.
@@ -184,7 +128,7 @@ impl Net {
     ) -> Result<(Client, SessionSlot, Store)> {
         let (store, client) = self.client(home)?;
         let slot = fresh_session_with(&store, &client, home.context, margin, policy).await?;
-        let authed = client.with_session(slot.access_token.clone(), slot.org_id.clone());
+        let authed = client.with_session(slot.access_token.clone(), slot.account_id.clone());
         Ok((authed, slot, store))
     }
 }
@@ -201,10 +145,8 @@ pub fn needs_authority(e: &Error) -> bool {
             | ErrorCode::Unauthenticated
             | ErrorCode::AuthorityRequired
             | ErrorCode::RecipientNotRegistered
-            | ErrorCode::TestingGenerationChanged
-            | ErrorCode::TestingSecretInvalid
             | ErrorCode::InvalidSiliconHome
             | ErrorCode::HomeTokenMismatch
-            | ErrorCode::PrivateApplicationOrganizationRequired
+            | ErrorCode::PrivateApplicationAccountRequired
     )
 }

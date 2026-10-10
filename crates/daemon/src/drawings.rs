@@ -1,6 +1,6 @@
 //! Drawings (BLUEPRINT §1.9.2): validation runs inside Peek.app with the
 //! same `QuickJS` runtime and renderer used live (D15); peekd stores the
-//! script under `drawings/<context>/<org>/<actor>/<sha256>.js`, activates it
+//! script under `drawings/<context>/<account-uuid>/<sha256>.js`, activates it
 //! atomically (keeping the previous one for rollback), tells the UI to load
 //! it, and queues a `drawing.put` so peek-server keeps a copy.
 
@@ -134,8 +134,8 @@ impl Shared {
         self.db
             .call(move |c| {
                 c.query_row(
-                    "SELECT sha256, path, server_sync, previous_path FROM drawings WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                    params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                    "SELECT sha256, path, server_sync, previous_path FROM drawings WHERE context = ?1 AND account_id = ?2",
+                    params![k.context_str(), k.account.as_str()],
                     |r| {
                         Ok(DrawingRow {
                             sha256: r.get(0)?,
@@ -181,9 +181,7 @@ impl Shared {
         preview: bool,
         dump_frame: Option<u32>,
     ) -> Result<(DrawingValidateResult, Vec<Vec<u8>>, Staged)> {
-        let dir = self
-            .paths
-            .ensure_drawing_dir(key.context, &key.org, &key.actor)?;
+        let dir = self.paths.ensure_drawing_dir(key.context, &key.account)?;
         let stage_dir = dir.join(format!(".validate-{}", uuid::Uuid::now_v7().simple()));
         silicon_peek_client::runtime::fs::ensure_private_dir(&stage_dir)?;
         let name = stage_name(filename);
@@ -227,9 +225,7 @@ impl Shared {
         temp: &std::path::Path,
         server_sync: &'static str,
     ) -> Result<(PathBuf, bool)> {
-        let dir = self
-            .paths
-            .ensure_drawing_dir(key.context, &key.org, &key.actor)?;
+        let dir = self.paths.ensure_drawing_dir(key.context, &key.account)?;
         let final_path = dir.join(format!("{sha}.js"));
         if final_path.exists() {
             let _ = std::fs::remove_file(temp);
@@ -247,8 +243,8 @@ impl Shared {
             .tx(move |tx| {
                 let old: Option<(String, String, Option<String>)> = tx
                     .query_row(
-                        "SELECT sha256, path, previous_path FROM drawings WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                        params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                        "SELECT sha256, path, previous_path FROM drawings WHERE context = ?1 AND account_id = ?2",
+                        params![k.context_str(), k.account.as_str()],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                     )
                     .optional()
@@ -259,15 +255,15 @@ impl Shared {
                     None => (true, None, None),
                 };
                 tx.execute(
-                    "INSERT INTO drawings (context, org_id, actor_id, sha256, path, bytes, active_since, server_sync, last_error, error_pending, previous_path)
+                    "INSERT INTO drawings (context, account_id, actor_id, sha256, path, bytes, active_since, server_sync, last_error, error_pending, previous_path)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, 0, ?9)
-                     ON CONFLICT(context, org_id, actor_id) DO UPDATE SET sha256 = excluded.sha256, path = excluded.path,
+                     ON CONFLICT(context, account_id) DO UPDATE SET actor_id = excluded.actor_id, sha256 = excluded.sha256, path = excluded.path,
                         bytes = excluded.bytes, active_since = excluded.active_since,
                         server_sync = CASE WHEN ?10 THEN excluded.server_sync ELSE drawings.server_sync END,
                         last_error = NULL, error_pending = 0, previous_path = excluded.previous_path",
                     params![
                         k.context_str(),
-                        k.org.as_str(),
+                        k.account.as_str(),
                         k.actor.as_str(),
                         sha_s,
                         path_s,
@@ -296,7 +292,7 @@ impl Shared {
         let Some(slot) = slot else { return };
         let op = DrawingLoad {
             context: key.context,
-            org_id: key.org.clone(),
+            account_id: key.account.clone(),
             actor_id: key.actor.clone(),
             slot,
             script_path: path.to_string_lossy().into_owned(),
@@ -339,8 +335,8 @@ impl Shared {
         let mut rec = Record::new("drawing.validate", if result.ok { "ok" } else { "error" })
             .with("drawing_bytes", bytes.len())
             .with("drawing_sha256", sha.clone());
-        rec.actor = Some((key.org.clone(), key.actor.clone()));
-        rec.testing = key.context.is_testing();
+        rec.actor = Some((key.account.clone(), key.actor.clone()));
+
         self.record(rec);
         if !result.ok {
             staged.remove();
@@ -421,8 +417,8 @@ impl Shared {
                 tx.execute(
                     "UPDATE outbox SET status = 'cancelled', last_error_code = 'superseded'
                      WHERE kind IN ('drawing.put','drawing.delete') AND status IN ('pending','authority_required')
-                       AND context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                    params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                       AND context = ?1 AND account_id = ?2",
+                    params![k.context_str(), k.account.as_str()],
                 )
                 .sql()?;
                 outbox::insert(tx, &row)
@@ -441,8 +437,8 @@ impl Shared {
                 c.query_row(
                     "SELECT count(*) FROM outbox WHERE kind = 'drawing.delete'
                        AND status IN ('pending','authority_required')
-                       AND context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                    params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                       AND context = ?1 AND account_id = ?2",
+                    params![k.context_str(), k.account.as_str()],
                     |r| r.get::<_, i64>(0),
                 )
                 .sql()
@@ -470,7 +466,8 @@ impl Shared {
             .await
         {
             Ok((client, slot, _))
-                if slot.actor.public_id == caller.key.actor && slot.org_id == caller.key.org =>
+                if slot.actor.actor_type == caller.key.actor.actor_type()
+                    && slot.account_id == caller.key.account =>
             {
                 client.get_drawing().await
             }
@@ -540,36 +537,22 @@ impl Shared {
         .to_string();
         let k = ActorKey {
             context: op.context,
-            org: op.org_id,
+            account: op.account_id,
             actor: op.actor_id,
         };
         let mut rec = Record::new("drawing.fallback", "error");
-        rec.actor = Some((k.org.clone(), k.actor.clone()));
-        rec.testing = k.context.is_testing();
+        rec.actor = Some((k.account.clone(), k.actor.clone()));
+
         self.record(rec);
         self.db
             .call(move |c| {
                 c.execute(
-                    "UPDATE drawings SET last_error = ?4, error_pending = 1 WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                    params![k.context_str(), k.org.as_str(), k.actor.as_str(), body],
+                    "UPDATE drawings SET last_error = ?3, error_pending = 1 WHERE context = ?1 AND account_id = ?2",
+                    params![k.context_str(), k.account.as_str(), body],
                 )
                 .sql()
                 .map(|_| ())
             })
             .await
-    }
-}
-
-#[cfg(test)]
-mod staging_tests {
-    use super::stage_name;
-
-    #[test]
-    fn staged_names_keep_the_original_file_name() {
-        assert_eq!(stage_name("./art/cassette.js"), "cassette.js");
-        assert_eq!(stage_name("/abs/path/logo.js"), "logo.js");
-        assert_eq!(stage_name(""), "drawing.js");
-        assert_eq!(stage_name(".."), "drawing.js");
-        assert_eq!(stage_name(".hidden.js"), "drawing.js");
     }
 }

@@ -254,7 +254,7 @@ public final class SlotManager {
     public func chrome(on slot: SlotIndex) -> SlotChromeModel? { slots[slot]?.chrome }
     public func surface(on slot: SlotIndex) -> (any SlotSurface)? { slots[slot]?.surface }
 
-    /// The Silicon occupying a physical slot: production first, then testing, then Simulation.
+    /// The Silicon occupying a physical slot: live accounts first, then Simulation.
     public func occupant(of slot: SlotIndex) -> SlotState? {
         table.filter { $0.index == slot }.max { SlotPriority.of($0.context) < SlotPriority.of($1.context) }
     }
@@ -288,7 +288,6 @@ public final class SlotManager {
         let moves = SlotMove.between(table, newTable)
         table = newTable
         for move in moves { relocate(move) }
-        // Test pills: the environment name may have changed.
         for slot in slots.values { if let bubble = slot.active { sync(bubble, in: slot) } }
         warmBackdrops()
     }
@@ -723,7 +722,7 @@ public final class SlotManager {
         env.backdrop.track(bubble.key, rectOnScreen: layout.visualFrameOnScreen)
         attachHost(for: bubble.key, in: slot, surface: surface)
         slot.chrome.setShade(PillShade.forBackdrop(backdropTones[bubble.key] ?? env.backdrop.backdrop(for: bubble.key)))
-        slot.chrome.setContext(bubble.key.context.inputContext, tooltip: environmentTooltip(for: bubble.key),
+        slot.chrome.setContext(bubble.key.context.inputContext, tooltip: nil,
                                glass: env.glassMode)
         sync(bubble, in: slot)
 
@@ -1366,23 +1365,13 @@ public final class SlotManager {
     private func siliconKey(for index: SlotIndex, context: PeekContext) -> SiliconKey {
         if let state = table.first(where: { $0.index == index && $0.context == context }) { return state.siliconKey }
         // peek.show arrived before slots.state: show it anyway, with the fallback visual.
-        return SiliconKey(context: context, orgID: "", actorID: "")
-    }
-
-    private func environmentTooltip(for key: SiliconKey) -> String? {
-        guard case .testing(let id) = key.context else { return nil }
-        let info = table.first { $0.siliconKey == key }?.environment
-        var parts = ["Testing environment \(info?.name ?? id)", "id \(info?.id ?? id)"]
-        if let generation = info?.generation { parts.append("generation \(generation)") }
-        return parts.joined(separator: " · ")
+        return SiliconKey(context: context, accountID: "", actorID: "")
     }
 
     private func chromeContent(for bubble: Bubble) -> ChromeContent {
         let machine = bubble.machine
         var content = ChromeContent()
         switch bubble.key.context {
-        case .testing(let id):
-            content.badge = .test(name: table.first { $0.siliconKey == bubble.key }?.environment?.name ?? String(id.prefix(8)))
         case .simulation:
             content.badge = .simulation
         case .production:

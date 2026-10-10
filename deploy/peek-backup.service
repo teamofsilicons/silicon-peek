@@ -1,5 +1,5 @@
 # /etc/systemd/system/peek-backup.service, installed by deploy/install.sh (BLUEPRINT §5.2).
-# One online SQLite snapshot of /var/lib/peek/{peek,testing}.sqlite, integrity-checked and copied
+# One online SQLite snapshot of /var/lib/peek/peek.sqlite, integrity-checked and copied
 # to s3://<ArtifactBucket>/backups/ with SSE (the bucket expires backups/ after 7 days).
 # Runs as the peek user; /etc/peek/backup.env names the bucket and region only (no secrets).
 [Unit]

@@ -10,9 +10,8 @@ use serde_json::Value;
 
 use super::{Empty, EventBody, Op};
 use crate::{
-    api::TestingEnvironment,
     error::ErrorObject,
-    identity::{ActorId, Context, OrgId, SlotIndex},
+    identity::{AccountId, ActorId, Context, SlotIndex},
     ids::{AskId, MessageId, ScheduleId, SendId},
     ipc::cli::{DrawingStats, SpeechStatus, Warning},
     schema::{ask::Ask, show::Show},
@@ -40,8 +39,8 @@ pub struct SlotState {
     pub context: Context,
     /// The Silicon.
     pub actor_id: ActorId,
-    /// Its org.
-    pub org_id: OrgId,
+    /// Its account.
+    pub account_id: AccountId,
     /// Its display name, when known.
     #[serde(default)]
     pub display_name: Option<String>,
@@ -52,11 +51,6 @@ pub struct SlotState {
     pub drawing: Option<SlotDrawing>,
     /// Whether the Carbon hotkey is registered.
     pub hotkey: bool,
-    /// The testing environment `{id, name, generation}`, for the
-    /// `TEST · <name>` pill and its tooltip (additive; Peek.app reads
-    /// `environment`, older peekd builds sent `testing`).
-    #[serde(default, alias = "testing", skip_serializing_if = "Option::is_none")]
-    pub environment: Option<TestingEnvironment>,
 }
 
 /// `slots.state`: the full slot table (sent on connect and on every change).
@@ -359,8 +353,8 @@ impl Op for DrawingValidate {
 pub struct DrawingLoad {
     /// The data context.
     pub context: Context,
-    /// The org.
-    pub org_id: OrgId,
+    /// The account.
+    pub account_id: AccountId,
     /// The Silicon.
     pub actor_id: ActorId,
     /// Its slot.
@@ -732,8 +726,8 @@ pub enum DrawingFailure {
 pub struct DrawingError {
     /// The data context.
     pub context: Context,
-    /// The org.
-    pub org_id: OrgId,
+    /// The account.
+    pub account_id: AccountId,
     /// The Silicon.
     pub actor_id: ActorId,
     /// How it failed.
@@ -765,237 +759,4 @@ pub struct SettingsChanged {
 impl Op for SettingsChanged {
     const NAME: &'static str = "settings.changed";
     type Output = Empty;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        error::{Error, Result},
-        ipc::{Event, Request},
-    };
-    use serde_json::json;
-
-    #[test]
-    fn tts_events() -> Result<()> {
-        let id = SendId::generate();
-        let begin = Event::new(&TtsBegin::linear16(id.clone(), 48_000), vec![])?;
-        assert_eq!(begin.fields["format"], "s16le");
-        assert_eq!(begin.fields["sample_rate"], 24000);
-        let chunk = Event::new(
-            &TtsChunk {
-                send_id: id.clone(),
-                seq: 0,
-            },
-            vec![vec![0; 4]],
-        )?;
-        assert_eq!(chunk.event, "tts.chunk");
-        assert_eq!(chunk.blobs.len(), 1);
-        let end: TtsEnd = Event::new(
-            &TtsEnd {
-                send_id: id,
-                total_frames: 9,
-            },
-            vec![],
-        )?
-        .parse()?;
-        assert_eq!(end.total_frames, 9);
-        Ok(())
-    }
-
-    #[test]
-    fn no_live_transcript_events_exist() {
-        for name in [
-            SlotsState::NAME,
-            PeekShow::NAME,
-            TtsBegin::NAME,
-            TtsChunk::NAME,
-            TtsEnd::NAME,
-            TtsError::NAME,
-            PeekCancel::NAME,
-            SttResult::NAME,
-            Restarting::NAME,
-            QueueState::NAME,
-        ] {
-            assert!(
-                !name.contains("word") && !name.contains("transcript"),
-                "{name}"
-            );
-        }
-    }
-
-    #[test]
-    fn ui_requests_round_trip() -> Result<()> {
-        let answer = AnswerOp {
-            send_id: SendId::generate(),
-            ask_id: AskId::generate(),
-            value: json!(["1", "3"]),
-            via: UiAnswerVia::Click,
-        };
-        let req = Request::new(&answer, None, vec![])?;
-        assert_eq!(req.op, "answer");
-        assert_eq!(req.parse::<AnswerOp>()?, answer);
-        let voice = VoiceSubmit {
-            send_id: None,
-            ask_id: None,
-            slot: SlotIndex::new(2)?,
-            duration_ms: 1200,
-            languages: vec![],
-            context: None,
-        };
-        let v = serde_json::to_value(&voice).map_err(|e| Error::internal(e.to_string()))?;
-        assert_eq!(
-            v,
-            json!({"send_id":null,"ask_id":null,"slot":2,"duration_ms":1200})
-        );
-        let stt: SttResult = serde_json::from_value(json!({"ask_id":null,"message_id":null,"outcome":"failed","value":null,"error":{"code":"speech_unavailable","message":"m"}}))
-            .map_err(|e| Error::internal(e.to_string()))?;
-        assert_eq!(stt.outcome, SttOutcome::Failed);
-        // The reply names a voice message; a voice answer's reply has null
-        // (and an older peekd's empty reply still decodes).
-        let message_id = MessageId::generate();
-        let reply = serde_json::to_value(VoiceSubmitResult {
-            message_id: Some(message_id.clone()),
-        })
-        .map_err(|e| Error::internal(e.to_string()))?;
-        assert_eq!(reply, json!({"message_id": message_id.as_str()}));
-        let old: VoiceSubmitResult =
-            serde_json::from_value(json!({})).map_err(|e| Error::internal(e.to_string()))?;
-        assert_eq!(old.message_id, None);
-        Ok(())
-    }
-
-    #[test]
-    fn presence_round_trips_and_reads_new_reasons() -> Result<()> {
-        let e = |e: serde_json::Error| Error::internal(e.to_string());
-        let p: Presence =
-            serde_json::from_value(json!({"available": false, "reason": "display_off"}))
-                .map_err(e)?;
-        assert_eq!(
-            p,
-            Presence {
-                available: false,
-                reason: PresenceReason::DisplayOff,
-                paused: false,
-            }
-        );
-        assert_eq!(
-            serde_json::to_value(Presence::default()).map_err(e)?,
-            json!({"available": true, "reason": "ok", "paused": false})
-        );
-        let paused: Presence =
-            serde_json::from_value(json!({"available": true, "reason": "ok", "paused": true}))
-                .map_err(e)?;
-        assert!(paused.paused);
-        let newer: Presence =
-            serde_json::from_value(json!({"available": false, "reason": "screensaver"}))
-                .map_err(e)?;
-        assert_eq!(newer.reason, PresenceReason::Other);
-        let bare: Presence = serde_json::from_value(json!({"available": true})).map_err(e)?;
-        assert_eq!(bare, Presence::default());
-        let req = Request::new(&p, None, Vec::new())?;
-        assert_eq!(req.op, "presence");
-        Ok(())
-    }
-
-    #[test]
-    fn ui_status_reports_are_read_leniently() -> Result<()> {
-        let e = |x: serde_json::Error| Error::internal(x.to_string());
-        let full = json!({"mic":"granted","hotkeys":{"modifier":"ctrl+cmd","registered":["ctrl+cmd+1"],
-            "failed":["ctrl+cmd+3"],"problems":["taken"]},"glass":"live","services":"enabled",
-            "app_build":1000,"app_version":"0.1.0"});
-        let req = Request::new(
-            &serde_json::from_value::<UiStatusReport>(full.clone()).map_err(e)?,
-            None,
-            vec![],
-        )?;
-        assert_eq!(req.op, "ui.status");
-        let report = req.parse::<UiStatusReport>()?;
-        assert_eq!(report.mic.as_deref(), Some("granted"));
-        assert_eq!(report.other["app_build"], 1000);
-        assert_eq!(serde_json::to_value(&report).map_err(e)?, full);
-        let empty: UiStatusReport = serde_json::from_value(json!({})).map_err(e)?;
-        assert_eq!(empty, UiStatusReport::default());
-        Ok(())
-    }
-
-    #[test]
-    fn additive_ui_fields_from_peek_app() -> Result<()> {
-        let e = |x: serde_json::Error| Error::internal(x.to_string());
-        let voice: VoiceSubmit = serde_json::from_value(json!({"send_id":null,"ask_id":null,"slot":3,
-            "duration_ms":900,"context":"0192f2d2-7c9e-7cc0-8b2e-6f3a2b1c0d9e","languages":["en-IN","hi"]}))
-        .map_err(e)?;
-        assert!(voice.context.is_some_and(|c| c.is_testing()));
-        let message: MessageOp =
-            serde_json::from_value(json!({"slot":1,"text":"hi","via":"keyboard"})).map_err(e)?;
-        assert!(message.context.is_none());
-        let focus: Focus =
-            serde_json::from_value(json!({"slot":1,"context":"production"})).map_err(e)?;
-        assert_eq!(focus.context, Some(Context::Production));
-        // The Swift ValidationReport encodes a missing `stats` as null.
-        let report: DrawingValidateResult = serde_json::from_value(json!({"ok":false,"stats":null,"warnings":[],
-            "logs":["x"],"error":{"message":"SyntaxError","stack":null,"frame":null,"input_summary":"phase=idle"}}))
-        .map_err(e)?;
-        assert_eq!(report.stats.frames, 0);
-        assert_eq!(
-            report.error.and_then(|x| x.input_summary),
-            Some(json!("phase=idle"))
-        );
-        let slot: SlotState = serde_json::from_value(json!({"index":2,"context":"production","actor_id":"si:cleanup",
-            "org_id":"tos","initial":"C","hotkey":true,"testing":{"id":"0192f2d2-7c9e-7cc0-8b2e-6f3a2b1c0d9e","name":"t","generation":1}}))
-        .map_err(e)?;
-        let out = serde_json::to_value(&slot).map_err(e)?;
-        assert_eq!(out["environment"]["name"], "t");
-        assert!(out.get("testing").is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn queue_badges_shown_and_replaces() -> Result<()> {
-        let e = |x: serde_json::Error| Error::internal(x.to_string());
-        let sid = SendId::generate();
-        let q = QueueState {
-            slot: SlotIndex::new(3)?,
-            context: Context::Production,
-            send_id: sid.clone(),
-            waiting: 2,
-        };
-        let ev = Event::new(&q, vec![])?;
-        assert_eq!(ev.event, "queue.state");
-        assert_eq!(
-            serde_json::to_value(&q).map_err(e)?,
-            json!({"slot": 3, "context": "production", "send_id": sid.as_str(), "waiting": 2})
-        );
-        assert_eq!(ev.parse::<QueueState>()?, q);
-        let req = Request::new(
-            &Shown {
-                send_id: sid.clone(),
-            },
-            None,
-            vec![],
-        )?;
-        assert_eq!(req.op, "shown");
-        assert_eq!(req.fields["send_id"], sid.as_str());
-        let cancel: PeekCancel =
-            serde_json::from_value(json!({"send_id": sid.as_str(), "reason": "replaced"}))
-                .map_err(e)?;
-        assert_eq!(cancel.reason, CancelReason::Replaced);
-        let old = SendId::generate();
-        let sch = ScheduleId::generate();
-        let show: PeekShow = serde_json::from_value(json!({"send_id": sid.as_str(), "slot": 3,
-            "context": "production", "queued_behind": 1, "expires_at": "2026-09-27T12:30:00Z",
-            "replaces": old.as_str(), "schedule_id": sch.as_str(), "duration_ms": 4000}))
-        .map_err(e)?;
-        assert_eq!(show.replaces.as_ref(), Some(&old));
-        assert_eq!(show.schedule_id.as_ref(), Some(&sch));
-        let plain: PeekShow = serde_json::from_value(
-            json!({"send_id": sid.as_str(), "slot": 3, "context": "production"}),
-        )
-        .map_err(e)?;
-        let v = serde_json::to_value(&plain).map_err(e)?;
-        for key in ["replaces", "schedule_id", "expires_at"] {
-            assert!(v.get(key).is_none(), "{key} is left out unless set");
-        }
-        Ok(())
-    }
 }

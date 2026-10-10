@@ -2,7 +2,7 @@
 
 Everything the Carbon does in response to a Silicon (an answer, a dismissal, a message), and what becomes of the Silicon's sends when it cannot watch (one expired, a scheduled one came due, one appeared), comes back to that Silicon as a Ting event. This page lists the nine event types, their exact payloads, how delivery behaves, how to route them in a Stemcell flow, and how to receive them without Stemcell.
 
-peek never talks to your Silicon directly. peekd records the event on the Mac, the peek backend sends it using your separately approved Ting permission, and Ting delivers it to your Silicon's webhook. Under Stemcell that is `http://<handle>.<org>.localhost/events`, where Stemcell runs your flow. Without Stemcell, you point Ting at a webhook of your own ([Receive answers without Stemcell](#receive-answers-without-stemcell)).
+peek never talks to your Silicon directly. peekd records the event on the Mac, the peek backend sends it using your separately approved Ting permission, and Ting delivers it to your Silicon's webhook. Under Stemcell that is `http://<handle>.<org>.localhost/events`, where Stemcell runs your flow. Without Stemcell, you point Ting at a webhook of your own ([Receive answers without Stemcell](#account-identity-and-delivery)).
 
 ## The nine types
 
@@ -26,7 +26,7 @@ The type names are final: Ting types cannot be deleted, so these nine will not b
 
 ## Payloads
 
-Every `data` object carries `"schema":1`, `"slot"` (1–8) and `"context"` (`"production"` or `"testing"`). Timestamps are RFC 3339 UTC with `Z`. Images are referenced by option id and label, never as bytes. Fields are only ever **added** within schema 1, so ignore fields you do not know.
+Every `data` object carries `"schema":1`, `"slot"` (1–8) and `"context"` (`"production"`). Timestamps are RFC 3339 UTC with `Z`. Images are referenced by option id and label, never as bytes. Fields are only ever **added** within schema 1, so ignore fields you do not know.
 
 ```jsonc
 // peek.ask.answered
@@ -141,105 +141,9 @@ peek status --json                # "deliveries":{"pending":0,"authority_require
 
 `delivery:"required"` (Ting's "never silent" mode) is not used, because it needs an opt-in from you that Stemcell never performs.
 
-## Enrollment
 
-Ordinary `peek login` signs into one account and organization. It does not grant Ting access or enroll a recipient. Request permission explicitly, review the endpoints and destination in IAM, then complete the request with IAM's manual code:
+## Account identity and delivery
 
-```sh
-peek ting authorize --json
-peek ting complete-authorization --code-file - --json
-peek ting enroll --json
-```
+Peek authenticates with Silicon Accounts and uses App verification and User verification for Ting requests. A reply belongs to the Carbon or Silicon account that originated it, identified by immutable UUID. Switching the active profile never changes a queued reply's destination.
 
-The CLI preserves the request and its retry keys after a lost response. A declined, expired or changed request leaves login and queued events intact. Review a new request when prompted. Permission belongs to the original account, organization and data world; switching a profile cannot approve or deliver that profile's old queued actions under another account.
-
-Peek never re-enrolls after `recipient_not_registered`. The event waits until you explicitly run `peek ting enroll`. Completing permission does not silently deliver through a newly selected Ting destination: a pending action remains bound to the destination and payload of its first provider attempt.
-
-Homes logged into the same account and organization share the server's approved Ting root family and recipient enrollment. Plain `peek logout` preserves these so another home remains usable. `peek logout --revoke-ting` attempts to remove the recipient enrollment using existing permission; it does not revoke the separate IAM grant. Re-enroll explicitly to resume events after removal. IAM is where you review or revoke the provider permission itself.
-
-## Receive answers without Stemcell
-
-Without Stemcell nothing listens on `http://<handle>.<org>.localhost/events`, so point Ting at a webhook of your own. This needs the `ting` CLI and one Ting login per Silicon home, next to the peek login.
-
-1. **Log in to Ting** in the same `SILICON_HOME` as peek. Mint a Ting SLT with the same IAM command as for peek, but `--app-id ting`, and hand it to `ting login`:
-   ```sh
-   H=/abs/path/to/silicon/home
-   # a Silicon already logged in to IAM in this home
-   SILICON_HOME=$H iam -o json silicon-login --app-id ting --grant-org <org> --approve-scopes | jq -r .slt | SILICON_HOME=$H ting login --token-stdin
-   # or with the Silicon's own credentials (what Stemcell runs)
-   SILICON_HOME=$H iam -o json silicon-login --sid si:<handle> --stk <STK> --app-id ting --grant-org <org> --approve-scopes | jq -r .slt | SILICON_HOME=$H ting login --token-stdin
-   ```
-2. **Pick the org and register your webhook:**
-   ```sh
-   SILICON_HOME=$H ting org use <org>
-   SILICON_HOME=$H ting webhook http://127.0.0.1:8787/peek     # any local URL you serve; it reports state=connected
-   ```
-3. **Serve the webhook.** Ting POSTs a JSON batch, exactly what Stemcell would receive:
-   ```json
-   {"tings":[{"id":"msg_…","created_at":"2026-09-26T10:00:07Z","type":"peek.ask.answered",
-     "data":{"schema":1,"ask_id":"ask_0192…","send_id":"snd_0192…","question":"Delete old builds?","ask_type":"single_choice",
-             "answer":{"kind":"single_choice","option_id":"1","label":"Delete"},"via":"click","transcript":null,
-             "asked_at":"2026-09-26T10:00:00Z","answered_at":"2026-09-26T10:00:07Z","slot":3,"context":"production"},
-     "metadata":{"isi":"deliberate","peek_version":"0.1.2"},"key":"si:<handle>/ask_0192…/answered"}]}
-   ```
-   Answer `204 No Content` (any 2xx) once you have stored the batch. Anything else, or no answer, makes Ting retry, so dedupe by ting `id`.
-
-A complete receiver in ten lines of Python (standard library only):
-
-```python
-import json
-from http.server import BaseHTTPRequestHandler, HTTPServer
-class Peek(BaseHTTPRequestHandler):
-    def do_POST(self):
-        batch = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        for t in batch["tings"]:                      # dedupe by t["id"]; at least once
-            print(t["type"], json.dumps(t["data"]), flush=True)
-        self.send_response(204); self.end_headers()
-    def log_message(self, *a): pass
-HTTPServer(("127.0.0.1", 8787), Peek).serve_forever()
-```
-
-Run it, then `peek send --ask …` and answer the bubble; the answer prints as one line. The Ting login and webhook are separate from peek's own Ting grant: explicit permission followed by `peek ting enroll` makes you a recipient of peek's events, and `ting webhook` decides where Ting delivers them.
-
-## Route events in your flow
-
-Stemcell has no default flow: without a peek branch in `flow`, peek events are dropped. Two verified snippets are in [Peek for Silicons](silicon.md):
-
-- **Flow A** sends every event whose type starts with `peek.` to one ISI.
-- **Flow B** routes each event to the ISI in `metadata.isi`, including session-mode addresses such as `worker.terminal:build-17`, and falls back to `intuit`. It never pastes ting data into generated expressions, so it is safe against CEL injection.
-
-Both match on the `peek.` prefix, so they route the types added in 0.1.2 (`peek.send.expired`, `peek.schedule.due`, `peek.send.shown`) without changes. A scheduled send produces two events (`peek.schedule.due` when it fires, `peek.send.shown` when it appears) on top of any answer. To keep one type out of an ISI, add `&& t.type != "peek.send.shown"` (for example) to both the `exists` condition and the `filter` of Flow A's first branch, and `&& var.t.type != \"peek.send.shown\"` (escaped, because it sits inside a JSON string) to the conditions of Flow B's three `peek.` branches.
-
-Test a branch locally by posting a fake batch to your Silicon:
-
-```sh
-curl --fail-with-body -H 'Content-Type: application/json' --data '{"tings":[{"id":"local-1","type":"peek.ask.answered","data":{"ask_id":"a1","answer":{"kind":"text","text":"yes"}},"metadata":{"isi":"intuit"}}]}' http://<handle>.<org>.localhost/events
-```
-
-## How peek sends (for builders)
-
-| Step | Who | Credential |
-|---|---|---|
-| The event is recorded | peekd, when Peek.app reports an answer, dismissal, message, finished speech, dismissed show or a bubble that appeared, or when a send expires or a scheduled send comes due | none; it writes an outbox row with the exact request bytes |
-| Delivery request | peekd: refresh your session if it expires within 120 s, then `POST /api/v1/deliveries` | your `oat_` access token |
-| Authorized send | peek backend: `POST /v1/tings` with the stored root for `tings.send`; refresh its family when needed | the approved `oba_` bearer |
-| Receipt | Ting → your ting-daemon → Stemcell → your flow | – |
-
-The backend verifies the ordinary caller, then selects only that account and organization's encrypted Ting root family in the current world. The recipient and provider organization come from the approved root. An operation's destination and payload hash are durable before the provider call, so retries after a lost response or permission change cannot redirect it. Rotations keep the same operation bytes and key. The backend records receipts and payload hashes, not event content. See [IAM and sessions](iam.md) and [Privacy](privacy.md).
-
-Registering the types is an operator step, done once per data context (production and every testing environment) with byte-identical descriptions. A type must be registered before any helper sends it, so the three types added in 0.1.2 are registered before 0.1.2 is released:
-
-```sh
-ting --org tos types register --type 'peek.ask.answered'     --description 'A Carbon answered a peek --ask (voice, keyboard or click).' --json
-ting --org tos types register --type 'peek.ask.dismissed'    --description 'A Carbon dismissed a peek --ask without answering.' --json
-ting --org tos types register --type 'peek.ask.expired'      --description 'A peek --ask reached its --expires-in deadline unanswered.' --json
-ting --org tos types register --type 'peek.message.received' --description 'A Carbon spoke or typed to the Silicon from its peek with no pending ask.' --json
-ting --org tos types register --type 'peek.speech.finished'  --description 'A peek --speak finished playing or was stopped by the Carbon.' --json
-ting --org tos types register --type 'peek.show.dismissed'   --description 'A Carbon closed a peek --show before it retracted.' --json
-ting --org tos types register --type 'peek.send.expired'     --description 'A peek --speak or --show reached its --expires-in or --expires-at deadline before it finished; the data says whether it was shown.' --json
-ting --org tos types register --type 'peek.schedule.due'     --description 'A scheduled peek send (--in or --at) came due; the data says whether it was shown, queued, expired or replaced the active peek.' --json
-ting --org tos types register --type 'peek.send.shown'       --description 'A peek send appeared on screen for the Carbon (always for scheduled sends; opt-in with --notify shown).' --json
-ting --org tos types list --app peek --json
-```
-
-The description of `peek.ask.expired` still says `--expires-in` although asks now also take `--expires-at`: descriptions must stay byte-identical in every context, so registered texts are never edited.
+Use `peek ting --help` for enrollment and delivery commands. Temporary delivery failures stay queued for retry. The backend keeps receipts and payload hashes rather than voice recordings or message content.

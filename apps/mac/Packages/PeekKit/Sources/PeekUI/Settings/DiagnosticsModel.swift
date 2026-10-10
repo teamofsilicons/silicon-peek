@@ -61,13 +61,13 @@ public final class DiagnosticsModel {
         let settings = controls.settings
         lines.append(
             "mode \(settings.mode.rawValue), hotkeys \(settings.hotkeyModifier.rawValue), display \(settings.display.rawValue), "
-                + "backdrop \(settings.backdrop.rawValue), telemetry \(settings.telemetry), show_test_peeks \(settings.showTestPeeks), "
+                + "backdrop \(settings.backdrop.rawValue), telemetry \(settings.telemetry), "
                 + "stt_language \(settings.sttLanguage)")
         for warning in controls.settingsWarnings { lines.append("settings warning: \(warning)") }
         lines.append("microphone: \(controls.mic.permission.diagnosticsText)")
         lines.append("slots: \(controls.slots.count) registered")
         for slot in controls.slots {
-            lines.append("  \(slot.index.rawValue) \(slot.context.rawValue) \(slot.actorID)[\(slot.orgID)] drawing=\(slot.drawing?.sha256.prefix(12) ?? "none")")
+            lines.append("  \(slot.index.rawValue) \(slot.context.rawValue) \(slot.actorID)[\(slot.accountID)] drawing=\(slot.drawing?.sha256.prefix(12) ?? "none")")
         }
         if let problem = controls.lastProblem { lines.append("last problem: \(problem)") }
         lines.append("peekd log: \(paths.peekdLog.path)")

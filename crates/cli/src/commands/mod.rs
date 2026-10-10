@@ -1,12 +1,12 @@
 //! Command dispatch and the helpers commands share.
 
+mod account;
+mod accounts;
 mod app;
 mod ask;
 pub(crate) mod config;
 mod doctor;
-mod iam;
 mod login;
-mod org;
 mod queue;
 mod register;
 mod report;
@@ -22,7 +22,7 @@ use silicon_peek_client::{
     Error, ErrorCode, Result,
     error::Origin,
     http::Client,
-    identity::{Context, OrgId, SlotKey},
+    identity::{AccountId, Context, SlotKey},
     ipc::AuthBlock,
     runtime::{
         CLI_MARGIN, SessionSlot, Store, auth_block, force_refresh, fresh_session_with,
@@ -51,14 +51,13 @@ pub async fn run(cli: Cli, path: &[String], g: &Globals) -> Result<()> {
         g.refuse_idempotency_key(&command_name)?;
     }
     match cli.command {
-        Command::Iam => iam::run(g, out).await,
+        Command::Accounts => accounts::run(g, out).await,
         Command::Login(args) => login::run(g, out, args).await,
         Command::Logout(a) => login::logout(g, &a, out).await,
         Command::Config { command } => config::run(g, out, command).await,
         Command::Ting {
             command: TingCommand::Enroll,
         } => ting::enroll(g, out).await,
-        Command::Ting { command } => ting::permission(g, out, command).await,
         Command::Register { command } => register::run(g, out, command).await,
         Command::Unregister => register::unregister(g, out).await,
         Command::Send(args) => send::run(g, out, *args).await,
@@ -68,7 +67,7 @@ pub async fn run(cli: Cli, path: &[String], g: &Globals) -> Result<()> {
         Command::Schedule { command } => queue::schedule(g, out, command).await,
         Command::History(args) => ask::history(g, out, args).await,
         Command::Status => status::run(g, out).await,
-        Command::Org { command } => org::run(g, out, command).await,
+        Command::Account { command } => account::run(g, out, command).await,
         Command::App { command } => app::run(g, out, command).await,
         Command::Daemon { command } => app::daemon(g, out, command).await,
         Command::Docs(args) => {
@@ -103,8 +102,8 @@ pub async fn mac_session(g: &Globals) -> Result<(Session, AuthBlock)> {
     let session = g.session(crate::context::store()?, false).await?;
     let file = session.store.read_session()?;
     let slot = file.usable_slot(&session.slot_key, session.store.dir())?;
-    g.session_org(slot)?;
-    telemetry::note_actor(&slot.org_id, slot.actor_id());
+    g.session_account(slot)?;
+    telemetry::note_actor(&slot.account_id, slot.actor_id());
     let auth = auth_block(&session.store, &session.slot_key)?;
     telemetry::note_auth(&auth);
     Ok((session, auth))
@@ -130,33 +129,29 @@ pub fn is_unauthenticated(e: &Error) -> bool {
 /// Runs a bearer call; on a 401 it forces one refresh and retries once
 /// (access tokens can be invalidated early). In a testing environment, a
 /// `409 testing_generation_changed` re-reads the generation from
-/// `GET /api/v1/iam` (saving it to testing.json) and retries once.
+/// `GET /api/v1/accounts` (saving it to testing.json) and retries once.
 pub async fn bearer<T, F, Fut>(g: &Globals, s: &Session, f: F) -> Result<T>
 where
-    F: Fn(Client, OrgId) -> Fut,
+    F: Fn(Client, AccountId) -> Fut,
     Fut: Future<Output = Result<T>>,
 {
     let stored = s.store.read_session()?;
     let original = stored.usable_slot(&s.slot_key, s.store.dir())?;
-    g.session_org(original)?;
+    g.session_account(original)?;
     let expected = original.context_id()?.to_owned();
     match bearer_once(g, s, &expected, &f).await {
-        Err(e) if *e.code() == ErrorCode::TestingGenerationChanged && s.testing.is_some() => {
-            let refreshed = crate::context::refresh_generation(s).await?;
-            bearer_once(g, &refreshed, &expected, &f).await
-        }
         r => r,
     }
 }
 
 async fn bearer_once<T, F, Fut>(g: &Globals, s: &Session, expected: &str, f: &F) -> Result<T>
 where
-    F: Fn(Client, OrgId) -> Fut,
+    F: Fn(Client, AccountId) -> Fut,
     Fut: Future<Output = Result<T>>,
 {
     let stored = s.store.read_session()?;
     let original = stored.usable_slot(&s.slot_key, s.store.dir())?;
-    g.session_org(original)?;
+    g.session_account(original)?;
     if original.context_id()? != expected {
         return Err(Error::new(
             ErrorCode::SessionRejected,
@@ -170,12 +165,12 @@ where
             "the account changed while the command was pending; retry explicitly",
         ));
     }
-    let org = g.session_org(&slot)?;
-    telemetry::note_actor(&org, slot.actor_id());
+    let account = g.session_account(&slot)?;
+    telemetry::note_actor(&account, slot.actor_id());
     match f(
         s.client
-            .with_session(slot.access_token.clone(), org.clone()),
-        org.clone(),
+            .with_session(slot.access_token.clone(), account.clone()),
+        account.clone(),
     )
     .await
     {
@@ -196,8 +191,8 @@ where
             }
             f(
                 s.client
-                    .with_session(slot.access_token.clone(), org.clone()),
-                org,
+                    .with_session(slot.access_token.clone(), account.clone()),
+                account,
             )
             .await
         }
@@ -207,7 +202,6 @@ where
 
 /// Retries queued refresh-family revocations (best effort, bounded).
 pub async fn sweep_revocations(store: &Store, telemetry_on: bool) {
-    let testing = store.read_testing().ok();
     let client_for = move |key: &SlotKey| -> Option<Client> {
         let mut client = Client::builder(key.api_url())
             .component(concat!("peek-cli/", env!("CARGO_PKG_VERSION")))
@@ -216,10 +210,6 @@ pub async fn sweep_revocations(store: &Store, telemetry_on: bool) {
             .ok()?
             .with_telemetry(telemetry_on)
             .with_trace_id(telemetry::trace_id());
-        if let Context::Testing(id) = key.context() {
-            let env = testing.as_ref()?.environments.get(&id)?;
-            client = client.with_testing(env.app_secret.clone(), Some(env.generation));
-        }
         Some(client)
     };
     let _ = tokio::time::timeout(

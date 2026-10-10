@@ -65,9 +65,9 @@ async fn run(config: Config) -> ExitCode {
     if config.telemetry.enabled && sink.is_none() {
         tracing::warn!("backend telemetry is off: PEEK_BACKEND_TABLE_KEY is missing or invalid");
     }
-    if config.iam.app_secret.is_none() {
+    if config.accounts.app_secret.is_none() {
         tracing::warn!(
-            "PEEK_IAM_APP_SECRET is empty: /readyz reports iam_config missing and IAM routes answer 503 iam_misconfigured until it is set"
+            "PEEK_ACCOUNTS_APP_SECRET is empty: /readyz reports accounts_config missing and ACCOUNTS routes answer 503 accounts_misconfigured until it is set"
         );
     }
     let state = match AppState::new(config, sink.clone()) {

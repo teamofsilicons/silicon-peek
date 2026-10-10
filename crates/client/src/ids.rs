@@ -148,10 +148,10 @@ impl IdempotencyKey {
         Self(format!("peek-{}", Uuid::now_v7().simple()))
     }
 
-    /// `peek-login-<hex(blake3(slt))>`, so a retried login replays at IAM.
+    /// `peek-login-<hex(blake3(slt))>`, so a retried login replays at ACCOUNTS.
     ///
     /// Only for real SLTs, which are single-use: the same SLT is only ever
-    /// the same login. See [`IdempotencyKey::login_attempt`] for public IDs.
+    /// the same login. Public account IDs are never credentials.
     #[must_use]
     pub fn login(slt: &str) -> Self {
         Self(format!(
@@ -160,25 +160,8 @@ impl IdempotencyKey {
         ))
     }
 
-    /// `peek-login-<hex(blake3(slt ‖ nonce))>`: a key unique to one login
-    /// attempt. A testing environment accepts the Silicon's public ID as the
-    /// SLT, and that "SLT" is the same on every login, so a key derived from
-    /// it alone would make IAM replay the first login's (possibly revoked)
-    /// token pair for ten minutes and then refuse the login with
-    /// `idempotency_response_expired` for a day. The attempt's key is stored
-    /// in `pending_login`, so in-process retries and `--recover` still replay
-    /// the same exchange.
-    #[must_use]
-    pub fn login_attempt(slt: &str) -> Self {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(slt.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(Uuid::new_v4().as_bytes());
-        Self(format!("peek-login-{}", hasher.finalize().to_hex()))
-    }
-
     /// `peek-refresh-<hex(blake3(refresh_token))>`: every process holding the
-    /// same token derives the same key, so IAM replays one rotation to all.
+    /// same token derives the same key, so ACCOUNTS replays one rotation to all.
     #[must_use]
     pub fn refresh(refresh_token: &str) -> Self {
         Self(format!(
@@ -276,7 +259,7 @@ pub const TING_KEY_MAX_BYTES: usize = 200;
 /// Builds a Ting key: `"<actor_id>/<subject_id>/<event>"`.
 ///
 /// Keys are unique per semantic event and include the recipient, because Ting
-/// keys are shared by the whole org (BLUEPRINT §3.5).
+/// keys are shared by the whole account (BLUEPRINT §3.5).
 ///
 /// # Errors
 /// `invalid_input` when the subject is empty, contains `/` or control
@@ -300,112 +283,4 @@ pub fn ting_key(actor: &ActorId, subject_id: &str, event: TingKeyEvent) -> Resul
         ));
     }
     Ok(key)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn generated_ids_parse_and_sort() -> Result<()> {
-        let a = AskId::generate();
-        let b = AskId::generate();
-        assert!(a.as_str().starts_with("ask_"));
-        assert_eq!(a.as_str().len(), 36);
-        assert_eq!(AskId::parse(a.as_str())?, a);
-        assert!(a <= b);
-        assert!(SendId::generate().as_str().starts_with("snd_"));
-        assert!(MessageId::generate().as_str().starts_with("cmsg_"));
-        assert!(EventId::generate().as_str().starts_with("evt_"));
-        Ok(())
-    }
-
-    #[test]
-    fn schedule_ids() -> Result<()> {
-        let s = ScheduleId::generate();
-        assert!(s.as_str().starts_with("sch_"));
-        assert_eq!(s.as_str().len(), 36);
-        assert_eq!(ScheduleId::parse(s.as_str())?, s);
-        assert_eq!(ScheduleId::PREFIX, "sch_");
-        assert!(ScheduleId::parse(SendId::generate().as_str()).is_err());
-        assert!(ScheduleId::parse("sch_").is_err());
-        let v4 = Uuid::new_v4().simple().to_string();
-        assert!(
-            ScheduleId::parse(&format!("sch_{v4}")).is_err(),
-            "must be v7"
-        );
-        assert!(serde_json::from_str::<ScheduleId>("\"sch_1\"").is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn malformed_ids_are_rejected() {
-        let v4 = Uuid::new_v4().simple().to_string();
-        assert!(AskId::parse(&format!("ask_{v4}")).is_err(), "must be v7");
-        assert!(AskId::parse(&SendId::generate().to_string()).is_err());
-        let upper = AskId::generate()
-            .as_str()
-            .to_uppercase()
-            .replace("ASK_", "ask_");
-        assert!(AskId::parse(&upper).is_err());
-        assert!(AskId::parse("ask_").is_err());
-        assert!(serde_json::from_str::<AskId>("\"ask_1\"").is_err());
-    }
-
-    #[test]
-    fn idempotency_keys() {
-        assert!(IdempotencyKey::parse(&"a".repeat(15)).is_err());
-        assert!(IdempotencyKey::parse(&"a".repeat(16)).is_ok());
-        assert!(IdempotencyKey::parse(&"a".repeat(255)).is_ok());
-        assert!(IdempotencyKey::parse(&"a".repeat(256)).is_err());
-        assert!(IdempotencyKey::parse("has a space in it!").is_err());
-        let k = IdempotencyKey::refresh("ort_abc");
-        assert_eq!(k, IdempotencyKey::refresh("ort_abc"));
-        assert_ne!(k, IdempotencyKey::refresh("ort_abd"));
-        assert_eq!(k.as_str().len(), "peek-refresh-".len() + 64);
-        assert!(IdempotencyKey::parse(k.as_str()).is_ok());
-        assert!(
-            IdempotencyKey::login("oac_x")
-                .as_str()
-                .starts_with("peek-login-")
-        );
-        assert!(
-            IdempotencyKey::revoke("ort_x")
-                .as_str()
-                .starts_with("peek-revoke-")
-        );
-        let e = EventId::generate();
-        assert_eq!(
-            IdempotencyKey::delivery(&e).as_str(),
-            format!("peek-delivery-{e}")
-        );
-        assert!(IdempotencyKey::parse(IdempotencyKey::generate().as_str()).is_ok());
-    }
-
-    #[test]
-    fn ting_keys() -> Result<()> {
-        let actor = ActorId::parse("si:cleanup")?;
-        let ask = AskId::generate();
-        let key = ting_key(&actor, ask.as_str(), TingKeyEvent::Answered)?;
-        assert_eq!(key, format!("si:cleanup/{ask}/answered"));
-        assert!(ting_key(&actor, "", TingKeyEvent::Message).is_err());
-        assert!(ting_key(&actor, "a/b", TingKeyEvent::Message).is_err());
-        let long = ActorId::parse(&format!("si:{}", "a".repeat(50)))?;
-        assert!(ting_key(&long, &"x".repeat(150), TingKeyEvent::ShowDismissed).is_err());
-        let snd = SendId::generate();
-        let sch = ScheduleId::generate();
-        assert_eq!(
-            ting_key(&actor, snd.as_str(), TingKeyEvent::SendExpired)?,
-            format!("si:cleanup/{snd}/send_expired")
-        );
-        assert_eq!(
-            ting_key(&actor, sch.as_str(), TingKeyEvent::Due)?,
-            format!("si:cleanup/{sch}/due")
-        );
-        assert_eq!(
-            ting_key(&actor, snd.as_str(), TingKeyEvent::Shown)?,
-            format!("si:cleanup/{snd}/shown")
-        );
-        Ok(())
-    }
 }

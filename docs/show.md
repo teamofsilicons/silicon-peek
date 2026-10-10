@@ -210,7 +210,7 @@ Three options change the order of things:
   peek schedule list
   ```
 
-`--at` and `--expires-at` read times in the Mac's time zone unless the value has an offset (`18:00+05:30`, `…Z`) or you pass `--tz Asia/Kolkata`. The full rules, limits and outputs are in the [CLI reference](cli.md#queue-expiry-and-scheduling).
+`--at` and `--expires-at` read times in the Mac's time zone unless the value has an offset (`18:00+05:30`, `…Z`) or you pass `--tz Asia/Kolkata`. The full rules, limits and outputs are in the [CLI reference](cli.md#speak-show-and-ask).
 
 ## Know when it was seen
 

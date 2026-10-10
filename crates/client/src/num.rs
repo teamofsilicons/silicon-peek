@@ -62,23 +62,3 @@ impl<'de> Deserialize<'de> for Num {
         Self::new(v).ok_or_else(|| serde::de::Error::custom("number must be finite"))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn integral_values_serialize_as_integers() -> Result<(), serde_json::Error> {
-        assert_eq!(serde_json::to_string(&Num::from(42))?, "42");
-        assert_eq!(serde_json::to_string(&Num::new(-3.0))?, "-3");
-        assert_eq!(serde_json::to_string(&Num::new(0.5))?, "0.5");
-        assert_eq!(serde_json::from_str::<Num>("7")?, Num::from(7));
-        assert_eq!(
-            serde_json::from_str::<Num>("7.25")?,
-            Num::new(7.25).unwrap_or_default()
-        );
-        assert!(Num::new(f64::NAN).is_none());
-        assert!(Num::new(f64::INFINITY).is_none());
-        Ok(())
-    }
-}

@@ -61,16 +61,10 @@
       "summary": "The nine event types, exact payloads, delivery and flow routing."
     },
     {
-      "slug": "iam",
-      "title": "IAM and sessions",
+      "slug": "accounts",
+      "title": "Silicon Accounts and sessions",
       "group": "learn",
-      "summary": "Scopes and why, SLT login, client token custody, refresh."
-    },
-    {
-      "slug": "testing",
-      "title": "Testing environments",
-      "group": "learn",
-      "summary": "Isolated test worlds with the same code path as production."
+      "summary": "Carbon and Silicon sign-in, token storage and automatic session refresh."
     },
     {
       "slug": "telemetry",
@@ -88,7 +82,7 @@
       "slug": "platforms",
       "title": "Platforms",
       "group": "learn",
-      "summary": "macOS 26+ for bubbles; the IAM-only CLI on Linux and Windows."
+      "summary": "macOS 26+ for bubbles; the Accounts CLI on Linux and Windows."
     },
     {
       "slug": "development",

@@ -2,7 +2,7 @@ import Foundation
 import PeekCore
 
 /// What the app does when peekd relaunched it after swapping in a new bundle
-/// (`--after-update <old build>`, gap-honeycomb §4.2). The agent re-registration
+/// (`--after-update <old build>`, Silicon Apps install hook). The agent re-registration
 /// itself happens in ``ServiceRegistration/registerAll(afterUpdate:)``; this type
 /// reads peekd's `update-applied.json` and reports the update.
 struct SelfUpdateHooks {

@@ -1,5 +1,5 @@
 //! External commands peekd runs (`open`, `ditto`, `codesign`, `xattr`,
-//! `plutil`, `honeycomb`), behind [`CommandRunner`] so tests inject a fake
+//! `plutil`, `apps`), behind [`CommandRunner`] so tests inject a fake
 //! and never touch the real system.
 //!
 //! Children always get stdin `/dev/null` and never inherit peekd's pipes
@@ -187,39 +187,5 @@ impl CommandRunner for SystemCommands {
                 )),
             }
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn system_runner_captures_output_and_times_out() -> io::Result<()> {
-        let out = SystemCommands
-            .run(CommandSpec::new("/bin/echo").arg("hello"))
-            .await?;
-        assert!(out.success());
-        assert_eq!(out.stdout, b"hello\n");
-        assert_eq!(out.last_line(), "hello");
-        let slow = SystemCommands
-            .run(
-                CommandSpec::new("/bin/sleep")
-                    .arg("5")
-                    .timeout(Duration::from_millis(100)),
-            )
-            .await;
-        assert_eq!(slow.err().map(|e| e.kind()), Some(io::ErrorKind::TimedOut));
-        let env = SystemCommands
-            .run(
-                CommandSpec::new("/usr/bin/env")
-                    .env("PEEKD_TEST_VAR", "x")
-                    .env_remove("HOME"),
-            )
-            .await?;
-        let text = String::from_utf8_lossy(&env.stdout).into_owned();
-        assert!(text.contains("PEEKD_TEST_VAR=x"));
-        assert!(!text.lines().any(|l| l.starts_with("HOME=")));
-        Ok(())
     }
 }

@@ -479,9 +479,8 @@ public final class PeekCoordinator: PeekPresenting {
         case .mode: slotManager.setMode(settings.mode)
         case .display: slotManager.setDisplay(settings.display)
         case .hotkeyModifier: registerHotKeys()
-        case .showTestPeeks: applyGate()
         case .telemetry: if !settings.telemetry { telemetryBuffer.removeAll() }
-        case .voiceDefaults, .sttLanguage, .cliWatchdog: break
+        case .voiceDefaults, .sttLanguage: break
         }
         if let settingsURL {
             do {
@@ -496,7 +495,7 @@ public final class PeekCoordinator: PeekPresenting {
     }
 
     private func applyGate() {
-        slotManager?.setGate(SlotGate(paused: paused, showTestPeeks: settings.showTestPeeks))
+        slotManager?.setGate(SlotGate(paused: paused))
     }
 
     private func registerHotKeys() {
@@ -528,7 +527,7 @@ public final class PeekCoordinator: PeekPresenting {
         if let host = hosts[key] { return host }
         let initial = slots.first { $0.siliconKey == key }?.initial
             ?? SlotState(index: .top, context: key.context, actorID: key.actorID.isEmpty ? "?" : key.actorID,
-                         orgID: key.orgID).initial
+                         accountID: key.accountID).initial
         let host = drawing.makeHost(for: key, initial: initial, images: images)
         host.input = input.source(for: key)
         let previousFailure = host.onFailure
@@ -582,7 +581,7 @@ public final class PeekCoordinator: PeekPresenting {
         record("fallback_visual", ["reason": .string(failure.reason.rawValue)], context: key.context)
         logger.info("drawing error for \(key): \(failure.reason.rawValue): \(failure.message); showing the fallback visual")
         guard !key.actorID.isEmpty else { return }
-        sendInBackground(DrawingErrorRequest(context: key.context, orgID: key.orgID, actorID: key.actorID,
+        sendInBackground(DrawingErrorRequest(context: key.context, accountID: key.accountID, actorID: key.actorID,
                                              reason: failure.reason, message: failure.message, stack: failure.stack))
     }
 

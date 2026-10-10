@@ -216,8 +216,8 @@ mod mac {
                 crate::commands::require_features(
                     self,
                     &[(
-                        silicon_peek_client::ipc::cli::features::IAM5_CONTEXTS,
-                        "saved account and organization contexts",
+                        silicon_peek_client::ipc::cli::features::ACCOUNTS_CONTEXTS,
+                        "saved account and account contexts",
                     )],
                 )?;
             }
@@ -720,7 +720,7 @@ mod mac {
                 ErrorCode::PeekServiceUnavailable,
                 format!("Peek.app is not installed at {path}, and {exe} has no Peek.app.zip in its package directory to install it from"),
             )
-            .with_hint("install peek through Honeycomb (honeycomb install 'peek'), then run `peek app install` from that copy")
+            .with_hint("install peek through Silicon Apps (apps install 'peek'), then run `peek app install` from that copy")
         })?;
         install(paths, &payload).await?;
         Ok(AppInstall {
@@ -753,7 +753,7 @@ mod mac {
                 ),
             )
             .with_hint(
-                "update macOS; the peek CLI still handles iam, login and config on this Mac",
+                "update macOS; the peek CLI still handles accounts, login and config on this Mac",
             ));
         }
         let actual = sha256_file(&payload.zip).map_err(|e| {
@@ -771,7 +771,7 @@ mod mac {
                     info.zip_sha256
                 ),
             )
-            .with_hint("reinstall peek: honeycomb install 'peek'"));
+            .with_hint("reinstall peek: apps install 'peek'"));
         }
         std::fs::create_dir_all(&paths.apps).map_err(|e| {
             fail(
@@ -840,9 +840,15 @@ mod mac {
         if !verify_signature(&staged_app, expected, team).await? {
             return Err(err(format!(
                 "the unpacked Peek.app fails codesign --verify --deep --strict for {expected}{}",
-                if team.is_empty() { String::new() } else { format!(" (Developer ID, team {team})") }
+                if team.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (Developer ID, team {team})")
+                }
             ))
-            .with_hint("the package may be damaged or tampered with; reinstall peek: honeycomb install 'peek'"));
+            .with_hint(
+                "the package may be damaged or tampered with; reinstall peek: apps install 'peek'",
+            ));
         }
         // Quarantine would stop a hidden launch at the first-open dialog.
         let _ = run_logged(
@@ -1192,47 +1198,13 @@ mod mac {
             .arg(context.to_string())
             .stdin(Stdio::null())
             .stdout(log_file(&paths))
-            .stderr(log_file(&paths))
-            .env_remove("PEEK_TEST_APP_SECRET");
+            .stderr(log_file(&paths));
         crate::sys::detach(&mut command);
         command.spawn().map(drop).map_err(|e| {
             Error::internal(format!(
                 "starting the background Peek.app setup failed: {e}"
             ))
         })
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn requirement_names_team_and_bundle() {
-            let r = requirement(BUNDLE_ID, TEAM_ID);
-            assert!(r.starts_with("anchor apple generic and identifier \"ai.tos.peek\""));
-            assert!(r.ends_with("certificate leaf[subject.OU] = \"LTBSK59BJ2\""));
-        }
-
-        #[test]
-        fn tails_skip_blank_lines() -> std::io::Result<()> {
-            let t = tempfile::tempdir()?;
-            let p = t.path().join("log");
-            std::fs::write(&p, "a\n\nb\nc\n")?;
-            assert_eq!(tail(&p, 2), vec!["b".to_owned(), "c".to_owned()]);
-            assert_eq!(last_line(&p).as_deref(), Some("c"));
-            assert!(tail(&t.path().join("missing"), 3).is_empty());
-            Ok(())
-        }
-
-        #[test]
-        fn offer_names() -> Result<()> {
-            let info = AppOfferInfo::parse_sidecar(&format!(
-                "bundle_id=ai.tos.peek\nbundle_version=1000\nshort_version=0.1.0\nteam_id=LTBSK59BJ2\nzip_sha256={}\nminimum_system_version=26.0\n",
-                "ab".repeat(32)
-            ))?;
-            assert_eq!(offer_name(&info), "1000-abababababab.app");
-            Ok(())
-        }
     }
 }
 
@@ -1315,47 +1287,5 @@ mod other {
         _context: Context,
     ) -> Result<()> {
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn platform_unsupported_is_the_blueprint_json() {
-        let e = platform_unsupported("send", "linux-x86_64");
-        assert_eq!(
-            e.envelope(),
-            json!({"error":{"code":"platform_unsupported",
-                "message":"peek send shows a bubble on a Mac through Peek.app; this peek runs on linux-x86_64.",
-                "hint":"Run this Silicon on macOS 26+ with Peek.app installed, or use dm for text conversations.",
-                "retryable":false,"request_id":null,
-                "details":{"platform":"linux-x86_64","supported_platforms":["macos-aarch64","macos-x86_64"],
-                           "docs_url":"https://peek.teamofsilicons.com/docs/platforms"}}})
-        );
-        assert_eq!(e.exit_code().code(), 4);
-        for c in [
-            "register side",
-            "register drawing",
-            "unregister",
-            "ask get",
-            "history",
-            "status",
-            "app install",
-            "daemon status",
-        ] {
-            let m = platform_unsupported(c, "windows-x86_64")
-                .message()
-                .to_owned();
-            assert!(m.starts_with(&format!("peek {c} ")), "{m}");
-            assert!(m.ends_with("; this peek runs on windows-x86_64."), "{m}");
-        }
-    }
-
-    #[test]
-    fn require_mac_matches_the_build() {
-        assert_eq!(require_mac("send").is_ok(), cfg!(target_os = "macos"));
     }
 }

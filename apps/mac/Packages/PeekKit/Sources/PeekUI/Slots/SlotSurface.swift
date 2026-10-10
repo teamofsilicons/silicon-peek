@@ -71,7 +71,7 @@ public protocol SlotSurface: AnyObject {
 }
 
 /// A surface without windows: keeps the chrome model (so layouts are computed) and records calls.
-/// Used by tests and whenever Peek runs without a GUI session (`swift test`, no NSApp running).
+/// Used whenever Peek runs without a GUI session (no NSApp running).
 @MainActor
 public final class HeadlessSlotSurface: SlotSurface {
     public let chrome: SlotChromeModel

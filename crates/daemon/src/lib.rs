@@ -16,7 +16,7 @@
 
 #[cfg(not(target_os = "macos"))]
 compile_error!(
-    "peekd runs only on macOS: Peek.app draws the bubbles. On other platforms build silicon-peek-cli, which supports iam, login, login status, logout and config."
+    "peekd runs only on macOS: Peek.app draws the bubbles. On other platforms build silicon-peek-cli, which supports accounts, login, login status, logout and config."
 );
 
 pub mod bubbles;

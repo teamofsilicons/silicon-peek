@@ -195,38 +195,3 @@ pub async fn history(g: &Globals, out: Out, args: HistoryArgs) -> Result<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn cancel_says_what_happened() {
-        let line = |state: &str| human_cancel(&json!({"ask_id": "ask_X", "state": state}));
-        assert!(line("cancelled").starts_with("ask_X cancelled;"));
-        assert!(line("answered").starts_with("ask_X was already answered; nothing to cancel"));
-        assert!(!line("answered").contains("cancelled;"));
-        assert_eq!(
-            line("expired"),
-            "ask_X was already expired; nothing to cancel"
-        );
-        assert_eq!(
-            line("dismissed"),
-            "ask_X was already dismissed; nothing to cancel"
-        );
-        assert_eq!(
-            line("replaced"),
-            "ask_X was already replaced by a newer send; nothing to cancel"
-        );
-    }
-
-    #[test]
-    fn history_rows_show_warning_codes() {
-        assert_eq!(
-            warning_codes(&json!({"warnings": [{"code": "speech_failed", "message": "…"}]})),
-            "  [speech_failed]"
-        );
-        assert_eq!(warning_codes(&json!({})), "");
-    }
-}

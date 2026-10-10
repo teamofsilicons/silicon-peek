@@ -227,11 +227,10 @@ public final class SlotChromeModel {
 
     public var fieldPlaceholder: String {
         if case .text(let placeholder)? = content.controls, let placeholder, !placeholder.isEmpty { return placeholder }
-        let testing = context == .testing
         switch content.controls {
-        case .text?: return testing ? "Answer the test silicon…" : "Type your answer…"
+        case .text?: return "Type your answer…"
         case .choice?, .scale?: return "Type an option…"
-        case nil: return testing ? "Message the test silicon…" : "Message…"
+        case nil: return "Message…"
         }
     }
 

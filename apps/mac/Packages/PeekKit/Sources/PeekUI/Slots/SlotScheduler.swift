@@ -1,37 +1,21 @@
 import Foundation
 import PeekCore
 
-// Who gets a physical slot (pure). There is one set of 8 slots on screen, shared by production,
-// testing environments and Simulation (gap-testing §9.3, BLUEPRINT §7.4 "Queueing per slot"):
-//
-//   * production pre-empts a visible test bubble, which slides back with its ask still pending and
-//     is shown again later; a test peek waits while its slot shows a production bubble;
-//   * a new send from the same Silicon always queues behind its bubble (peek 0.1.2: strict FIFO, peekd holds the
-//     rest of the queue); only an idle summon of that Silicon makes way for it. A Silicon's own `--replace` arrives
-//     as `peek.cancel{replaced}` (the bubble leaves) followed by the new `peek.show`;
-//   * "Show test peeks" off queues test peeks silently; "Pause all peeks" queues every Silicon peek;
-//   * a send with speech waits while an earlier send's audio still plays after its bubble was
-//     dismissed with a single down-arrow click (the Carbon chose to keep listening);
-//   * sends from one Silicon keep their order.
-
-/// The context priority on a physical slot: production > simulation > testing.
+/// Live account activity takes precedence over the local simulation.
 public enum SlotPriority {
     public static func of(_ context: PeekContext) -> Int {
         switch context {
         case .production: 2
         case .simulation: 1
-        case .testing: 0
         }
     }
 }
 
 public struct SlotGate: Sendable, Equatable {
     public var paused: Bool
-    public var showTestPeeks: Bool
 
-    public init(paused: Bool = false, showTestPeeks: Bool = true) {
+    public init(paused: Bool = false) {
         self.paused = paused
-        self.showTestPeeks = showTestPeeks
     }
 }
 
@@ -41,7 +25,7 @@ public struct SlotScheduler: Sendable, Equatable {
         public var key: SiliconKey
         public var context: PeekContext
         public var expectsAudio: Bool
-        /// The Carbon asked for it (hotkey): it ignores pause and "Show test peeks".
+        /// The Carbon asked for it (hotkey): it ignores pause.
         public var summoned: Bool
         /// Arrival order; re-queued (pre-empted) bubbles get a negative one so they go first.
         public var sequence: Int
@@ -162,7 +146,6 @@ public struct SlotScheduler: Sendable, Equatable {
         if blockedKeys.contains(entry.key) { return false }
         if entry.expectsAudio && audioPlaying { return false }
         if entry.summoned { return true }
-        if case .testing = entry.context, !gate.showTestPeeks { return false }
         if gate.paused && entry.context != .simulation { return false }
         return true
     }

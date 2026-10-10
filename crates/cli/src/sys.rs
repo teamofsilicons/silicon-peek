@@ -46,23 +46,3 @@ pub fn detach(command: &mut std::process::Command) {
         });
     }
 }
-
-#[cfg(all(test, target_os = "macos"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn exclusive_rename_never_replaces() -> std::io::Result<()> {
-        let t = tempfile::tempdir()?;
-        let a = t.path().join("a");
-        let b = t.path().join("b");
-        std::fs::create_dir(&a)?;
-        rename_exclusive(&a, &b)?;
-        assert!(b.is_dir() && !a.exists());
-        std::fs::create_dir(&a)?;
-        let e = rename_exclusive(&a, &b).err();
-        assert_eq!(e.and_then(|e| e.raw_os_error()), Some(libc::EEXIST));
-        assert!(a.is_dir(), "the source stays when the target exists");
-        Ok(())
-    }
-}

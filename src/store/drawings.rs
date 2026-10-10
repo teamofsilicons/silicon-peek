@@ -13,16 +13,16 @@ pub(crate) struct Drawing {
 pub(crate) fn upsert(
     conn: &Connection,
     ctx: &str,
-    org: &str,
+    account: &str,
     actor: &str,
     sha256: &str,
     bytes: &[u8],
     now: i64,
 ) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO drawings(ctx, org_id, actor_id, sha256, bytes, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT(ctx, org_id, actor_id) DO UPDATE SET sha256 = excluded.sha256, bytes = excluded.bytes, updated_at = excluded.updated_at",
-        params![ctx, org, actor, sha256, bytes, now],
+        "INSERT INTO drawings(ctx, account_id, actor_id, sha256, bytes, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT DO UPDATE SET actor_id = excluded.actor_id, sha256 = excluded.sha256, bytes = excluded.bytes, updated_at = excluded.updated_at",
+        params![ctx, account, actor, sha256, bytes, now],
     )?;
     Ok(())
 }
@@ -31,12 +31,12 @@ pub(crate) fn upsert(
 pub(crate) fn get(
     conn: &Connection,
     ctx: &str,
-    org: &str,
+    account: &str,
     actor: &str,
 ) -> rusqlite::Result<Option<Drawing>> {
     conn.query_row(
-        "SELECT sha256, bytes, updated_at FROM drawings WHERE ctx = ?1 AND org_id = ?2 AND actor_id = ?3",
-        params![ctx, org, actor],
+        "SELECT sha256, bytes, updated_at FROM drawings WHERE ctx = ?1 AND account_id = ?2",
+        params![ctx, account],
         |row| {
             Ok(Drawing {
                 sha256: row.get(0)?,
@@ -52,11 +52,11 @@ pub(crate) fn get(
 pub(crate) fn delete(
     conn: &Connection,
     ctx: &str,
-    org: &str,
+    account: &str,
     actor: &str,
 ) -> rusqlite::Result<usize> {
     conn.execute(
-        "DELETE FROM drawings WHERE ctx = ?1 AND org_id = ?2 AND actor_id = ?3",
-        params![ctx, org, actor],
+        "DELETE FROM drawings WHERE ctx = ?1 AND account_id = ?2",
+        params![ctx, account],
     )
 }

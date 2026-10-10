@@ -7,8 +7,7 @@ use rusqlite::{OptionalExtension as _, params};
 use serde_json::{Value, json};
 use silicon_peek_client::{
     Error, ErrorCode, Result,
-    api::TestingEnvironment,
-    identity::{ActorId, Context, OrgId, SlotIndex, SlotInfo},
+    identity::{AccountId, ActorId, Context, SlotIndex, SlotInfo},
     ipc::{
         cli::{
             CarbonStatus, DeliveriesStatus, DrawingStatus, QueueStatus, RegisterSideResult,
@@ -35,13 +34,12 @@ pub fn initial(display_name: Option<&str>, actor: &ActorId) -> String {
         .map_or_else(|| "?".to_owned(), |c| c.to_uppercase().collect())
 }
 
-/// `(context, slot, org, actor, display_name, testing, drawing sha, drawing path)`.
+/// `(context, slot, account, actor, display_name, testing, drawing sha, drawing path)`.
 type SlotRow = (
     String,
     i64,
     String,
     String,
-    Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -57,20 +55,19 @@ fn register_side_tx(
     tx: &rusqlite::Connection,
     c2: &Caller,
     index: SlotIndex,
-    testing: Option<&str>,
     now: i64,
 ) -> Result<SideOutcome> {
     let ctx = c2.key.context_str();
     let holder: Option<(String, String)> = tx
         .query_row(
-            "SELECT org_id, actor_id FROM slots WHERE context = ?1 AND slot = ?2",
+            "SELECT account_id, actor_id FROM slots WHERE context = ?1 AND slot = ?2",
             params![ctx, index.get()],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
         .sql()?;
-    if let Some((org, actor)) = &holder
-        && (org != c2.key.org.as_str() || actor != c2.key.actor.as_str())
+    if let Some((account, actor)) = &holder
+        && account != c2.key.account.as_str()
     {
         return Ok(SideOutcome::Taken {
             owner: actor.clone(),
@@ -79,8 +76,8 @@ fn register_side_tx(
     }
     let current: Option<i64> = tx
         .query_row(
-            "SELECT slot FROM slots WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-            params![ctx, c2.key.org.as_str(), c2.key.actor.as_str()],
+            "SELECT slot FROM slots WHERE context = ?1 AND account_id = ?2",
+            params![ctx, c2.key.account.as_str()],
             |r| r.get(0),
         )
         .optional()
@@ -89,31 +86,30 @@ fn register_side_tx(
         Some(old) if old == i64::from(index.get()) => None,
         Some(old) => {
             tx.execute(
-                "UPDATE slots SET slot = ?4 WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                params![ctx, c2.key.org.as_str(), c2.key.actor.as_str(), index.get()],
+                "UPDATE slots SET slot = ?3 WHERE context = ?1 AND account_id = ?2",
+                params![ctx, c2.key.account.as_str(), index.get()],
             )
             .sql()?;
             tx.execute(
-                "UPDATE sends SET slot = ?4 WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3 AND closed_at IS NULL",
-                params![ctx, c2.key.org.as_str(), c2.key.actor.as_str(), index.get()],
+                "UPDATE sends SET slot = ?3 WHERE context = ?1 AND account_id = ?2 AND closed_at IS NULL",
+                params![ctx, c2.key.account.as_str(), index.get()],
             )
             .sql()?;
             SlotIndex::new(u64::try_from(old).unwrap_or(0)).ok()
         }
         None => {
             tx.execute(
-                "INSERT INTO slots (context, slot, org_id, actor_id, home_path, registered_at, api_url, display_name, testing)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO slots (context, slot, account_id, actor_id, home_path, registered_at, api_url, display_name)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     ctx,
                     index.get(),
-                    c2.key.org.as_str(),
+                    c2.key.account.as_str(),
                     c2.key.actor.as_str(),
                     c2.home.home_path,
                     now,
                     c2.home.api_url.as_str(),
-                    c2.display_name,
-                    testing
+                    c2.display_name
                 ],
             )
             .sql()?;
@@ -121,16 +117,14 @@ fn register_side_tx(
         }
     };
     tx.execute(
-        "UPDATE slots SET home_path = ?4, api_url = ?5, display_name = coalesce(?6, display_name), testing = coalesce(?7, testing)
-         WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
+        "UPDATE slots SET home_path = ?3, api_url = ?4, display_name = coalesce(?5, display_name)
+         WHERE context = ?1 AND account_id = ?2",
         params![
             ctx,
-            c2.key.org.as_str(),
-            c2.key.actor.as_str(),
+            c2.key.account.as_str(),
             c2.home.home_path,
             c2.home.api_url.as_str(),
-            c2.display_name,
-            testing
+            c2.display_name
         ],
     )
     .sql()?;
@@ -150,14 +144,10 @@ impl Shared {
         index: SlotIndex,
     ) -> Result<RegisterSideResult> {
         let c2 = caller.clone();
-        let testing = caller
-            .testing
-            .as_ref()
-            .and_then(|t| serde_json::to_string(t).ok());
         let now = now_ms();
         let outcome = self
             .db
-            .tx(move |tx| register_side_tx(tx, &c2, index, testing.as_deref(), now))
+            .tx(move |tx| register_side_tx(tx, &c2, index, now))
             .await?;
         let moved_from = match outcome {
             SideOutcome::Taken { owner, free } => {
@@ -211,36 +201,36 @@ impl Shared {
             .tx(move |tx| {
                 let slot: Option<i64> = tx
                     .query_row(
-                        "SELECT slot FROM slots WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                        params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                        "SELECT slot FROM slots WHERE context = ?1 AND account_id = ?2",
+                        params![k.context_str(), k.account.as_str()],
                         |r| r.get(0),
                     )
                     .optional()
                     .sql()?;
                 tx.execute(
-                    "DELETE FROM slots WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                    params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                    "DELETE FROM slots WHERE context = ?1 AND account_id = ?2",
+                    params![k.context_str(), k.account.as_str()],
                 )
                 .sql()?;
                 let paths: Option<(String, Option<String>)> = tx
                     .query_row(
-                        "SELECT path, previous_path FROM drawings WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                        params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                        "SELECT path, previous_path FROM drawings WHERE context = ?1 AND account_id = ?2",
+                        params![k.context_str(), k.account.as_str()],
                         |r| Ok((r.get(0)?, r.get(1)?)),
                     )
                     .optional()
                     .sql()?;
                 if paths.is_some() {
                     tx.execute(
-                        "DELETE FROM drawings WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                        params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                        "DELETE FROM drawings WHERE context = ?1 AND account_id = ?2",
+                        params![k.context_str(), k.account.as_str()],
                     )
                     .sql()?;
                     tx.execute(
                         "UPDATE outbox SET status = 'cancelled', last_error_code = 'unregistered'
                          WHERE kind = 'drawing.put' AND status IN ('pending','authority_required')
-                           AND context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                        params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                           AND context = ?1 AND account_id = ?2",
+                        params![k.context_str(), k.account.as_str()],
                     )
                     .sql()?;
                 }
@@ -279,21 +269,20 @@ impl Shared {
     /// # Errors
     /// Database failures.
     pub async fn slots_state(&self) -> Result<SlotsState> {
-        let show_test = self.settings.get().show_test_peeks;
         let rows: Vec<SlotRow> = self
             .db
             .call(|c| {
                 let mut st = c
                     .prepare(
-                        "SELECT s.context, s.slot, s.org_id, s.actor_id, s.display_name, s.testing, d.sha256, d.path
+                        "SELECT s.context, s.slot, s.account_id, s.actor_id, s.display_name, d.sha256, d.path
                          FROM slots s LEFT JOIN drawings d
-                           ON d.context = s.context AND d.org_id = s.org_id AND d.actor_id = s.actor_id
+                           ON d.context = s.context AND d.account_id = s.account_id
                          ORDER BY s.slot, (s.context = 'production') DESC, s.registered_at",
                     )
                     .sql()?;
                 let v = st
                     .query_map([], |r| {
-                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
                     })
                     .sql()?
                     .collect::<rusqlite::Result<Vec<_>>>()
@@ -301,38 +290,27 @@ impl Shared {
                 Ok(v)
             })
             .await?;
-        let production: Vec<i64> = rows
-            .iter()
-            .filter(|r| r.0 == "production")
-            .map(|r| r.1)
-            .collect();
         let mut slots = Vec::new();
-        for (context, slot, org, actor, display_name, testing, sha, path) in rows {
-            let (Ok(context), Ok(index), Ok(org_id), Ok(actor_id)) = (
+        for (context, slot, account, actor, display_name, sha, path) in rows {
+            let (Ok(context), Ok(index), Ok(account_id), Ok(actor_id)) = (
                 Context::parse(&context),
                 SlotIndex::new(u64::try_from(slot).unwrap_or(0)),
-                OrgId::parse(&org),
+                AccountId::parse(&account),
                 ActorId::parse(&actor),
             ) else {
                 continue;
-            };
-            let hotkey = match context {
-                Context::Production => true,
-                Context::Testing(_) => show_test && !production.contains(&slot),
             };
             slots.push(SlotState {
                 index,
                 context,
                 initial: initial(display_name.as_deref(), &actor_id),
                 actor_id,
-                org_id,
+                account_id,
                 display_name,
                 drawing: sha
                     .zip(path)
                     .map(|(sha256, path)| SlotDrawing { sha256, path }),
-                hotkey,
-                environment: testing
-                    .and_then(|t| serde_json::from_str::<TestingEnvironment>(&t).ok()),
+                hotkey: true,
             });
         }
         Ok(SlotsState { slots })
@@ -386,8 +364,8 @@ impl Shared {
                 let slot = crate::bubbles::slot_of(c, &k)?;
                 let drawing: Option<(String, i64, Option<String>)> = c
                     .query_row(
-                        "SELECT sha256, bytes, last_error FROM drawings WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                        params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                        "SELECT sha256, bytes, last_error FROM drawings WHERE context = ?1 AND account_id = ?2",
+                        params![k.context_str(), k.account.as_str()],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                     )
                     .optional()
@@ -395,8 +373,8 @@ impl Shared {
                 let pending_asks: i64 = c
                     .query_row(
                         "SELECT count(*) FROM asks a JOIN sends s ON s.send_id = a.send_id
-                         WHERE a.state = 'pending' AND s.context = ?1 AND s.org_id = ?2 AND s.actor_id = ?3",
-                        params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                         WHERE a.state = 'pending' AND s.context = ?1 AND s.account_id = ?2",
+                        params![k.context_str(), k.account.as_str()],
                         |r| r.get(0),
                     )
                     .sql()?;
@@ -404,8 +382,8 @@ impl Shared {
                 // copy is reported as `drawing.server_sync`.
                 let counts = |kinds: &str, status: &str| -> Result<i64> {
                     c.query_row(
-                        &format!("SELECT count(*) FROM outbox WHERE kind IN ({kinds}) AND status = ?4 AND context = ?1 AND org_id = ?2 AND actor_id = ?3"),
-                        params![k.context_str(), k.org.as_str(), k.actor.as_str(), status],
+                        &format!("SELECT count(*) FROM outbox WHERE kind IN ({kinds}) AND status = ?3 AND context = ?1 AND account_id = ?2"),
+                        params![k.context_str(), k.account.as_str(), status],
                         |r| r.get(0),
                     )
                     .sql()
@@ -421,10 +399,10 @@ impl Shared {
                 };
                 let last_error: Option<String> = c
                     .query_row(
-                        "SELECT last_error_code FROM outbox WHERE kind = 'ting' AND context = ?1 AND org_id = ?2 AND actor_id = ?3
+                        "SELECT last_error_code FROM outbox WHERE kind = 'ting' AND context = ?1 AND account_id = ?2
                            AND status != 'accepted' AND last_error_code IS NOT NULL
                          ORDER BY next_attempt_at DESC LIMIT 1",
-                        params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                        params![k.context_str(), k.account.as_str()],
                         |r| r.get(0),
                     )
                     .optional()
@@ -471,20 +449,5 @@ impl Shared {
             }),
             warnings,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn initials() -> Result<()> {
-        let a = ActorId::parse("si:cleanup")?;
-        assert_eq!(initial(Some("DJ Bot"), &a), "D");
-        assert_eq!(initial(Some("  ·x"), &a), "X");
-        assert_eq!(initial(None, &a), "C");
-        assert_eq!(initial(Some("élan"), &a), "É");
-        Ok(())
     }
 }

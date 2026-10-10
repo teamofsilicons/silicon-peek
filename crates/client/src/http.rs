@@ -2,7 +2,7 @@
 //!
 //! [`Client`] stores no session and never refreshes behind the caller's back.
 //! It attaches, per request, exactly the headers of the CLI/peekd → peek-server
-//! hop (§2.9): `Authorization` + `X-Org-ID` on bearer routes,
+//! hop (§2.9): `Authorization` + `X-Account-ID` on bearer routes,
 //! `Idempotency-Key` on every POST, `X-Testing-Environment-Key` on every route
 //! in a testing context, `X-Testing-Environment-Generation` on every mutation
 //! except login and refresh, and `X-Peek-Telemetry: on|off`.
@@ -20,13 +20,13 @@ use sha2::{Digest, Sha256};
 use crate::{
     Secret,
     api::{
-        ByoDeepgramRequest, ByoStatus, DeliveryResponse, Drawing, DrawingStored, Health,
-        IamDiscovery, LoginRequest, LogoutRequest, Me, Ready, RefreshRequest, ReportRequest,
+        AccountsDiscovery, ByoDeepgramRequest, ByoStatus, DeliveryResponse, Drawing, DrawingStored,
+        Health, LoginRequest, LogoutRequest, Me, Ready, RefreshRequest, ReportRequest,
         ReportResponse, SessionResponse, SpeechPurpose, SpeechToken, SpeechTokenRequest,
         SpeechTranscript, TelemetryBatch, TingRecipient, headers, routes,
     },
     error::{Error, ErrorCode, ErrorObject, Origin, Result},
-    identity::{ApiUrl, OrgId, TestingSecret},
+    identity::{AccountId, ApiUrl},
     ids::{EventId, IdempotencyKey},
     schema::{check_drawing_bytes, limits},
 };
@@ -113,17 +113,10 @@ impl ClientBuilder {
             api: self.api,
             timeout: self.timeout,
             session: None,
-            testing: None,
             telemetry: true,
             trace_id: None,
         })
     }
-}
-
-#[derive(Clone, Debug)]
-struct Testing {
-    secret: TestingSecret,
-    generation: Option<u64>,
 }
 
 /// A stateless peek-server client. Cheap to clone; `with_*` return copies.
@@ -132,8 +125,7 @@ pub struct Client {
     http: reqwest::Client,
     api: ApiUrl,
     timeout: Duration,
-    session: Option<(Secret, OrgId)>,
-    testing: Option<Testing>,
+    session: Option<(Secret, AccountId)>,
     telemetry: bool,
     trace_id: Option<String>,
 }
@@ -165,11 +157,11 @@ impl Client {
         &self.api
     }
 
-    /// Attaches a Silicon's access token and org (`Authorization` + `X-Org-ID`).
+    /// Attaches a Silicon's access token and account (`Authorization` + `X-Account-ID`).
     #[must_use]
-    pub fn with_session(&self, access_token: Secret, org: OrgId) -> Self {
+    pub fn with_session(&self, access_token: Secret, account: AccountId) -> Self {
         let mut next = self.clone();
-        next.session = Some((access_token, org));
+        next.session = Some((access_token, account));
         next
     }
 
@@ -179,21 +171,6 @@ impl Client {
         let mut next = self.clone();
         next.session = None;
         next
-    }
-
-    /// Selects a testing environment by its peek test app secret. The
-    /// generation is sent on mutations once known (from [`Client::discover`]).
-    #[must_use]
-    pub fn with_testing(&self, secret: TestingSecret, generation: Option<u64>) -> Self {
-        let mut next = self.clone();
-        next.testing = Some(Testing { secret, generation });
-        next
-    }
-
-    /// Whether a testing environment is selected.
-    #[must_use]
-    pub fn is_testing(&self) -> bool {
-        self.testing.is_some()
     }
 
     /// Sets `X-Peek-Telemetry` (default `on`); `off` also suppresses
@@ -213,7 +190,7 @@ impl Client {
         next
     }
 
-    fn request(&self, method: Method, path: &str, generation: bool) -> RequestBuilder {
+    fn request(&self, method: Method, path: &str, _generation: bool) -> RequestBuilder {
         let mut r = self
             .http
             .request(method, self.api.join(path))
@@ -226,27 +203,18 @@ impl Client {
         if let Some(t) = &self.trace_id {
             r = r.header(headers::TRACE_ID, t);
         }
-        if let Some(t) = &self.testing
-            && path.starts_with("/api/")
-        {
-            r = r.header(headers::TESTING_KEY, t.secret.secret().expose());
-            if generation && let Some(g) = t.generation {
-                r = r.header(headers::TESTING_GENERATION, g.to_string());
-            }
-        }
         r
     }
 
     fn bearer(&self, r: RequestBuilder) -> Result<RequestBuilder> {
-        let (token, org) = self.session.as_ref().ok_or_else(|| {
+        let (token, _account) = self.session.as_ref().ok_or_else(|| {
             Error::new(
                 ErrorCode::NotLoggedIn,
                 "this peek-server route needs a session, and none is attached",
             )
             .with_hint("log in first: peek login '<SLT>'")
         })?;
-        Ok(r.bearer_auth(token.expose())
-            .header(headers::ORG_ID, org.as_str()))
+        Ok(r.bearer_auth(token.expose()))
     }
 
     fn post<B: Serialize + ?Sized>(
@@ -294,39 +262,42 @@ impl Client {
         decode(routes::READYZ, &bytes)
     }
 
-    /// `GET /api/v1/iam`; with a testing secret it reports the environment and
+    /// `GET /api/v1/accounts`; with a testing secret it reports the environment and
     /// its generation.
     ///
     /// # Errors
     /// Transport or server errors (`testing_secret_invalid` for a bad secret).
-    pub async fn discover(&self) -> Result<IamDiscovery> {
-        self.json(routes::IAM, self.request(Method::GET, routes::IAM, false))
-            .await
+    pub async fn discover(&self) -> Result<AccountsDiscovery> {
+        self.json(
+            routes::ACCOUNTS,
+            self.request(Method::GET, routes::ACCOUNTS, false),
+        )
+        .await
     }
 
     /// `POST /api/v1/auth/login` with body exactly `{"slt":"…"}`. Retry a
-    /// transport failure or 5xx with the same key and SLT (IAM replays).
+    /// transport failure or 5xx with the same key and SLT (ACCOUNTS replays).
     ///
     /// # Errors
-    /// `slt_rejected`, `slt_is_public_id`, `private_application_organization_required`,
-    /// `iam_misconfigured`, transport errors.
+    /// `slt_rejected`, `slt_is_public_id`, `private_application_account_required`,
+    /// `accounts_misconfigured`, transport errors.
     pub async fn login(
         &self,
         slt: &Secret,
-        org_hint: Option<&OrgId>,
+        account_hint: Option<&AccountId>,
         key: &IdempotencyKey,
     ) -> Result<SessionResponse> {
         let body = LoginRequest { slt: slt.clone() };
         let mut r = self.post(routes::LOGIN, key, &body, false);
-        if let Some(org) = org_hint {
-            r = r.header(headers::ORG_ID, org.as_str());
+        if let Some(account) = account_hint {
+            r = r.header(headers::ACCOUNT_ID, account.as_str());
         }
         let response: SessionResponse = self.json(routes::LOGIN, r).await?;
         response.validate()?;
-        if org_hint.is_some_and(|org| org != &response.org_id) {
+        if account_hint.is_some_and(|account| account != &response.account_id) {
             return Err(Error::new(
                 ErrorCode::UnexpectedResponse,
-                "login returned a different organization",
+                "login returned a different account",
             ));
         }
         Ok(response)
@@ -336,7 +307,7 @@ impl Client {
     ///
     /// # Errors
     /// `session_rejected` (terminal), `idempotency_in_progress`,
-    /// `idempotency_response_expired`, `iam_misconfigured`, transport errors.
+    /// `idempotency_response_expired`, `accounts_misconfigured`, transport errors.
     pub async fn refresh(
         &self,
         refresh_token: &Secret,
@@ -355,7 +326,7 @@ impl Client {
         Ok(response)
     }
 
-    /// `POST /api/v1/auth/logout` `{"token":"ort_…"}`. Only with
+    /// `POST /api/v1/auth/logout` `{"token":"sar_…"}`. Only with
     /// `revoke_ting` (and a session attached) are `"revoke_ting":true` and the
     /// bearer sent, so the backend also revokes the Silicon's Ting grant; a
     /// plain logout never sends the bearer, so no backend revokes the grant
@@ -400,53 +371,6 @@ impl Client {
         let r =
             self.bearer(self.post(routes::TING_RECIPIENT, key, &serde_json::json!({}), true))?;
         self.json(routes::TING_RECIPIENT, r).await
-    }
-
-    /// Starts explicit Ting approval with a durable caller-provided key.
-    ///
-    /// # Errors
-    /// Authentication, provider, or transport errors.
-    pub async fn ting_authorization_start(
-        &self,
-        key: &IdempotencyKey,
-    ) -> Result<crate::authorization::TingAuthorization> {
-        let path = "/api/v1/ting/authorization";
-        self.json(
-            path,
-            self.bearer(self.post(path, key, &serde_json::json!({}), true))?,
-        )
-        .await
-    }
-
-    /// Reads the original approval, without granting or sending anything.
-    ///
-    /// # Errors
-    /// Authentication, provider, or transport errors.
-    pub async fn ting_authorization_status(
-        &self,
-        id: uuid::Uuid,
-    ) -> Result<crate::authorization::TingAuthorization> {
-        let path = format!("/api/v1/ting/authorizations/{id}");
-        self.json(&path, self.bearer(self.request(Method::GET, &path, false))?)
-            .await
-    }
-
-    /// Redeems the user's approval code for this request. Keep the same key on retry.
-    ///
-    /// # Errors
-    /// Authentication, changed terms (412), provider, or transport errors.
-    pub async fn ting_authorization_complete(
-        &self,
-        id: uuid::Uuid,
-        code: &Secret,
-        key: &IdempotencyKey,
-    ) -> Result<crate::authorization::TingAuthorization> {
-        let path = format!("/api/v1/ting/authorizations/{id}/complete");
-        self.json(
-            &path,
-            self.bearer(self.post(&path, key, &serde_json::json!({"code":code}), true))?,
-        )
-        .await
     }
 
     /// `POST /api/v1/deliveries` with the outbox row's exact bytes and key
@@ -574,36 +498,36 @@ impl Client {
         self.empty(routes::DRAWING, r).await
     }
 
-    /// `GET /api/v1/orgs/{org}/byo/deepgram`.
+    /// `GET /api/v1/accounts/{account}/byo/deepgram`.
     ///
     /// # Errors
     /// Server or transport errors.
-    pub async fn byo_deepgram(&self, org: &OrgId) -> Result<ByoStatus> {
-        let path = routes::byo_deepgram(org.as_str());
+    pub async fn byo_deepgram(&self, account: &AccountId) -> Result<ByoStatus> {
+        let path = routes::byo_deepgram(account.as_str());
         let r = self.bearer(self.request(Method::GET, &path, false))?;
         self.json(&path, r).await
     }
 
-    /// `PUT /api/v1/orgs/{org}/byo/deepgram` (org owner or admin).
+    /// `PUT /api/v1/accounts/{account}/byo/deepgram` (account owner or admin).
     ///
     /// # Errors
-    /// `not_org_admin`, server or transport errors.
+    /// `not_account_owner`, server or transport errors.
     pub async fn set_byo_deepgram(
         &self,
-        org: &OrgId,
+        account: &AccountId,
         request: &ByoDeepgramRequest,
     ) -> Result<ByoStatus> {
-        let path = routes::byo_deepgram(org.as_str());
+        let path = routes::byo_deepgram(account.as_str());
         let r = self.bearer(self.request(Method::PUT, &path, true).json(request))?;
         self.json(&path, r).await
     }
 
-    /// `DELETE /api/v1/orgs/{org}/byo/deepgram` (org owner or admin).
+    /// `DELETE /api/v1/accounts/{account}/byo/deepgram` (account owner or admin).
     ///
     /// # Errors
-    /// `not_org_admin`, server or transport errors.
-    pub async fn delete_byo_deepgram(&self, org: &OrgId) -> Result<()> {
-        let path = routes::byo_deepgram(org.as_str());
+    /// `not_account_owner`, server or transport errors.
+    pub async fn delete_byo_deepgram(&self, account: &AccountId) -> Result<()> {
+        let path = routes::byo_deepgram(account.as_str());
         let r = self.bearer(self.request(Method::DELETE, &path, true))?;
         self.empty(&path, r).await
     }
@@ -785,7 +709,7 @@ fn unexpected(path: &str, why: &str) -> Error {
         ErrorCode::UnexpectedResponse,
         format!("peek-server answered {path} with a response this peek cannot use: {why}"),
     )
-    .with_hint("update peek (honeycomb update 'peek'); if that does not help, run peek report")
+    .with_hint("update peek (apps update 'peek'); if that does not help, run peek report")
 }
 
 fn retry_after(headers: &HeaderMap) -> Option<Duration> {
@@ -842,7 +766,7 @@ pub fn decode_error(
         ),
         _ => (
             ErrorCode::UnexpectedResponse,
-            "update peek (honeycomb update 'peek'); if that does not help, run peek report",
+            "update peek (apps update 'peek'); if that does not help, run peek report",
         ),
     };
     let retryable = code.default_retryable();

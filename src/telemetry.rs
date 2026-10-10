@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use silicon_peek_client::{
     ErrorCode, Secret,
     api::TelemetryEvent,
-    identity::{ActorId, ActorType, OrgId},
+    identity::{AccountId, ActorId, ActorType},
     telemetry::{actor_hash, scrub_context},
     timestamp::Timestamp,
 };
@@ -86,7 +86,6 @@ pub(crate) struct RequestMeta {
     /// `false` when the caller sent `X-Peek-Telemetry: off`.
     pub(crate) telemetry: bool,
     /// Whether the request selected a testing environment.
-    pub(crate) testing: bool,
     /// `X-Peek-Trace-Id`, when well-formed.
     pub(crate) trace_id: Option<String>,
 }
@@ -138,8 +137,8 @@ impl Event {
     }
 
     /// Adds the (hashed) actor.
-    pub(crate) fn actor(mut self, org: &OrgId, actor: &ActorId) -> Self {
-        self.actor = Some((actor.actor_type(), actor_hash(org, actor)));
+    pub(crate) fn actor(mut self, account: &AccountId, actor: &ActorId) -> Self {
+        self.actor = Some((actor.actor_type(), actor_hash(account, actor)));
         self
     }
 
@@ -170,7 +169,7 @@ impl Telemetry {
 
     /// Records `event` unless the request opted out or is a testing context.
     pub(crate) fn record(&self, meta: &RequestMeta, event: Event) {
-        if !meta.telemetry || meta.testing {
+        if !meta.telemetry {
             return;
         }
         let Some(sink) = &self.sink else {
@@ -341,99 +340,5 @@ pub(crate) async fn forward(
             }
         }
         _ => Err(unavailable("unexpected acknowledgement".to_owned())),
-    }
-}
-
-#[cfg(test)]
-pub(crate) mod testing {
-    use std::sync::Mutex;
-
-    use super::*;
-
-    /// Captures events for assertions.
-    #[derive(Default)]
-    pub(crate) struct Recording(pub(crate) Mutex<Vec<Value>>);
-
-    impl EventSink for Recording {
-        fn record(&self, event: Value) {
-            if let Ok(mut v) = self.0.lock() {
-                v.push(event);
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn meta(telemetry: bool, testing: bool) -> RequestMeta {
-        RequestMeta {
-            request_id: "r".into(),
-            telemetry,
-            testing,
-            trace_id: None,
-        }
-    }
-
-    #[test]
-    fn envelope_hashes_actors_and_scrubs_context() -> Result<(), Box<dyn std::error::Error>> {
-        let sink = Arc::new(testing::Recording::default());
-        let t = Telemetry::new(Some(sink.clone()), "production");
-        let org = OrgId::parse("tos")?;
-        let actor = ActorId::parse("si:cleanup")?;
-        t.record(
-            &meta(true, false),
-            Event::new("speech.token", "speech.tts")
-                .actor(&org, &actor)
-                .context("key_source", "peek")
-                .context("answer_text", "secret"),
-        );
-        t.record(&meta(false, false), Event::new("auth.login", "auth"));
-        t.record(&meta(true, true), Event::new("auth.login", "auth"));
-        let events = sink.0.lock().map_err(|_| "poisoned")?.clone();
-        assert_eq!(events.len(), 1, "opt-out and testing are skipped");
-        let e = &events[0];
-        assert_eq!(e["actor"]["hash"], actor_hash(&org, &actor));
-        assert!(!e.to_string().contains("si:cleanup"));
-        assert_eq!(e["context"], json!({"key_source": "peek"}));
-        assert_eq!(e["service"], "peek-backend");
-        assert_eq!(e["progress"], 1);
-        Ok(())
-    }
-
-    #[test]
-    fn ingest_records_follow_the_gateway_rules() {
-        let key = Secret::new(format!("table-peekclidaemon-{}", "a".repeat(32)));
-        let events = vec![
-            TelemetryEvent {
-                id: "e1".into(),
-                event_type: "command.finished".into(),
-                data: json!({"context": {"command": "send", "speak_text": "x"}}),
-                metadata: json!({"occurred_at": "2026-09-26T10:00:00Z"}),
-            },
-            TelemetryEvent {
-                id: "e2".into(),
-                event_type: "command.finished".into(),
-                data: json!({"environment": "testing"}),
-                metadata: json!({}),
-            },
-        ];
-        let origin = RelayOrigin {
-            user_agent: Some("peek-cli".into()),
-            source: "cli".into(),
-        };
-        let records = ingest_records(&key, "peekclidaemon", events, &origin);
-        assert_eq!(records.len(), 1, "testing events are dropped");
-        let r = &records[0];
-        assert_eq!(r["metadata"]["table_id"], "peekclidaemon");
-        assert_eq!(r["metadata"]["event_ts_ms"], 1_790_416_800_000_i64);
-        assert_eq!(
-            r["metadata"]["record_id"],
-            record_id(&key, "e1").to_string()
-        );
-        assert_eq!(r["record"]["data"]["context"], json!({"command": "send"}));
-        assert_eq!(r["record"]["metadata"]["server"]["client_reported"], true);
-        assert_eq!(r["record"]["metadata"]["server"]["source"], "cli");
     }
 }

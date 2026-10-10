@@ -1,6 +1,6 @@
 [package]
 name = "silicon-peek-cli"
-description = "The peek command-line interface: IAM login, positions, drawings and speak/show/ask bubbles on a Mac"
+description = "The peek command-line interface: Silicon Accounts login, positions, drawings and speak/show/ask bubbles on a Mac"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,7 +13,7 @@ keywords = ["peek", "silicon", "iam", "cli", "macos"]
 categories = ["command-line-utilities"]
 build = "build.rs"
 # The crate is self-contained on crates.io: the manuals travel with it.
-include = ["src/**", "docs/**", "tests/**", "build.rs", "README.md", "Cargo.toml"]
+include = ["src/**", "docs/**", "build.rs", "README.md", "Cargo.toml"]
 
 [[bin]]
 name = "peek"
@@ -46,21 +46,6 @@ uuid.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
-[dev-dependencies]
-blake3.workspace = true
-silicon-peek-client = { workspace = true, features = ["runtime"] }
-tempfile.workspace = true
-tokio = { workspace = true, features = [
-  "rt-multi-thread",
-  "macros",
-  "time",
-  "net",
-  "io-util",
-  "process",
-  "fs",
-  "sync",
-] }
-wiremock.workspace = true
 
 [lints]
 workspace = true

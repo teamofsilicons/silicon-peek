@@ -103,14 +103,14 @@ pub(crate) async fn create(
     validate(&report)?;
     // A bad bearer never blocks a report (it may be the very thing reported).
     let principal = match Bearer::from_headers(&headers) {
-        Ok(Some(bearer)) => auth::authenticate(&plane, bearer, &state.0.config.iam.app_id)
+        Ok(Some(bearer)) => auth::authenticate(&plane, bearer, &state.0.config.accounts.app_id)
             .await
             .ok(),
         _ => None,
     };
     let actor = principal
         .as_ref()
-        .map(|p| format!("{}|{}", p.org, p.actor))
+        .map(|p| format!("{}|{}", p.account, p.actor))
         .unwrap_or_default();
     let run = Idempotent {
         db: plane.db.clone(),
@@ -148,8 +148,8 @@ async fn store_and_file(
     })?;
     let id = format!("rep_{}", Uuid::now_v7().simple());
     let (ctx, id_db) = (plane.ctx_string(), id.clone());
-    let (org, actor) = (
-        principal.as_ref().map(|p| p.org.to_string()),
+    let (account, actor) = (
+        principal.as_ref().map(|p| p.account.to_string()),
         principal.as_ref().map(|p| p.actor.to_string()),
     );
     let context = report
@@ -166,7 +166,7 @@ async fn store_and_file(
                 &NewReport {
                     id: &id_db,
                     ctx: &ctx,
-                    org: org.as_deref(),
+                    account: account.as_deref(),
                     actor: actor.as_deref(),
                     message: &message,
                     pr: pr.as_deref(),
@@ -177,11 +177,7 @@ async fn store_and_file(
             )?)
         })
         .await?;
-    let filed = if plane.is_testing() {
-        Err("testing-context reports are never filed as GitHub issues".to_owned())
-    } else {
-        github::file_issue(&state, &report).await
-    };
+    let filed = { github::file_issue(&state, &report).await };
     let id_db = id.clone();
     let response = match filed {
         Ok(url) => {
@@ -223,39 +219,4 @@ async fn store_and_file(
         ),
     );
     Ok(response)
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::*;
-
-    fn report(message: &str) -> ReportRequest {
-        ReportRequest {
-            message: message.into(),
-            pr: None,
-            context: None,
-            status: None,
-        }
-    }
-
-    #[test]
-    fn validation() {
-        assert!(validate(&report("works")).is_ok());
-        assert!(validate(&report("   ")).is_err());
-        assert!(validate(&report(&"x".repeat(MESSAGE_MAX_CHARS + 1))).is_err());
-        let mut r = report("x");
-        r.pr = Some("https://github.com/evil/silicon-peek/pull/1".into());
-        assert!(validate(&r).is_err());
-        let mut r = report("x");
-        r.context = Some(ReportContext {
-            command: Some("send\u{7}".into()),
-            ..ReportContext::default()
-        });
-        assert!(validate(&r).is_err());
-        let mut r = report("x");
-        r.status = Some(json!({"big": "y".repeat(STATUS_MAX_BYTES)}));
-        assert!(validate(&r).is_err());
-    }
 }

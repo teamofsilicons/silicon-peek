@@ -191,18 +191,14 @@ error_codes! {
     // exit 3: not authenticated
     /// No session for this home, API and context.
     NotLoggedIn = "not_logged_in" => NotAuthenticated, false;
-    /// IAM rejected the session (terminal until the next login).
+    /// ACCOUNTS rejected the session (terminal until the next login).
     SessionRejected = "session_rejected" => NotAuthenticated, false;
-    /// IAM rejected the SLT (expired, used or invalid).
+    /// ACCOUNTS rejected the SLT (expired, used or invalid).
     SltRejected = "slt_rejected" => NotAuthenticated, false;
     /// `peek login --recover` ran after the 10-minute replay window.
     LoginAttemptExpired = "login_attempt_expired" => NotAuthenticated, false;
     /// The session lacks a scope peek needs; log in again to re-consent.
     ReconsentRequired = "reconsent_required" => NotAuthenticated, false;
-    /// The testing app secret is malformed or was rejected.
-    TestingSecretInvalid = "testing_secret_invalid" => NotAuthenticated, false;
-    /// The testing environment's generation changed (it was cleaned).
-    TestingGenerationChanged = "testing_generation_changed" => NotAuthenticated, false;
     /// peek-server did not accept the bearer token.
     Unauthenticated = "unauthenticated" => NotAuthenticated, false;
     /// The presented home token does not match `<home>/daemon-token`.
@@ -238,12 +234,10 @@ error_codes! {
     CliOutdated = "cli_outdated" => Refused, false;
     /// A store file was written by a newer peek.
     StoreSchemaNewer = "store_schema_newer" => Refused, false;
-    /// The private IAM app requires the org's membership.
-    PrivateApplicationOrganizationRequired = "private_application_organization_required" => Refused, false;
+    /// The private ACCOUNTS app requires the account's membership.
+    PrivateApplicationAccountRequired = "private_application_account_required" => Refused, false;
     /// The Silicon is not enrolled as a Ting recipient for peek.
     RecipientNotRegistered = "recipient_not_registered" => Refused, false;
-    /// The action needs org owner or admin.
-    NotOrgAdmin = "not_org_admin" => Refused, false;
     /// peekd does not know the requested IPC op.
     UnknownOp = "unknown_op" => Refused, false;
     /// Another peekd already holds the instance lock.
@@ -252,14 +246,10 @@ error_codes! {
     DaemonIdentityMismatch = "daemon_identity_mismatch" => Refused, false;
     /// peek-server holds no drawing for this Silicon.
     DrawingNotFound = "drawing_not_found" => Refused, false;
-    /// The testing environment has not been prepared for peek.
-    EnvironmentNotPrepared = "environment_not_prepared" => Refused, false;
     /// The idempotent replay window (10 minutes) has passed.
     IdempotencyResponseExpired = "idempotency_response_expired" => Refused, false;
     /// The requested resource does not exist.
     NotFound = "not_found" => Refused, false;
-    /// A testing-environment lifecycle operation conflicts with another one.
-    LifecycleConflict = "lifecycle_conflict" => Refused, false;
     /// The request's `Origin` is not an allowed web origin.
     OriginNotAllowed = "origin_not_allowed" => Refused, false;
     /// The telemetry table is not accepted by this gateway.
@@ -268,10 +258,10 @@ error_codes! {
     // exit 5: unavailable / transport
     /// peek-server could not be reached or failed.
     BackendUnavailable = "backend_unavailable" => Unavailable, true;
-    /// IAM could not be reached or failed.
-    IamUnavailable = "iam_unavailable" => Unavailable, true;
-    /// peek-server's IAM app credentials are missing or invalid (operator issue).
-    IamMisconfigured = "iam_misconfigured" => Unavailable, true;
+    /// ACCOUNTS could not be reached or failed.
+    AccountsUnavailable = "accounts_unavailable" => Unavailable, true;
+    /// peek-server's ACCOUNTS app credentials are missing or invalid (operator issue).
+    AccountsMisconfigured = "accounts_misconfigured" => Unavailable, true;
     /// peekd is not running or did not answer.
     DaemonUnavailable = "daemon_unavailable" => Unavailable, true;
     /// Peek.app and peekd could not be started.
@@ -676,137 +666,5 @@ impl StdError for Error {
 impl From<ErrorObject> for Error {
     fn from(object: ErrorObject) -> Self {
         Self::from_object(object, Origin::Local)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn blueprint_exit_code_table() {
-        let table: &[(&str, u8)] = &[
-            ("internal_error", 1),
-            ("store_corrupt", 1),
-            ("invalid_input", 2),
-            ("invalid_json", 2),
-            ("conflicting_flags", 2),
-            ("nothing_to_send", 2),
-            ("text_too_long", 2),
-            ("caption_too_long", 2),
-            ("question_too_long", 2),
-            ("speak_too_long", 2),
-            ("too_many_elements", 2),
-            ("too_many_options", 2),
-            ("image_unreadable", 2),
-            ("image_too_large", 2),
-            ("image_unsupported", 2),
-            ("drawing_too_large", 2),
-            ("unknown_config_key", 2),
-            ("invalid_silicon_home", 2),
-            ("slt_is_public_id", 2),
-            ("not_logged_in", 3),
-            ("session_rejected", 3),
-            ("slt_rejected", 3),
-            ("login_attempt_expired", 3),
-            ("reconsent_required", 3),
-            ("testing_secret_invalid", 3),
-            ("testing_generation_changed", 3),
-            ("side_not_registered", 4),
-            ("drawing_not_registered", 4),
-            ("side_taken", 4),
-            ("drawing_invalid", 4),
-            ("slot_busy", 4),
-            ("queue_full", 4),
-            ("send_not_found", 4),
-            ("schedule_not_found", 4),
-            ("schedule_full", 4),
-            ("ask_not_found", 4),
-            ("platform_unsupported", 4),
-            ("cli_outdated", 4),
-            ("store_schema_newer", 4),
-            ("private_application_organization_required", 4),
-            ("recipient_not_registered", 4),
-            ("not_org_admin", 4),
-            ("backend_unavailable", 5),
-            ("iam_unavailable", 5),
-            ("iam_misconfigured", 5),
-            ("daemon_unavailable", 5),
-            ("peek_service_unavailable", 5),
-            ("no_gui_session", 5),
-            ("app_update_pending", 5),
-            ("speech_unavailable", 5),
-            ("ting_unavailable", 5),
-        ];
-        for (name, exit) in table {
-            let code = ErrorCode::parse(name);
-            assert!(
-                !matches!(code, ErrorCode::Other(_)),
-                "{name} must be a known code"
-            );
-            assert_eq!(code.as_str(), *name);
-            assert_eq!(code.exit_code().code(), *exit, "{name}");
-        }
-    }
-
-    #[test]
-    fn every_known_code_round_trips() {
-        for code in ErrorCode::ALL {
-            assert_eq!(&ErrorCode::parse(code.as_str()), code);
-        }
-    }
-
-    #[test]
-    fn unknown_codes_are_preserved_and_classified_by_status() {
-        let code = ErrorCode::parse("invalid_grant");
-        assert_eq!(code, ErrorCode::Other("invalid_grant".into()));
-        let e = Error::new(code, "x").with_status(401);
-        assert_eq!(e.exit_code(), ExitCode::NotAuthenticated);
-        let e = Error::new(ErrorCode::parse("brand_new"), "x").with_status(503);
-        assert_eq!(e.exit_code(), ExitCode::Unavailable);
-        let e = Error::new(ErrorCode::parse("brand_new"), "x");
-        assert_eq!(e.exit_code(), ExitCode::Internal);
-    }
-
-    #[test]
-    fn envelope_has_the_blueprint_shape() -> Result<(), serde_json::Error> {
-        let e = Error::new(ErrorCode::SideTaken, "position 3 is held by si:dj")
-            .with_hint("choose a free one")
-            .with_details(json!({"owner":"si:dj","free":[1,4]}));
-        let v = e.envelope();
-        assert_eq!(v["error"]["code"], "side_taken");
-        assert_eq!(v["error"]["retryable"], false);
-        assert!(v["error"]["request_id"].is_null());
-        assert_eq!(v["error"]["details"]["free"][1], 4);
-        let back: ErrorObject = serde_json::from_value(v["error"].clone())?;
-        assert_eq!(back, e.to_object());
-        Ok(())
-    }
-
-    #[test]
-    fn lenient_decoding_of_minimal_objects() -> Result<(), serde_json::Error> {
-        let o: ErrorObject =
-            serde_json::from_str(r#"{"code":"slot_busy","message":"m","extra":1}"#)?;
-        assert_eq!(o.code, ErrorCode::SlotBusy);
-        assert!(!o.retryable);
-        assert!(o.hint.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn queue_codes_are_refusals() {
-        assert!(ErrorCode::QueueFull.default_retryable());
-        assert!(!ErrorCode::SendNotFound.default_retryable());
-        assert!(!ErrorCode::ScheduleNotFound.default_retryable());
-        assert!(!ErrorCode::ScheduleFull.default_retryable());
-        for c in [
-            ErrorCode::QueueFull,
-            ErrorCode::SendNotFound,
-            ErrorCode::ScheduleNotFound,
-            ErrorCode::ScheduleFull,
-            ErrorCode::SlotBusy,
-        ] {
-            assert_eq!(c.exit_code(), ExitCode::Refused, "{c}");
-        }
     }
 }

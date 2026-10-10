@@ -2,7 +2,7 @@
 """Online, integrity-checked snapshots of peek-server's SQLite databases to encrypted S3.
 
 Run hourly by peek-backup.timer as the peek user (BLUEPRINT §5.2). For each database in
-/var/lib/peek (peek.sqlite for production, testing.sqlite for every testing context):
+/var/lib/peek (peek.sqlite):
 
   1. copy it with SQLite's online backup API (the equivalent of `sqlite3 .backup`), which is
      consistent while peek-server keeps writing in WAL mode;
@@ -32,7 +32,7 @@ import tempfile
 from contextlib import closing
 from pathlib import Path
 
-DATABASES = ("peek.sqlite", "testing.sqlite")
+DATABASES = ("peek.sqlite",)
 
 
 class BackupError(Exception):

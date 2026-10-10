@@ -1,8 +1,8 @@
-//! Identity and addressing types: actors, orgs, data contexts, API origins,
+//! Identity and addressing types: actors, accounts, data contexts, API origins,
 //! store slot keys and screen positions.
 //!
-//! Formats follow IAM 4.0.0 (BLUEPRINT §2.1): Silicons are `si:<handle>`
-//! (handle 3–50), Carbons are `c:<handle>` (handle 3–30), organizations are
+//! Formats follow ACCOUNTS 4.0.0 (BLUEPRINT §2.1): Silicons are `si:<handle>`
+//! (handle 3–50), Carbons are `c:<handle>` (handle 3–30), accounts are
 //! bare handles (3–50); every handle is `[a-z0-9_-]`.
 
 use std::{fmt, str::FromStr};
@@ -11,10 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
 use uuid::Uuid;
 
-use crate::{
-    Secret,
-    error::{Error, ErrorCode, Result},
-};
+use crate::error::{Error, Result};
 
 fn handle_ok(handle: &str, min: usize, max: usize) -> bool {
     (min..=max).contains(&handle.len())
@@ -144,128 +141,54 @@ pub struct Actor {
     pub public_id: ActorId,
 }
 
-/// A bare organization handle, e.g. `tos` (3–50 of `a-z 0-9 _ -`).
+/// The immutable ACCOUNTS account UUID.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct OrgId(String);
-
-impl OrgId {
-    /// Parses and validates an organization handle.
-    ///
-    /// # Errors
-    /// `invalid_input` for an empty, too long or badly formed handle.
+pub struct AccountId(String);
+impl AccountId {
+    /// Parse a non-nil account UUID.
     pub fn parse(s: &str) -> Result<Self> {
-        if handle_ok(s, 3, 50) {
-            Ok(Self(s.to_owned()))
-        } else {
-            Err(Error::invalid_input(format!(
-                "`{}` is not an organization handle; expected 3–50 of a-z 0-9 _ - (for example `tos`)",
-                truncate_for_message(s)
-            )))
-        }
+        Uuid::parse_str(s)
+            .ok()
+            .filter(|id| !id.is_nil())
+            .map(|id| Self(id.to_string()))
+            .ok_or_else(|| Error::invalid_input("account_id must be a ACCOUNTS UUID"))
     }
-
-    /// The handle.
-    #[must_use]
+    /// The canonical UUID.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
-string_newtype_serde!(OrgId);
+string_newtype_serde!(AccountId);
 
-/// Chooses the org for org-specific calls: `--org`, then `SILICON_ORG`, then
-/// the session slot's org (BLUEPRINT §7.1). An explicitly empty value is an
-/// error, never a fallback.
-///
-/// # Errors
-/// `invalid_input` when a supplied value is empty or malformed.
-pub fn resolve_org(
-    flag: Option<&str>,
-    env: Option<&str>,
-    slot: Option<&OrgId>,
-) -> Result<Option<OrgId>> {
-    for (value, name) in [(flag, "--org"), (env, "SILICON_ORG")] {
-        if let Some(v) = value {
-            if v.is_empty() {
-                return Err(Error::invalid_input(format!(
-                    "{name} is set but empty; pass an organization handle such as `tos`, or unset it"
-                )));
-            }
-            return OrgId::parse(v).map(Some);
-        }
-    }
-    Ok(slot.cloned())
-}
-
-/// The data context a store slot, a request or a bubble belongs to.
-///
-/// Production and every testing environment are strictly separate: separate
-/// session slots, separate peekd rows, separate backend databases.
+/// Peek has one live data context.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Context {
-    /// The production plane.
+    /// Live account data.
     Production,
-    /// A Honeycomb testing environment, by its UUID.
-    Testing(Uuid),
 }
-
 impl Context {
-    /// Parses `"production"` or a testing environment UUID.
-    ///
-    /// # Errors
-    /// `invalid_input` for anything else (including the nil UUID).
-    pub fn parse(s: &str) -> Result<Self> {
-        if s == "production" {
-            return Ok(Self::Production);
-        }
-        match Uuid::parse_str(s) {
-            Ok(id) if !id.is_nil() => Ok(Self::Testing(id)),
-            _ => Err(Error::invalid_input(format!(
-                "`{}` is not a context; expected `production` or a testing environment UUID",
-                truncate_for_message(s)
-            ))),
+    /// Read the live data context; retired test environments cannot authenticate.
+    pub fn parse(value: &str) -> Result<Self> {
+        if value == "production" {
+            Ok(Self::Production)
+        } else {
+            Err(Error::invalid_input(
+                "Only the production context is supported",
+            ))
         }
     }
-
-    /// `production` or the hyphenated UUID.
-    #[must_use]
+    /// Wire value.
     pub fn as_string(&self) -> String {
-        match self {
-            Self::Production => "production".to_owned(),
-            Self::Testing(id) => id.hyphenated().to_string(),
-        }
+        "production".to_owned()
     }
-
-    /// The testing environment UUID, if any.
-    #[must_use]
-    pub fn testing_id(&self) -> Option<Uuid> {
-        match self {
-            Self::Production => None,
-            Self::Testing(id) => Some(*id),
-        }
-    }
-
-    /// Whether this is a testing context.
-    #[must_use]
-    pub fn is_testing(&self) -> bool {
-        matches!(self, Self::Testing(_))
-    }
-
-    /// The coarse context recorded in Ting payloads.
-    #[must_use]
+    /// Context carried with Ting events.
     pub fn data_context(&self) -> DataContext {
-        match self {
-            Self::Production => DataContext::Production,
-            Self::Testing(_) => DataContext::Testing,
-        }
+        DataContext::Production
     }
 }
-
 impl fmt::Display for Context {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Production => f.write_str("production"),
-            Self::Testing(id) => write!(f, "{}", id.hyphenated()),
-        }
+        f.write_str("production")
     }
 }
 
@@ -295,8 +218,6 @@ impl<'de> Deserialize<'de> for Context {
 pub enum DataContext {
     /// Production.
     Production,
-    /// Any testing environment.
-    Testing,
 }
 
 /// The production peek-server origin.
@@ -440,83 +361,6 @@ impl<'de> Deserialize<'de> for SlotKey {
     }
 }
 
-/// A peek testing app secret (`ask_` followed by 43 of `A-Z a-z 0-9 _ -`).
-///
-/// It is sent to peek-server as `X-Testing-Environment-Key`. It is never read
-/// from `IAM_TEST_APP_SECRET` or `IAM_TEST_KEY`, which belong to Ting.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TestingSecret(Secret);
-
-impl TestingSecret {
-    /// Validates a testing secret.
-    ///
-    /// # Errors
-    /// `testing_secret_invalid` with a hint that never echoes the value.
-    pub fn parse(s: &str) -> Result<Self> {
-        let ok = s.len() == 47
-            && s.starts_with("ask_")
-            && s[4..]
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-        if ok {
-            Ok(Self(Secret::new(s)))
-        } else {
-            Err(Error::new(
-                ErrorCode::TestingSecretInvalid,
-                format!(
-                    "the testing app secret is malformed ({} characters); expected the peek test app secret `ask_…` (47 characters) from `honeycomb --test <env> apps rotate-secret 'peek'`",
-                    s.chars().count()
-                ),
-            )
-            .with_hint("pass it on stdin: printf %s \"$SECRET\" | peek --app-secret-file - <command>"))
-        }
-    }
-
-    /// The secret.
-    #[must_use]
-    pub fn secret(&self) -> &Secret {
-        &self.0
-    }
-}
-
-impl Serialize for TestingSecret {
-    fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-        self.0.serialize(s)
-    }
-}
-
-impl<'de> Deserialize<'de> for TestingSecret {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
-        let s = Secret::deserialize(d)?;
-        Self::parse(s.expose()).map_err(|e| serde::de::Error::custom(e.message().to_owned()))
-    }
-}
-
-/// Parses the value of `--test` / `SILICON_PEEK_TEST`: a testing environment
-/// UUID. A raw secret is refused so it never lands in shell history or `ps`.
-///
-/// # Errors
-/// `testing_secret_invalid` for a secret, `invalid_input` for anything else.
-pub fn parse_test_selector(s: &str) -> Result<Uuid> {
-    if s.starts_with("ask_") {
-        return Err(Error::new(
-            ErrorCode::TestingSecretInvalid,
-            "--test takes a testing environment UUID, not a secret; the value you passed looks like an app secret",
-        )
-        .with_hint("use --app-secret-file - and pass the secret on stdin"));
-    }
-    match Uuid::parse_str(s) {
-        Ok(id) if !id.is_nil() => Ok(id),
-        _ => Err(Error::invalid_input(format!(
-            "--test `{}` is not a testing environment UUID",
-            truncate_for_message(s)
-        ))
-        .with_hint(
-            "list saved environments with `peek status`, or discover one with --app-secret-file -",
-        )),
-    }
-}
-
 /// The default modifier of the per-position Carbon hotkeys (`ctrl+cmd+1…8`).
 /// `cmd+1…8` collides with tab switching in browsers and editors, so peek
 /// defaults to `ctrl+cmd`; the modifier stays configurable in Peek.app
@@ -656,118 +500,4 @@ pub(crate) fn truncate_for_message(s: &str) -> String {
         out.push('…');
     }
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn actor_ids() {
-        assert!(ActorId::parse("si:cleanup").is_ok());
-        assert!(ActorId::parse("c:shubham").is_ok());
-        assert!(ActorId::parse("si:ab").is_err());
-        assert!(ActorId::parse(&format!("si:{}", "a".repeat(50))).is_ok());
-        assert!(ActorId::parse(&format!("si:{}", "a".repeat(51))).is_err());
-        assert!(ActorId::parse(&format!("c:{}", "a".repeat(30))).is_ok());
-        assert!(ActorId::parse(&format!("c:{}", "a".repeat(31))).is_err());
-        assert!(ActorId::parse("si:Upper").is_err());
-        assert!(ActorId::parse("tos>peek").is_err());
-        assert!(ActorId::parse("x:abc").is_err());
-        let a = ActorId::parse("si:dj-bot").ok();
-        assert_eq!(
-            a.as_ref().map(ActorId::actor_type),
-            Some(ActorType::Silicon)
-        );
-        assert_eq!(a.as_ref().map(ActorId::handle), Some("dj-bot"));
-    }
-
-    #[test]
-    fn org_resolution_precedence() -> Result<()> {
-        let slot = OrgId::parse("tos")?;
-        assert_eq!(
-            resolve_org(Some("acme"), Some("zzz"), Some(&slot))?.map(|o| o.0),
-            Some("acme".into())
-        );
-        assert_eq!(
-            resolve_org(None, Some("zzz"), Some(&slot))?.map(|o| o.0),
-            Some("zzz".into())
-        );
-        assert_eq!(
-            resolve_org(None, None, Some(&slot))?.map(|o| o.0),
-            Some("tos".into())
-        );
-        assert!(resolve_org(Some(""), None, Some(&slot)).is_err());
-        assert!(resolve_org(None, Some(""), Some(&slot)).is_err());
-        assert!(resolve_org(None, None, None)?.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn contexts_and_slot_keys() -> Result<()> {
-        let id = Uuid::now_v7();
-        assert_eq!(Context::parse("production")?, Context::Production);
-        assert_eq!(Context::parse(&id.to_string())?, Context::Testing(id));
-        assert!(Context::parse("00000000-0000-0000-0000-000000000000").is_err());
-        assert!(Context::parse("testing").is_err());
-        let key = SlotKey::new(ApiUrl::production(), Context::Production);
-        assert_eq!(
-            key.as_string(),
-            "https://backend.peek.teamofsilicons.com#production"
-        );
-        assert_eq!(SlotKey::parse(&key.as_string())?, key);
-        let test = SlotKey::new(
-            ApiUrl::parse("http://127.0.0.1:8080/")?,
-            Context::Testing(id),
-        );
-        assert_eq!(test.as_string(), format!("http://127.0.0.1:8080#{id}"));
-        Ok(())
-    }
-
-    #[test]
-    fn api_urls() {
-        assert_eq!(
-            ApiUrl::parse("https://backend.peek.teamofsilicons.com/")
-                .map(|u| u.0)
-                .ok(),
-            Some("https://backend.peek.teamofsilicons.com".into())
-        );
-        assert!(ApiUrl::parse("http://localhost:3000").is_ok());
-        assert!(ApiUrl::parse("http://[::1]:3000").is_ok());
-        assert!(ApiUrl::parse("http://example.com").is_err());
-        assert!(ApiUrl::parse("https://example.com/api").is_err());
-        assert!(ApiUrl::parse("https://u:p@example.com").is_err());
-        assert!(ApiUrl::parse("https://example.com?x=1").is_err());
-        assert!(ApiUrl::parse("ftp://example.com").is_err());
-        assert!(ApiUrl::parse("not a url").is_err());
-    }
-
-    #[test]
-    fn testing_secrets_and_selectors() {
-        let good = format!("ask_{}", "A".repeat(43));
-        assert!(TestingSecret::parse(&good).is_ok());
-        assert!(TestingSecret::parse(&good[..46]).is_err());
-        let e = TestingSecret::parse("ask_bad!").err();
-        assert!(e.is_some_and(|e| !e.message().contains("ask_bad!")));
-        assert!(parse_test_selector(&good).is_err());
-        assert!(parse_test_selector(&Uuid::now_v7().to_string()).is_ok());
-        assert!(parse_test_selector("nope").is_err());
-    }
-
-    #[test]
-    fn slots_and_sides() -> Result<()> {
-        assert!(SlotIndex::new(0).is_err());
-        assert!(SlotIndex::new(9).is_err());
-        assert_eq!(SlotIndex::new(1)?.side(), Side::Top);
-        assert_eq!(SlotIndex::new(3)?.side(), Side::Right);
-        assert_eq!(SlotIndex::new(5)?.side(), Side::Bottom);
-        assert_eq!(SlotIndex::new(8)?.side(), Side::TopLeft);
-        let info = SlotInfo::from(SlotIndex::new(2)?);
-        assert_eq!(
-            serde_json::to_string(&info).map_err(|e| Error::internal(e.to_string()))?,
-            r#"{"index":2,"side":"top-right"}"#
-        );
-        assert!(serde_json::from_str::<SlotIndex>("9").is_err());
-        Ok(())
-    }
 }

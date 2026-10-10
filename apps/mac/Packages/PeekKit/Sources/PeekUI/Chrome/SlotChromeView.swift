@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Everything peek draws around a Silicon's visual (visual.md B1 "Chrome"): the information arc's
 /// pills and images, the question arc, the ask controls, the waveform or typing field, the mic,
-/// keyboard and down-arrow buttons, the TEST/SIMULATION badge and ring. Positions come from
+/// keyboard and down-arrow buttons, the SIMULATION badge. Positions come from
 /// ``ChromeLayout``; this view only draws them. It fills the whole (never resized) panel.
 ///
 /// There is no background of any kind (ui-feedback.md #8): every element carries its own glass and floats directly
@@ -24,9 +24,6 @@ public struct SlotChromeView: View {
         ZStack(alignment: .topLeading) {
             Color.clear.frame(width: size.width, height: size.height)
             if model.isPresented {
-                if model.context == .testing {
-                    TestRingView(visualRect: layout.visualRect)
-                }
                 if let question = layout.question {
                     QuestionArcView(model: model, question: question, glass: glass)
                         .transition(.opacity)

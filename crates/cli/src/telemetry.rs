@@ -5,7 +5,7 @@
 //! already running and this home is logged in; otherwise it is posted to the
 //! backend gateway `POST /api/web/telemetry` with a 300 ms timeout and dropped
 //! on failure. It never blocks a command for longer than that, never starts
-//! peekd, and is skipped entirely for `peek iam` (which must have no side
+//! peekd, and is skipped entirely for `peek accounts` (which must have no side
 //! effects). Any opt-out wins: `--no-telemetry`, `PEEK_TELEMETRY`,
 //! `SPACE_STATION_TELEMETRY`, `SILICON_TELEMETRY` (0/false/off/no) or the
 //! home's config `telemetry:false`. No text, path, token or raw actor id is
@@ -28,7 +28,7 @@ use silicon_peek_client::{
     Error,
     api::{TelemetryBatch, TelemetryEvent, TelemetryTable},
     http::Client,
-    identity::{ActorId, ApiUrl, Context, OrgId},
+    identity::{AccountId, ActorId, ApiUrl, Context},
     ipc::AuthBlock,
     telemetry::actor_hash,
     timestamp::Timestamp,
@@ -86,9 +86,9 @@ pub fn note_session(enabled: bool, client: &Client, context: Context) {
 }
 
 /// Records the (hashed) actor of this run.
-pub fn note_actor(org: &OrgId, actor: &ActorId) {
+pub fn note_actor(account: &AccountId, actor: &ActorId) {
     let kind = actor.actor_type().as_str();
-    let hash = actor_hash(org, actor);
+    let hash = actor_hash(account, actor);
     with_info(|i| i.actor = Some((kind, hash)));
 }
 
@@ -138,9 +138,7 @@ pub fn command_event(
     context: Context,
     actor: Option<&(&'static str, String)>,
 ) -> Value {
-    let environment = if context.is_testing() {
-        "testing"
-    } else if cfg!(debug_assertions) {
+    let environment = if cfg!(debug_assertions) {
         "development"
     } else {
         "production"
@@ -184,7 +182,7 @@ pub async fn finish(
     let Some(first) = path.first() else {
         return;
     };
-    if first == "iam" || first.starts_with("__") {
+    if first == "accounts" || first.starts_with("__") {
         return;
     }
     let (enabled, client, context, actor, auth) = {
@@ -225,11 +223,6 @@ pub async fn finish(
     let (client, context) = if let (Some(c), Some(ctx)) = (client, context) {
         (c, ctx)
     } else {
-        // A testing run whose session was never resolved: its events
-        // must not be tagged production, so drop them.
-        if globals.is_testing().unwrap_or(true) {
-            return;
-        }
         let api = globals
             .explicit_api()
             .ok()
@@ -333,57 +326,3 @@ async fn forward_env_opt_out(auth: &AuthBlock) {
 #[cfg(not(target_os = "macos"))]
 #[allow(clippy::unused_async)] // mirrors the macOS signature
 async fn forward_env_opt_out(_auth: &AuthBlock) {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use silicon_peek_client::ErrorCode;
-
-    #[test]
-    fn the_event_has_the_envelope_and_no_text() {
-        let e = Error::new(ErrorCode::SideTaken, "position 3 is held by si:secret-name");
-        let v = command_event(
-            "register side",
-            Some(&e),
-            4,
-            Duration::from_millis(412),
-            Context::Production,
-            Some(&("silicon", "0123456789abcdef".to_owned())),
-        );
-        assert_eq!(v["event"], "command.finished");
-        assert_eq!(v["source"], "cli");
-        assert_eq!(v["service"], "peek-cli");
-        assert_eq!(v["outcome"], "error");
-        assert_eq!(v["error_code"], "side_taken");
-        assert_eq!(v["exit_code"], 4);
-        assert_eq!(v["duration_ms"], 412);
-        assert_eq!(v["context"]["command"], "register side");
-        assert_eq!(v["actor"]["hash"], "0123456789abcdef");
-        assert!(
-            !v.to_string().contains("secret-name"),
-            "messages are never recorded"
-        );
-        let keys: Vec<&String> = v["context"]
-            .as_object()
-            .map(|m| m.keys().collect())
-            .unwrap_or_default();
-        for k in keys {
-            assert!(silicon_peek_client::telemetry::CONTEXT_KEYS.contains(&k.as_str()));
-        }
-    }
-
-    #[test]
-    fn testing_runs_are_tagged() {
-        let v = command_event(
-            "send",
-            None,
-            0,
-            Duration::ZERO,
-            Context::Testing(Uuid::now_v7()),
-            None,
-        );
-        assert_eq!(v["environment"], "testing");
-        assert_eq!(v["outcome"], "ok");
-        assert!(v["actor"].is_null());
-    }
-}

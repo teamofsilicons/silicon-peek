@@ -50,7 +50,7 @@ pub(crate) async fn enroll(
     let principal = auth::authenticate(
         &plane,
         Bearer::required(&headers)?,
-        &state.0.config.iam.app_id,
+        &state.0.config.accounts.app_id,
     )
     .await?;
     principal.require_scopes(&ENROLL_SCOPES)?;
@@ -58,7 +58,7 @@ pub(crate) async fn enroll(
     let hash = request_hash(&[
         b"ting.recipient",
         ctx.as_bytes(),
-        principal.org.as_str().as_bytes(),
+        principal.account.as_str().as_bytes(),
         principal.actor.as_str().as_bytes(),
     ]);
     let enrollment_key = key.as_str().to_owned();
@@ -76,9 +76,9 @@ pub(crate) async fn enroll(
         let result = async {
             let subscription =
                 ting::enroll(&task_state, &plane, &principal, &enrollment_key).await?;
-            let (ctx, org, actor, sub) = (
+            let (ctx, account, actor, sub) = (
                 plane.ctx_string(),
-                principal.org.to_string(),
+                principal.account.to_string(),
                 principal.actor.to_string(),
                 subscription.clone(),
             );
@@ -88,7 +88,7 @@ pub(crate) async fn enroll(
                     Ok(store::enrollments::record(
                         conn,
                         &ctx,
-                        &org,
+                        &account,
                         &actor,
                         &sub,
                         unix_now(),
@@ -104,7 +104,7 @@ pub(crate) async fn enroll(
         task_state.0.telemetry.record(
             &task_meta,
             Event::new("ting.enroll", "ting.enroll")
-                .actor(&principal.org, &principal.actor)
+                .actor(&principal.account, &principal.actor)
                 .duration(started.elapsed())
                 .outcome(&result),
         );
@@ -138,7 +138,7 @@ pub(crate) async fn deliver(
     let principal = auth::authenticate(
         &plane,
         Bearer::required(&headers)?,
-        &state.0.config.iam.app_id,
+        &state.0.config.accounts.app_id,
     )
     .await?;
     principal.require_scopes(&DELIVERY_SCOPES)?;
@@ -153,7 +153,7 @@ pub(crate) async fn deliver(
             context_name(expected)
         )));
     }
-    let body = ting_send_body(&principal.org, &principal.actor, &delivery)
+    let body = ting_send_body(&principal.account, &principal.actor, &delivery)
         .map_err(ApiError::from_client)?;
     let run = Idempotent {
         db: plane.db.clone(),
@@ -161,7 +161,7 @@ pub(crate) async fn deliver(
         scope: "deliveries",
         key,
         request_sha256: request_hash(&[
-            principal.org.as_str().as_bytes(),
+            principal.account.as_str().as_bytes(),
             principal.actor.as_str().as_bytes(),
             &raw,
         ]),
@@ -193,7 +193,6 @@ fn data_context(data: &TingData) -> DataContext {
 fn context_name(c: DataContext) -> &'static str {
     match c {
         DataContext::Production => "production",
-        DataContext::Testing => "testing",
     }
 }
 
@@ -212,7 +211,7 @@ async fn deliver_once(
     let started = Instant::now();
     let (outcome, attempts) = ting::send(&state, &plane, &principal, &body, &delivery.key).await;
     let event = Event::new("ting.send", delivery.ting_type.as_str())
-        .actor(&principal.org, &principal.actor)
+        .actor(&principal.account, &principal.actor)
         .duration(started.elapsed())
         .context("attempt", attempts);
     match outcome {
@@ -277,10 +276,10 @@ async fn begin(
     let ctx = plane.ctx_string();
     let event_id = delivery.event_id.to_string();
     let begin = {
-        let (ctx, event_id, org, actor, ting_type, ting_key) = (
+        let (ctx, event_id, account, actor, ting_type, ting_key) = (
             ctx.clone(),
             event_id.clone(),
-            principal.org.to_string(),
+            principal.account.to_string(),
             principal.actor.to_string(),
             delivery.ting_type.as_str().to_owned(),
             delivery.key.clone(),
@@ -291,7 +290,7 @@ async fn begin(
                 let key = DeliveryKey {
                     ctx: &ctx,
                     event_id: &event_id,
-                    org: &org,
+                    account: &account,
                     actor: &actor,
                     ting_type: &ting_type,
                     ting_key: &ting_key,
@@ -333,7 +332,7 @@ async fn record(
     principal: &Principal,
 ) -> ApiResult<()> {
     let (ctx, event_id) = (plane.ctx_string(), event_id.to_owned());
-    let (org, actor) = (principal.org.to_string(), principal.actor.to_string());
+    let (account, actor) = (principal.account.to_string(), principal.actor.to_string());
     let (ting_id, silent, failed) = match outcome {
         Recorded::Accepted(a) => (Some(a.ting_id.clone()), a.silent, None),
         Recorded::Failed(f) => (
@@ -368,7 +367,7 @@ async fn record(
                         now,
                     )?;
                     if *status == "recipient_not_registered" {
-                        store::enrollments::mark_revoked(conn, &ctx, &org, &actor, now)?;
+                        store::enrollments::mark_revoked(conn, &ctx, &account, &actor, now)?;
                     }
                 }
                 (None, None) => {}

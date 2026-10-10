@@ -5,7 +5,7 @@ import Foundation
 /// * `speech` is `null | { text, level, progress, done }`: no `word`.
 /// * `mic` is `{ level }`: no `transcript`.
 /// * `phase` gains `transcribing`.
-/// * new `context: 'production' | 'testing' | 'simulation'` and `glass: 'live' | 'frosted'`.
+/// * new `context: 'production' | 'simulation'` and `glass: 'live' | 'frosted'`.
 ///
 /// ``jsonBytes()`` is the hot path (up to 8 drawings × 120 Hz): a hand-written
 /// writer with a fixed key order. `Codable` exists for tests, Simulation and dumps.

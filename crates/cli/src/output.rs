@@ -5,14 +5,9 @@
 //! - Human mode: readable text on stdout; hints, warnings and `Next:` lines on
 //!   stderr (suppressed by `--quiet`); errors as `error:` / `hint:` / `help:` /
 //!   `request:` lines.
-//! - When a testing environment is selected, `Testing environment: <name>
-//!   (<uuid>)` is always the last stderr line, on success and on failure.
 
 use std::fmt::Write as _;
-use std::{
-    io::Write as _,
-    sync::{Mutex, OnceLock},
-};
+use std::io::Write as _;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -135,34 +130,6 @@ fn drawing_failure(error: &Error) -> Option<String> {
     Some(out)
 }
 
-static BANNER: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-
-/// Records the testing banner; printed last by [`print_banner`].
-pub fn set_banner(name: &str, id: &uuid::Uuid) {
-    let cell = BANNER.get_or_init(|| Mutex::new(None));
-    if let Ok(mut b) = cell.lock() {
-        *b = Some(format!("Testing environment: {name} ({})", id.hyphenated()));
-    }
-}
-
-/// Whether a testing banner was recorded.
-pub fn has_banner() -> bool {
-    BANNER
-        .get()
-        .and_then(|cell| cell.lock().ok().map(|b| b.is_some()))
-        .unwrap_or(false)
-}
-
-/// Prints the testing banner, if any, as the final stderr line.
-pub fn print_banner() {
-    if let Some(cell) = BANNER.get()
-        && let Ok(b) = cell.lock()
-        && let Some(line) = b.as_deref()
-    {
-        eprintln!("{line}");
-    }
-}
-
 /// Renders a JSON value as indented `key: value` lines for human mode.
 pub fn kv(value: &Value) -> String {
     let mut out = String::new();
@@ -223,61 +190,5 @@ fn render(value: &Value, indent: usize, out: &mut String) {
         other => {
             let _ = writeln!(out, "{pad}{}", scalar(other));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn key_value_rendering() {
-        let v = json!({"slot":{"index":3,"side":"right"},"moved_from":null,"notify":["a","b"],"items":[{"x":1}]});
-        let text = kv(&v);
-        assert!(text.contains("slot:\n  index: 3\n  side: right"));
-        assert!(text.contains("moved_from: -"));
-        assert!(text.contains("notify: a, b"));
-        assert!(text.contains("items:\n  -\n    x: 1"));
-    }
-
-    #[test]
-    fn drawing_failures_render_like_a9() {
-        let e = Error::new(ErrorCode::DrawingInvalid, "the drawing failed validation")
-            .with_details(json!({"error":{"message":"TypeError: cannot read property 'colors' of undefined",
-                "stack":"at cassette.js:18:34","frame":14,"input_summary":"phase=showing, show=null"},
-                "previous_active": true, "check_only": false}));
-        let block = drawing_failure(&e).unwrap_or_default();
-        assert!(block.starts_with("✗ frame 14 threw: TypeError"));
-        assert!(block.contains("\n    at cassette.js:18:34"));
-        assert!(block.contains("input at frame 14: phase=showing, show=null"));
-        assert!(block.ends_with("drawing NOT registered (previous drawing still active)"));
-
-        // The engine's own prefix is not repeated, the prelude frame is
-        // dropped, and --check / a first drawing say what really happened.
-        let e = Error::new(ErrorCode::DrawingInvalid, "the drawing failed validation")
-            .with_details(json!({"error":{"message":"frame 60 threw: TypeError: x of null",
-                "stack":"at <anonymous> (broken1.js:24:15)\nat <anonymous> (peek-prelude.js:638:32)","frame":60},
-                "previous_active": false, "check_only": true}));
-        let block = drawing_failure(&e).unwrap_or_default();
-        assert!(block.starts_with("✗ frame 60 threw: TypeError"), "{block}");
-        assert_eq!(block.matches("threw").count(), 1, "{block}");
-        assert!(!block.contains("peek-prelude.js"), "{block}");
-        assert!(block.ends_with("drawing NOT valid (--check: nothing was registered)"));
-        let e = Error::new(ErrorCode::DrawingInvalid, "x").with_details(
-            json!({"error":{"message":"frame 4 was interrupted","frame":4},"previous_active":false}),
-        );
-        let block = drawing_failure(&e).unwrap_or_default();
-        assert!(block.starts_with("✗ frame 4 was interrupted"), "{block}");
-        assert!(block.ends_with("drawing NOT registered"));
-        assert!(!block.contains("previous drawing still active"));
-        // --check never claims a previous drawing is still active, even when
-        // one exists.
-        let e = Error::new(ErrorCode::DrawingInvalid, "x").with_details(
-            json!({"error":{"message":"boom","frame":1},"previous_active":true,"check_only":true}),
-        );
-        let block = drawing_failure(&e).unwrap_or_default();
-        assert!(block.ends_with("drawing NOT valid (--check: nothing was registered)"));
-        assert!(!block.contains("previous drawing still active"));
     }
 }

@@ -5,8 +5,6 @@ pub(crate) mod byo;
 pub(crate) mod discovery;
 pub(crate) mod drawings;
 pub(crate) mod health;
-pub(crate) mod obo;
-pub(crate) mod participant;
 pub(crate) mod reports;
 pub(crate) mod speech;
 pub(crate) mod telemetry;

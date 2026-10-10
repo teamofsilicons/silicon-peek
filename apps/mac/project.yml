@@ -3,7 +3,7 @@
 # Layout (supersedes the single-target layout of §8.1/§8.2, see ARCHITECTURE.md):
 #   Sources/App/            the app target: PeekApp (@main), AppDelegate, ServiceRegistration, SelfUpdateHooks
 #   Packages/PeekKit/       everything else, as SwiftPM library targets (PeekCore, PeekIPC, PeekDrawing,
-#                           PeekAudio, PeekInput, PeekUI) with unit tests
+#                           PeekAudio, PeekInput, PeekUI)
 #   Packages/CQuickJS/      vendored quickjs-ng v0.17.0 + the peek_qjs shim (scripts/vendor-quickjs.sh)
 #
 # Bundle layout produced:
@@ -11,7 +11,7 @@
 #   Peek.app/Contents/Helpers/peekd                              (scripts/embed-peekd.sh)
 #   Peek.app/Contents/Library/LaunchAgents/ai.tos.peek.daemon.plist
 #   Peek.app/Contents/Resources/Assets.car
-# No embedded frameworks, so no symlinks (Honeycomb rejects links).
+# No embedded frameworks, so no symlinks (Silicon Apps rejects links).
 name: Peek
 options:
   bundleIdPrefix: ai.tos
@@ -30,8 +30,8 @@ settings:
     CODE_SIGN_STYLE: Automatic                # dev: "Apple Development: Shubham Gupta (MAP74QT7U4)"
     ENABLE_HARDENED_RUNTIME: YES
     SWIFT_VERSION: "6.0"                      # Swift 6 language mode (compiler 6.3.1)
-    MARKETING_VERSION: "0.2.0"
-    CURRENT_PROJECT_VERSION: "2000"           # == Peek.app.info bundle_version (0*1_000_000 + 2*1000 + 0)
+    MARKETING_VERSION: "0.3.0"
+    CURRENT_PROJECT_VERSION: "3000"           # == Peek.app.info bundle_version (0*1_000_000 + 3*1000 + 0)
     MACOSX_DEPLOYMENT_TARGET: "26.0"
     ENABLE_USER_SCRIPT_SANDBOXING: NO         # the embed-peekd phase writes into the bundle and reads ../../dist
   configs:
@@ -86,5 +86,3 @@ targets:
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: ai.tos.peek.dev   # dev builds never share TCC rows or LaunchServices identity with prod
-    scheme:
-      testTargets: []

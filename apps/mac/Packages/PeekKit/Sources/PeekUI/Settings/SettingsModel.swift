@@ -62,8 +62,6 @@ public final class SettingsModel {
     public func setHotkeyModifier(_ modifier: HotkeyModifier) { apply(.hotkeyModifier, .string(modifier.rawValue)) }
     public func setDisplay(_ display: DisplayTarget) { apply(.display, .string(display.rawValue)) }
     public func setTelemetry(_ enabled: Bool) { apply(.telemetry, .bool(enabled)) }
-    public func setShowTestPeeks(_ enabled: Bool) { apply(.showTestPeeks, .bool(enabled)) }
-    public func setCLIWatchdog(_ enabled: Bool) { apply(.cliWatchdog, .bool(enabled)) }
 
     public func setBackdrop(_ backdrop: BackdropSourceSetting) {
         apply(.backdrop, .string(backdrop.rawValue))
@@ -177,56 +175,6 @@ public final class SettingsModel {
         }
     }
 
-    // MARK: Testing environments
-
-    public var testingEnvironments: [TestingEnvironmentSummary] { TestingEnvironmentSummary.summarize(controls.slots) }
-}
-
-/// One testing environment seen in the slot table (gap-testing §9.3: Settings › Testing environments).
-///
-/// Peek.app learns about environments only from `slots.state` rows whose context is an
-/// environment UUID; the secrets themselves stay in each Silicon's `$SILICON_HOME/.peek/testing.json`.
-public struct TestingEnvironmentSummary: Identifiable, Equatable, Sendable {
-    public struct Occupant: Equatable, Sendable, Identifiable {
-        public var displayName: String
-        public var actorID: String
-        public var orgID: String
-        public var slot: SlotIndex
-        public var id: String { "\(orgID)/\(actorID)" }
-    }
-
-    /// The environment UUID (the slot context's wire value).
-    public var id: String
-    public var name: String
-    public var generation: Int?
-    public var occupants: [Occupant]
-
-    /// `TEST · <name>`, the pill test bubbles carry.
-    public var pillText: String { "TEST · \(name)" }
-
-    /// Groups the testing rows of a slot table by environment, sorted by name then id.
-    public static func summarize(_ slots: [SlotState]) -> [TestingEnvironmentSummary] {
-        var byID: [String: TestingEnvironmentSummary] = [:]
-        for slot in slots {
-            guard case .testing(let environmentID) = slot.context else { continue }
-            var entry = byID[environmentID]
-                ?? TestingEnvironmentSummary(
-                    id: environmentID, name: slot.environment?.name ?? "Unnamed environment",
-                    generation: slot.environment?.generation, occupants: [])
-            if let name = slot.environment?.name, entry.name == "Unnamed environment" { entry.name = name }
-            if entry.generation == nil { entry.generation = slot.environment?.generation }
-            entry.occupants.append(
-                Occupant(displayName: slot.displayName, actorID: slot.actorID, orgID: slot.orgID, slot: slot.index))
-            byID[environmentID] = entry
-        }
-        return byID.values
-            .map { entry in
-                var sorted = entry
-                sorted.occupants.sort { $0.slot < $1.slot }
-                return sorted
-            }
-            .sorted { ($0.name.lowercased(), $0.id) < ($1.name.lowercased(), $1.id) }
-    }
 }
 
 extension DaemonLinkState {

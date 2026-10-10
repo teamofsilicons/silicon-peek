@@ -17,11 +17,7 @@ const RESPONSE_MAX_BYTES: usize = 1024 * 1024;
 
 pub(crate) fn key<'a>(state: &'a AppState, plane: &Plane) -> ApiResult<&'a Secret> {
     let config = &state.0.config.openai;
-    let (key, variable) = if plane.is_testing() {
-        (&config.test_api_key, "PEEK_OPENAI_TEST_API_KEY")
-    } else {
-        (&config.api_key, "PEEK_OPENAI_API_KEY")
-    };
+    let (key, variable) = (&config.api_key, "PEEK_OPENAI_API_KEY");
     key.as_ref().ok_or_else(|| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,

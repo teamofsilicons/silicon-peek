@@ -123,8 +123,8 @@ struct TypingFieldView: View {
             }
             .buttonStyle(.plain)
             .disabled(!canSend)
-            .accessibilityLabel(model.context == .testing ? "Send to test silicon" : "Send")
-            .help(model.context == .testing ? "Send to test silicon (Return)" : "Send (Return)")
+            .accessibilityLabel("Send")
+            .help("Send (Return)")
         }
         .padding(.leading, 14)
         .padding(.trailing, 7)

@@ -449,8 +449,8 @@ impl Shared {
         if let Some(slot) = slot {
             rec = rec.with("slot", slot.get());
         }
-        rec.actor = Some((key.org.clone(), key.actor.clone()));
-        rec.testing = key.context.is_testing();
+        rec.actor = Some((key.account.clone(), key.actor.clone()));
+
         self.record(rec);
         Ok(())
     }
@@ -641,8 +641,8 @@ impl Shared {
         if let Some(slot) = slot {
             rec = rec.with("slot", slot.get());
         }
-        rec.actor = Some((key.org.clone(), key.actor.clone()));
-        rec.testing = key.context.is_testing();
+        rec.actor = Some((key.account.clone(), key.actor.clone()));
+
         self.record(rec);
         Ok(QueueClearResult {
             cancelled,
@@ -736,8 +736,8 @@ impl Shared {
         let mut rec = Record::new("send.cancelled", "ok")
             .with("status", enum_word(w.was))
             .with("slot", row.slot.get());
-        rec.actor = Some((row.key.org.clone(), row.key.actor.clone()));
-        rec.testing = row.key.context.is_testing();
+        rec.actor = Some((row.key.account.clone(), row.key.actor.clone()));
+
         self.record(rec);
         Ok(SendCancelResult {
             send_id: w.send_id,
@@ -778,8 +778,8 @@ impl Shared {
                 .db
                 .call(move |c| {
                     c.query_row(
-                        "SELECT send_id FROM sends WHERE schedule_id = ?1 AND context = ?2 AND org_id = ?3 AND actor_id = ?4",
-                        params![s, k.context_str(), k.org.as_str(), k.actor.as_str()],
+                        "SELECT send_id FROM sends WHERE schedule_id = ?1 AND context = ?2 AND account_id = ?3",
+                        params![s, k.context_str(), k.account.as_str()],
                         |r| r.get(0),
                     )
                     .optional()
@@ -801,8 +801,8 @@ impl Shared {
                     let fired: Option<String> = c
                         .query_row(
                             "SELECT a.send_id FROM asks a JOIN sends s ON s.send_id = a.send_id
-                             WHERE a.ask_id = ?1 AND s.context = ?2 AND s.org_id = ?3 AND s.actor_id = ?4",
-                            params![a, k.context_str(), k.org.as_str(), k.actor.as_str()],
+                             WHERE a.ask_id = ?1 AND s.context = ?2 AND s.account_id = ?3",
+                            params![a, k.context_str(), k.account.as_str()],
                             |r| r.get(0),
                         )
                         .optional()
@@ -811,8 +811,8 @@ impl Shared {
                         return Ok(fired);
                     }
                     c.query_row(
-                        "SELECT send_id FROM scheduled WHERE ask_id = ?1 AND context = ?2 AND org_id = ?3 AND actor_id = ?4",
-                        params![a, k.context_str(), k.org.as_str(), k.actor.as_str()],
+                        "SELECT send_id FROM scheduled WHERE ask_id = ?1 AND context = ?2 AND account_id = ?3",
+                        params![a, k.context_str(), k.account.as_str()],
                         |r| r.get(0),
                     )
                     .optional()
@@ -850,8 +850,8 @@ pub(crate) fn enum_word<T: serde::Serialize>(v: T) -> String {
 pub(crate) fn scheduled_count(c: &rusqlite::Connection, key: &ActorKey) -> Result<u32> {
     let n: i64 = c
         .query_row(
-            "SELECT count(*) FROM scheduled WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-            params![key.context_str(), key.org.as_str(), key.actor.as_str()],
+            "SELECT count(*) FROM scheduled WHERE context = ?1 AND account_id = ?2",
+            params![key.context_str(), key.account.as_str()],
             |r| r.get(0),
         )
         .sql()?;

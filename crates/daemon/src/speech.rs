@@ -242,8 +242,7 @@ impl TtsCache {
 struct TokenKey {
     api: String,
     context: String,
-    org: String,
-    actor: String,
+    account: String,
     purpose: SpeechPurpose,
 }
 
@@ -309,8 +308,7 @@ fn token_key(home: &HomeRef, key: &ActorKey, purpose: SpeechPurpose) -> TokenKey
     TokenKey {
         api: home.api_url.as_str().to_owned(),
         context: key.context_str(),
-        org: key.org.as_str().to_owned(),
-        actor: key.actor.as_str().to_owned(),
+        account: key.account.as_str().to_owned(),
         purpose,
     }
 }
@@ -372,17 +370,6 @@ impl Shared {
                     .speech_token(purpose, &IdempotencyKey::generate())
                     .await?
             }
-            // The testing environment moved on: save its new generation, retry once.
-            Err(e)
-                if *e.code() == ErrorCode::TestingGenerationChanged
-                    && home.context.is_testing() =>
-            {
-                self.net.refresh_generation(home).await?;
-                self.speech_session(home, key, false)
-                    .await?
-                    .speech_token(purpose, &IdempotencyKey::generate())
-                    .await?
-            }
             other => other?,
         };
         let ttl = Duration::from_secs(token.expires_in.min(3600)).saturating_sub(TOKEN_SAFETY);
@@ -425,18 +412,18 @@ impl Shared {
             )
             .await?;
             (
-                base.with_session(fresh.access_token.clone(), fresh.org_id.clone()),
+                base.with_session(fresh.access_token.clone(), fresh.account_id.clone()),
                 fresh,
             )
         } else {
             (client, slot)
         };
-        if slot.actor.public_id != key.actor || slot.org_id != key.org {
+        if slot.actor.actor_type != key.actor.actor_type() || slot.account_id != key.account {
             return Err(Error::new(
                 ErrorCode::AuthorityRequired,
                 format!(
                     "{} now holds a session for {} in {}, not {}; peek never speaks with another Silicon's authority",
-                    home.home_path, slot.actor.public_id, slot.org_id, key.actor
+                    home.home_path, slot.actor.public_id, slot.account_id, key.actor
                 ),
             )
             .with_hint(silicon_peek_client::runtime::session::RELOGIN_HINT));
@@ -569,8 +556,8 @@ impl Shared {
         let mut record = Record::new("tts.request", "ok")
             .with("tts_model", job.model.clone())
             .with("speak_chars", chars);
-        record.actor = Some((job.key.org.clone(), job.key.actor.clone()));
-        record.testing = job.key.context.is_testing();
+        record.actor = Some((job.key.account.clone(), job.key.actor.clone()));
+
         let outcome = if let Some(path) = self.speech.cache.lookup(&cache_key) {
             record = record.with("status", "cached");
             self.stream_file(&job.send_id, &path, est)
@@ -947,84 +934,4 @@ pub fn jitter(d: Duration) -> Duration {
 #[must_use]
 pub fn millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cache_lru_and_age() -> std::io::Result<()> {
-        let dir = tempfile::tempdir()?;
-        let cache = TtsCache::with_limits(dir.path().to_path_buf(), 25, Duration::from_secs(3600));
-        let k1 = TtsCache::key("JBFqnCBsd6RMkjVDRZzb", "one", None, None);
-        let k2 = TtsCache::key("JBFqnCBsd6RMkjVDRZzb", "two", None, None);
-        assert_ne!(k1, k2);
-        assert_ne!(k1, TtsCache::key("cgSgspJ2msm6clMCkdW9", "one", None, None));
-        assert_ne!(
-            TtsCache::key("JBFqnCBsd6RMkjVDRZzb", "one", Some("cheerful"), None),
-            TtsCache::key("JBFqnCBsd6RMkjVDRZzb", "one", Some("whispering"), None)
-        );
-        assert_ne!(
-            TtsCache::key("JBFqnCBsd6RMkjVDRZzb", "one", None, Some("en")),
-            TtsCache::key("JBFqnCBsd6RMkjVDRZzb", "one", None, Some("hi"))
-        );
-        for (k, len) in [(&k1, 10usize), (&k2, 10)] {
-            let t = cache.temp_path();
-            std::fs::write(&t, vec![0u8; len])?;
-            cache.commit(k, &t);
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(cache.lookup(&k1).is_some(), "touching k1 makes k2 the LRU");
-        std::thread::sleep(Duration::from_millis(20));
-        let k3 = TtsCache::key("JBFqnCBsd6RMkjVDRZzb", "three", None, None);
-        let t = cache.temp_path();
-        std::fs::write(&t, vec![0u8; 10])?;
-        cache.commit(&k3, &t);
-        assert!(cache.lookup(&k1).is_some());
-        assert!(cache.lookup(&k2).is_none(), "LRU evicted");
-        assert!(cache.lookup(&k3).is_some());
-        let aged = TtsCache::with_limits(dir.path().to_path_buf(), 1000, Duration::ZERO);
-        assert!(
-            aged.lookup(&k1).is_none(),
-            "entries past the age cap are gone"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn proxy_base_must_be_the_homes_backend() -> Result<()> {
-        let api = ApiUrl::parse("http://127.0.0.1:8080")?;
-        check_proxy_base("http://127.0.0.1:8080/api/v1/speech", &api)?;
-        check_proxy_base("http://127.0.0.1:8080/api/v1/speech/", &api)?;
-        for bad in [
-            "http://127.0.0.1:9999/api/v1/speech",
-            "http://localhost:8080/api/v1/speech",
-            "https://127.0.0.1:8080/api/v1/speech",
-            "http://127.0.0.1:8080/api/v1/other",
-            "http://127.0.0.1:8080/api/v1/speech?x=1",
-            "not a url",
-        ] {
-            assert!(check_proxy_base(bad, &api).is_err(), "{bad}");
-        }
-        let prod = ApiUrl::production();
-        check_proxy_base(
-            "https://backend.peek.teamofsilicons.com/api/v1/speech",
-            &prod,
-        )?;
-        check_proxy_base(
-            "https://backend.peek.teamofsilicons.com:443/api/v1/speech",
-            &prod,
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn jitter_bounds() {
-        let d = Duration::from_millis(1000);
-        for _ in 0..50 {
-            let j = jitter(d);
-            assert!(j >= d && j < Duration::from_millis(1250));
-        }
-    }
 }

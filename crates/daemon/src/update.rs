@@ -1,8 +1,8 @@
 //! Peek.app self-update and the stale-CLI watchdog (BLUEPRINT §4.6,
-//! gap-honeycomb §4.2–§4.3).
+//! gap-apps §4.2–§4.3).
 //!
 //! `update_once()` takes the newest offered build (offers written by the CLI,
-//! `install-app.sh`, `app.offer`, or copied from a Honeycomb registry scan),
+//! `install-app.sh`, `app.offer`, or copied from a Silicon Apps registry scan),
 //! never downgrades, verifies the Developer ID requirement (a failing build
 //! goes to `rejected.json`), waits until the UI is idle (an ask on screen is
 //! never interrupted), quits the UI, swaps the bundle atomically with
@@ -115,13 +115,13 @@ pub enum UpdateOutcome {
     },
 }
 
-/// A Honeycomb context directory holding peek (for the registry scan and the
+/// A Silicon Apps context directory holding peek (for the registry scan and the
 /// watchdog).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegistryPeek {
     /// `<registry>/contexts/<fingerprint>`.
     pub context_dir: PathBuf,
-    /// The home Honeycomb uses for this registry (`SILICON_HOME`).
+    /// The home Silicon Apps uses for this registry (`SILICON_HOME`).
     pub registry_home: PathBuf,
     /// The installed CLI version.
     pub version: String,
@@ -329,16 +329,16 @@ impl Shared {
         }
     }
 
-    /// Honeycomb registries to scan: the Carbon's own and every known
+    /// Silicon Apps registries to scan: the Carbon's own and every known
     /// Silicon home's package registry.
     pub async fn registries(&self) -> Vec<(PathBuf, PathBuf)> {
         let mut out = vec![(
-            self.cfg.real_home.join(".honeycomb/dir"),
+            self.cfg.real_home.join(".apps/dir"),
             self.cfg.real_home.clone(),
         )];
         for h in self.known_homes().await.unwrap_or_default() {
             let packages = Path::new(&h.silicon_home).join(".silicon/packages");
-            let reg = packages.join(".honeycomb/dir");
+            let reg = packages.join(".apps/dir");
             if !out.iter().any(|(r, _)| *r == reg) {
                 out.push((reg, packages));
             }
@@ -346,7 +346,7 @@ impl Shared {
         out
     }
 
-    /// Every Honeycomb context holding peek.
+    /// Every Silicon Apps context holding peek.
     pub async fn registry_scan(&self) -> Vec<RegistryPeek> {
         let mut found = Vec::new();
         for (registry, home) in self.registries().await {
@@ -379,7 +379,7 @@ impl Shared {
         found
     }
 
-    /// Copies newer builds found in registries into `offers/` (Honeycomb
+    /// Copies newer builds found in registries into `offers/` (Silicon Apps
     /// deletes package directories on the next update).
     pub async fn scan_registries_for_offers(&self) {
         let installed = self.installed_build().await;
@@ -768,140 +768,7 @@ impl Shared {
         });
     }
 
-    /// The hourly stale-CLI watchdog (§4.6): a registry whose peek has lagged
-    /// the newest release for more than 2 h gets `honeycomb update peek`.
-    ///
-    /// # Errors
-    /// Database failures.
-    pub async fn cli_watchdog(self: &SharedRef) -> Result<usize> {
-        if !self.settings.get().updates.cli_watchdog {
-            return Ok(0);
-        }
-        let scan = self.registry_scan().await;
-        let newest = scan
-            .iter()
-            .filter_map(|r| version_build(&r.version).map(|b| (b, r.version.clone())))
-            .chain(
-                self.offers()
-                    .iter()
-                    .map(|o| (o.info.bundle_version, o.info.short_version.clone())),
-            )
-            .chain(std::iter::once((
-                self.cfg.own_build,
-                silicon_peek_client::VERSION.to_owned(),
-            )))
-            .max_by_key(|(b, _)| *b);
-        let Some((newest_build, newest_version)) = newest else {
-            return Ok(0);
-        };
-        let now = now_ms();
-        let behind_ms =
-            i64::try_from(self.cfg.timings.watchdog_behind.as_millis()).unwrap_or(i64::MAX);
-        let mut ran = 0;
-        for r in scan {
-            let key = r.context_dir.to_string_lossy().into_owned();
-            let behind = version_build(&r.version).is_some_and(|b| b < newest_build);
-            if !behind {
-                let k = key.clone();
-                self.db
-                    .call(move |c| {
-                        c.execute("DELETE FROM cli_watchdog WHERE context_dir = ?1", [k])
-                            .sql()
-                    })
-                    .await?;
-                continue;
-            }
-            let k = key.clone();
-            let (since, last_run): (i64, Option<i64>) = self
-                .db
-                .call(move |c| {
-                    c.execute(
-                        "INSERT OR IGNORE INTO cli_watchdog (context_dir, behind_since) VALUES (?1, ?2)",
-                        params![k, now],
-                    )
-                    .sql()?;
-                    c.query_row(
-                        "SELECT behind_since, last_run_at FROM cli_watchdog WHERE context_dir = ?1",
-                        [k],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .optional()
-                    .sql()
-                    .map(|o| o.unwrap_or((now, None)))
-                })
-                .await?;
-            let hour = 3_600_000;
-            if now.saturating_sub(since) < behind_ms
-                || last_run.is_some_and(|l| now.saturating_sub(l) < hour)
-            {
-                continue;
-            }
-            let Some(honeycomb) = self.cfg.honeycomb.resolve(&r.registry_home) else {
-                tracing::warn!(registry = %r.registry_home.display(), "the CLI watchdog found no Honeycomb binary");
-                continue;
-            };
-            let spec = CommandSpec::new(honeycomb)
-                .arg("update")
-                .arg("peek")
-                .arg("--json")
-                .env("HONEYCOMB_NO_SERVICE", "1")
-                .env("HONEYCOMB_NO_MODIFY_PATH", "1")
-                .env("SILICON_HOME", r.registry_home.as_os_str())
-                .timeout(Duration::from_secs(300));
-            let outcome = self.run_checked(spec).await;
-            ran += 1;
-            let ok = outcome.is_ok();
-            let detail = outcome.err().unwrap_or_else(|| "ok".to_owned());
-            tracing::info!(registry = %r.registry_home.display(), from = %r.version, to = %newest_version, %detail, "CLI watchdog ran honeycomb update");
-            let k = key.clone();
-            self.db
-                .call(move |c| {
-                    c.execute(
-                        "UPDATE cli_watchdog SET last_run_at = ?2, last_outcome = ?3 WHERE context_dir = ?1",
-                        params![k, now, detail],
-                    )
-                    .sql()
-                })
-                .await?;
-            self.record(
-                Record::new("update.cli_watchdog", if ok { "ok" } else { "error" })
-                    .with("update_from", r.version.clone())
-                    .with("update_to", newest_version.clone()),
-            );
-        }
-        Ok(ran)
-    }
-
-    /// At start (after a delay), hourly, and on a new offer: `update_once`.
-    /// It may wait hours for a busy UI, so the CLI watchdog and revocation
-    /// sweeps run on their own schedule ([`Shared::run_maintenance`]).
-    pub async fn run_updates(self: SharedRef) {
-        let mut shutdown = self.shutdown.subscribe();
-        let mut wait = self.cfg.timings.update_initial_delay;
-        loop {
-            if self.shutting_down() {
-                return;
-            }
-            tokio::select! {
-                () = tokio::time::sleep(wait) => {}
-                () = self.update_wake.notified() => {}
-                _ = shutdown.changed() => return,
-            }
-            if self.shutting_down() {
-                return;
-            }
-            match self.update_once().await {
-                Ok(UpdateOutcome::Applied { .. }) => return,
-                Ok(o) => tracing::debug!(outcome = ?o, "update check"),
-                Err(e) => tracing::warn!(error = %e, "the update check failed"),
-            }
-            wait = self.cfg.timings.update_interval;
-        }
-    }
-
-    /// Hourly (after the same start delay): the CLI watchdog (§4.6) and the
-    /// retry of pending refresh-token revocations. Independent of
-    /// `update_once`, which can defer for up to 6 h behind a busy UI.
+    /// Periodically retry pending refresh-token revocations.
     pub async fn run_maintenance(self: SharedRef) {
         let mut shutdown = self.shutdown.subscribe();
         let mut wait = self.cfg.timings.update_initial_delay;
@@ -912,9 +779,6 @@ impl Shared {
             }
             if self.shutting_down() {
                 return;
-            }
-            if let Err(e) = self.cli_watchdog().await {
-                tracing::warn!(error = %e, "the CLI watchdog failed");
             }
             for h in self.known_homes().await.unwrap_or_default() {
                 self.sweep_revocations(&h.home_path).await;
@@ -957,36 +821,5 @@ impl Drop for HeldPushes {
             .store(false, AtomicOrdering::SeqCst);
         let shared = Arc::clone(&self.shared);
         tokio::spawn(async move { shared.push_all().await });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn plist_values() {
-        let xml = br#"<?xml version="1.0"?><plist><dict>
-            <key>CFBundleIdentifier</key>
-            <string>ai.tos.peek</string>
-            <key>CFBundleVersion</key><string>1002</string>
-            <key>Odd</key><string>a &amp; b</string></dict></plist>"#;
-        assert_eq!(
-            plist_string(xml, "CFBundleIdentifier").as_deref(),
-            Some("ai.tos.peek")
-        );
-        assert_eq!(
-            plist_string(xml, "CFBundleVersion").as_deref(),
-            Some("1002")
-        );
-        assert_eq!(plist_string(xml, "Odd").as_deref(), Some("a & b"));
-        assert_eq!(plist_string(xml, "Missing"), None);
-    }
-
-    #[test]
-    fn versions() {
-        assert_eq!(version_build("0.1.0"), Some(1000));
-        assert_eq!(version_build("v1.2.3"), Some(1_002_003));
-        assert_eq!(version_build("dev"), None);
     }
 }

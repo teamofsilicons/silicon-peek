@@ -22,7 +22,7 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 use serde_json::{Value, json};
 use silicon_peek_client::{
     Error, ErrorCode, Result,
-    identity::{ActorId, ApiUrl, Context, OrgId},
+    identity::{AccountId, ActorId, ApiUrl, Context},
     ids::{AskId, ScheduleId, SendId},
     ipc::cli::{
         CancelledFrom, HeldReason, ScheduleCancelResult, ScheduleClearResult, ScheduleListResult,
@@ -76,7 +76,7 @@ struct ScheduledRow {
     created_at: i64,
 }
 
-const SCHEDULED_COLS: &str = "schedule_id, send_id, ask_id, context, org_id, actor_id, home_path, api_url, isi, payload, notify, kind, replace_current, due_at, expires_at, tz, warnings, created_at";
+const SCHEDULED_COLS: &str = "schedule_id, send_id, ask_id, context, account_id, actor_id, home_path, api_url, isi, payload, notify, kind, replace_current, due_at, expires_at, tz, warnings, created_at";
 
 fn corrupt(what: &str, e: impl std::fmt::Display) -> Error {
     Error::new(
@@ -91,7 +91,7 @@ fn scheduled_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Schedule
     let send_id: String = r.get(1)?;
     let ask_id: Option<String> = r.get(2)?;
     let context: String = r.get(3)?;
-    let org: String = r.get(4)?;
+    let account: String = r.get(4)?;
     let actor: String = r.get(5)?;
     let home_path: String = r.get(6)?;
     let api_url: String = r.get(7)?;
@@ -116,7 +116,7 @@ fn scheduled_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Schedule
                 .map_err(|e| corrupt("ask id", e))?,
             key: ActorKey {
                 context,
-                org: OrgId::parse(&org).map_err(|e| corrupt("org", e))?,
+                account: AccountId::parse(&account).map_err(|e| corrupt("account", e))?,
                 actor: ActorId::parse(&actor).map_err(|e| corrupt("actor", e))?,
             },
             home: HomeRef {
@@ -246,7 +246,7 @@ impl Shared {
                         sid,
                         aid,
                         k.context_str(),
-                        k.org.as_str(),
+                        k.account.as_str(),
                         k.actor.as_str(),
                         home.home_path,
                         home.api_url.as_str(),
@@ -270,9 +270,9 @@ impl Shared {
         let mut rec = Record::new("send.scheduled", "ok")
             .with("slot", slot.get())
             .with("scheduled", true);
-        rec.actor = Some((key.org.clone(), key.actor.clone()));
+        rec.actor = Some((key.account.clone(), key.actor.clone()));
         rec.isi.clone_from(&op.isi);
-        rec.testing = key.context.is_testing();
+
         self.record(rec);
         Ok(SendResult {
             send_id,
@@ -587,9 +587,9 @@ impl Shared {
             .with("slot", slot.get())
             .with("status", crate::queue::enum_word(fired.outcome))
             .with("scheduled", true);
-        rec.actor = Some((key.org.clone(), key.actor.clone()));
+        rec.actor = Some((key.account.clone(), key.actor.clone()));
         rec.isi.clone_from(&row.isi);
-        rec.testing = key.context.is_testing();
+
         self.record(rec);
         Ok(())
     }
@@ -606,13 +606,13 @@ impl Shared {
                 let slot = crate::bubbles::slot_of(c, &k)?;
                 let mut st = c
                     .prepare(&format!(
-                        "SELECT {SCHEDULED_COLS} FROM scheduled WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3
+                        "SELECT {SCHEDULED_COLS} FROM scheduled WHERE context = ?1 AND account_id = ?2
                          ORDER BY due_at, schedule_id"
                     ))
                     .sql()?;
                 let rows = st
                     .query_map(
-                        params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                        params![k.context_str(), k.account.as_str()],
                         scheduled_from_row,
                     )
                     .sql()?
@@ -661,9 +661,9 @@ impl Shared {
                 let row: Option<ScheduledRow> = tx
                     .query_row(
                         &format!(
-                            "SELECT {SCHEDULED_COLS} FROM scheduled WHERE {column} = ?1 AND context = ?2 AND org_id = ?3 AND actor_id = ?4"
+                            "SELECT {SCHEDULED_COLS} FROM scheduled WHERE {column} = ?1 AND context = ?2 AND account_id = ?3"
                         ),
-                        params![value, k.context_str(), k.org.as_str(), k.actor.as_str()],
+                        params![value, k.context_str(), k.account.as_str()],
                         scheduled_from_row,
                     )
                     .optional()
@@ -736,8 +736,8 @@ impl Shared {
                 c.query_row(
                     "SELECT schedule_id, send_id, due_at FROM sends
                      WHERE (schedule_id = ?1 OR send_id = ?1) AND schedule_id IS NOT NULL
-                       AND context = ?2 AND org_id = ?3 AND actor_id = ?4",
-                    params![t, k.context_str(), k.org.as_str(), k.actor.as_str()],
+                       AND context = ?2 AND account_id = ?3",
+                    params![t, k.context_str(), k.account.as_str()],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()
@@ -778,18 +778,18 @@ impl Shared {
             .tx(move |tx| {
                 let mut st = tx
                     .prepare(
-                        "SELECT schedule_id FROM scheduled WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3
+                        "SELECT schedule_id FROM scheduled WHERE context = ?1 AND account_id = ?2
                          ORDER BY due_at, schedule_id",
                     )
                     .sql()?;
                 let ids: Vec<String> = st
-                    .query_map(params![k.context_str(), k.org.as_str(), k.actor.as_str()], |r| r.get(0))
+                    .query_map(params![k.context_str(), k.account.as_str()], |r| r.get(0))
                     .sql()?
                     .collect::<rusqlite::Result<_>>()
                     .sql()?;
                 tx.execute(
-                    "DELETE FROM scheduled WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                    params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                    "DELETE FROM scheduled WHERE context = ?1 AND account_id = ?2",
+                    params![k.context_str(), k.account.as_str()],
                 )
                 .sql()?;
                 Ok(ids)

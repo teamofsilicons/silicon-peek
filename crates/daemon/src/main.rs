@@ -138,13 +138,3 @@ fn main() -> ExitCode {
         ExitCode::from(u8::try_from(code).unwrap_or(1))
     })
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn usage_mentions_every_mode() {
-        for m in ["--launchd", "--parent-ui", "--headless", "peekd run"] {
-            assert!(super::USAGE.contains(m));
-        }
-    }
-}

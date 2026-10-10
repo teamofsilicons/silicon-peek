@@ -21,7 +21,7 @@ peekd owns:
   per recording;
 - per-home session refresh, run under each home's `session.lock`;
 - the telemetry relay;
-- Peek.app's self-update and the stale-CLI watchdog.
+- applying locally bundled Peek.app updates; Silicon Apps owns network updates.
 
 Peek.app holds no tokens and does no networking. The CLI talks only to peekd,
 and to peek-server for login.
@@ -59,13 +59,13 @@ and to peek-server for login.
 
 | Path | What |
 |---|---|
-| `peekd.sqlite` | homes, slots, drawings, sends, asks, scheduled sends, outbox, telemetry outbox (schema 2). All times are unix ms. No tokens. |
+| `peekd.sqlite` | homes, slots, drawings, sends, asks, scheduled sends, outbox, telemetry outbox (account-scoped schema). All times are unix ms. No tokens. |
 | `settings.json` | UI and daemon settings, mirrored from `settings.changed` |
-| `drawings/<context>/<org>/<actor>/<sha256>.js` | the active drawing, plus the previous one for rollback |
+| `drawings/<context>/<account>/<sha256>.js` | the active drawing, plus the previous one for rollback |
 | `cache/images/`, `cache/tts/` | image copies and the TTS cache (LRU, 200 MB / 30 days) |
 | `recordings/` | voice recordings, kept until the answer is delivered |
-| `offers/`, `rejected.json`, `install.lock`, `update-applied.json` | app self-update |
-| `homes.json` | the Honeycomb registries the updater and watchdog scan |
+| `offers/`, `rejected.json`, `install.lock`, `update-applied.json` | local app update offers |
+| `homes.json` | registered CLI homes |
 | `peekd.log` | rotated at 10 MB × 3 |
 
 ## Delivery
@@ -82,38 +82,11 @@ and to peek-server for login.
   drains it.
 - peekd never re-registers a Ting recipient.
 
-## Development and tests
-
-The library runs a whole daemon in-process:
-
-```rust
-silicon_peek_daemon::start(DaemonConfig::rooted(tmp)?)
-```
-
-Every external program (`open`, `ditto`, `codesign`, `xattr`, `plutil`,
-`honeycomb`) goes through the injectable `CommandRunner`. Test and development
-overrides for the binary:
-
-| Env | Meaning |
-|---|---|
-| `PEEK_DAEMON_SOCKET` | socket path; the lock sits next to it |
-| `PEEK_SUPPORT_DIR` | replaces `~/Library/Application Support/Peek` |
-| `PEEK_APPLICATIONS_DIR` | replaces `~/Applications` |
-| `PEEK_UI_EXECUTABLE` | the exact executable allowed to connect as the UI |
-| `PEEK_API_URL` | where telemetry is relayed |
-| `PEEKD_LOG` | log filter (default `info`) |
+## Development
 
 ```sh
-export CARGO_TARGET_DIR=$PWD/target
 cargo fmt -p silicon-peek-daemon --check
-cargo clippy -p silicon-peek-daemon --all-targets -- -D warnings
-cargo test -p silicon-peek-daemon
+cargo check -p silicon-peek-daemon --locked
 ```
 
-The integration tests run against:
-
-- wiremock stand-ins for peek-server and Deepgram;
-- a fake Peek.app and fake CLIs over the real socket;
-- temp homes.
-
-They make no network calls outside loopback.
+`PEEK_DAEMON_SOCKET`, `PEEK_SUPPORT_DIR`, `PEEK_APPLICATIONS_DIR`, `PEEK_UI_EXECUTABLE` and `PEEK_API_URL` select local development paths. `PEEKD_LOG` controls the log filter.

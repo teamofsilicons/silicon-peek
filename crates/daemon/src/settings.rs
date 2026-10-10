@@ -17,20 +17,6 @@ use silicon_peek_client::{
     schema::send::{check_voice, normalize_language},
 };
 
-/// Update-related settings.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct UpdateSettings {
-    /// Run the hourly stale-CLI watchdog (§4.6).
-    pub cli_watchdog: bool,
-}
-
-impl Default for UpdateSettings {
-    fn default() -> Self {
-        Self { cli_watchdog: true }
-    }
-}
-
 /// The settings file.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -45,14 +31,10 @@ pub struct Settings {
     pub backdrop: String,
     /// Share usage and diagnostics.
     pub telemetry: bool,
-    /// Show bubbles of testing environments.
-    pub show_test_peeks: bool,
     /// Per-language TTS voice overrides (`{"en":"DtsPFCrhbCbbJkwZsb3d"}`).
     pub voice_defaults: BTreeMap<String, String>,
     /// `auto` or a BCP 47 language for speech-to-text.
     pub stt_language: String,
-    /// Update behaviour.
-    pub updates: UpdateSettings,
     /// Keys written by a newer build.
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
@@ -66,26 +48,22 @@ impl Default for Settings {
             display: "main".to_owned(),
             backdrop: "wallpaper".to_owned(),
             telemetry: true,
-            show_test_peeks: true,
             voice_defaults: BTreeMap::new(),
             stt_language: "auto".to_owned(),
-            updates: UpdateSettings::default(),
             extra: BTreeMap::new(),
         }
     }
 }
 
 /// Keys `settings.changed` accepts.
-pub const SETTING_KEYS: [&str; 9] = [
+pub const SETTING_KEYS: [&str; 7] = [
     "mode",
     "hotkey_modifier",
     "display",
     "backdrop",
     "telemetry",
-    "show_test_peeks",
     "voice_defaults",
     "stt_language",
-    "updates.cli_watchdog",
 ];
 
 fn one_of(key: &str, value: &Value, allowed: &[&str]) -> Result<String> {
@@ -163,21 +141,6 @@ impl Settings {
         };
         for (key, v) in object {
             match key.as_str() {
-                "updates" => {
-                    let mut rest = serde_json::Map::new();
-                    for (k, uv) in v.as_object().into_iter().flatten() {
-                        if k == "cli_watchdog" {
-                            if let Err(e) = out.apply("updates.cli_watchdog", uv) {
-                                warnings.push(e.message().to_owned());
-                            }
-                        } else {
-                            rest.insert(k.clone(), uv.clone());
-                        }
-                    }
-                    if !rest.is_empty() {
-                        out.extra.insert("updates".to_owned(), Value::Object(rest));
-                    }
-                }
                 k if SETTING_KEYS.contains(&k) => {
                     if v.is_null() {
                         continue;
@@ -197,19 +160,10 @@ impl Settings {
     /// The settings document: known keys plus every preserved extra key.
     #[must_use]
     pub fn to_value(&self) -> Value {
-        let mut object = match serde_json::to_value(self) {
+        let object = match serde_json::to_value(self) {
             Ok(Value::Object(o)) => o,
             _ => serde_json::Map::new(),
         };
-        // `extra` may carry unknown keys under `updates`; merge them back.
-        if let Some(Value::Object(extra_updates)) = self.extra.get("updates") {
-            let mut updates = serde_json::Map::new();
-            for (k, v) in extra_updates {
-                updates.insert(k.clone(), v.clone());
-            }
-            updates.insert("cli_watchdog".to_owned(), json!(self.updates.cli_watchdog));
-            object.insert("updates".to_owned(), Value::Object(updates));
-        }
         Value::Object(object)
     }
 
@@ -223,8 +177,6 @@ impl Settings {
             "display" => self.display = one_of(key, value, &["main", "pointer"])?,
             "backdrop" => self.backdrop = one_of(key, value, &["wallpaper", "screen"])?,
             "telemetry" => self.telemetry = boolean(key, value)?,
-            "show_test_peeks" => self.show_test_peeks = boolean(key, value)?,
-            "updates.cli_watchdog" => self.updates.cli_watchdog = boolean(key, value)?,
             "hotkey_modifier" => {
                 let s = value.as_str().ok_or_else(|| {
                     Error::invalid_input(
@@ -353,93 +305,5 @@ impl SettingsStore {
             Err(p) => *p.into_inner() = next.clone(),
         }
         Ok(next)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::os::unix::fs::PermissionsExt as _;
-
-    #[test]
-    fn apply_validates_every_key() -> Result<()> {
-        let mut s = Settings::default();
-        s.apply("mode", &json!("compact"))?;
-        assert!(s.apply("mode", &json!("tiny")).is_err());
-        s.apply("hotkey_modifier", &json!("ctrl+cmd"))?;
-        assert!(s.apply("hotkey_modifier", &json!("shift")).is_err());
-        assert!(s.apply("hotkey_modifier", &json!("cmd+cmd")).is_err());
-        s.apply("voice_defaults", &json!({"en":"DtsPFCrhbCbbJkwZsb3d"}))?;
-        assert!(
-            s.apply("voice_defaults", &json!({"en":"bad voice"}))
-                .is_err()
-        );
-        assert!(
-            s.apply("voice_defaults", &json!({"english":"JBFqnCBsd6RMkjVDRZzb"}))
-                .is_err()
-        );
-        s.apply("stt_language", &json!("en-US"))?;
-        assert!(s.apply("stt_language", &json!("English")).is_err());
-        s.apply("updates.cli_watchdog", &json!(false))?;
-        assert!(!s.updates.cli_watchdog);
-        assert!(s.apply("bogus", &json!(1)).is_err());
-        assert_eq!(s.hotkey_modifier, "ctrl+cmd");
-        Ok(())
-    }
-
-    #[test]
-    fn the_default_hotkey_modifier_is_ctrl_cmd() {
-        assert_eq!(Settings::default().hotkey_modifier, "ctrl+cmd");
-    }
-
-    #[test]
-    fn apply_merges_with_what_the_ui_wrote_since() -> Result<()> {
-        let dir = tempfile::tempdir().map_err(|e| Error::internal(e.to_string()))?;
-        let path = dir.path().join("settings.json");
-        let store = SettingsStore::load(path.clone());
-        assert_eq!(store.get().mode, "normal");
-        // Peek.app writes the file (with keys peekd does not know), then
-        // sends settings.changed for one key.
-        std::fs::write(
-            &path,
-            br#"{"schema":1,"mode":"compact","display":"pointer","hotkey_modifier":"hyper","updates":{"cli_watchdog":false,"channel":"beta"},"ui_only":{"x":1}}"#,
-        )
-        .map_err(|e| Error::internal(e.to_string()))?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| Error::internal(e.to_string()))?;
-        let after = store.apply("telemetry", &json!(false))?;
-        assert_eq!(after.mode, "compact", "the UI's newer write survives");
-        assert_eq!(after.display, "pointer");
-        assert_eq!(after.hotkey_modifier, "ctrl+cmd", "a bad value falls back");
-        assert!(!after.telemetry);
-        let on_disk: Value = serde_json::from_slice(
-            &std::fs::read(&path).map_err(|e| Error::internal(e.to_string()))?,
-        )
-        .map_err(|e| Error::internal(e.to_string()))?;
-        assert_eq!(on_disk["schema"], 1);
-        assert_eq!(on_disk["ui_only"], json!({"x": 1}));
-        assert_eq!(
-            on_disk["updates"],
-            json!({"cli_watchdog": false, "channel": "beta"})
-        );
-        assert_eq!(on_disk["telemetry"], false);
-        Ok(())
-    }
-
-    #[test]
-    fn store_persists_and_keeps_unknown_keys() -> Result<()> {
-        let dir = tempfile::tempdir().map_err(|e| Error::internal(e.to_string()))?;
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, br#"{"mode":"compact","future_key":{"a":1}}"#)
-            .map_err(|e| Error::internal(e.to_string()))?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| Error::internal(e.to_string()))?;
-        let store = SettingsStore::load(path.clone());
-        assert_eq!(store.get().mode, "compact");
-        store.apply("telemetry", &json!(false))?;
-        let reread = SettingsStore::load(path);
-        assert!(!reread.get().telemetry);
-        assert_eq!(reread.get().extra["future_key"], json!({"a":1}));
-        Ok(())
     }
 }

@@ -8,13 +8,13 @@ The same pages ship inside the CLI. `peek docs <topic>` prints any of them offli
 
 ## Install
 
-One command installs Honeycomb (if missing), the `peek` CLI and Peek.app. It does not log anyone in. With Honeycomb already installed, `honeycomb install 'peek'` also installs and starts Peek.app on a Mac.
+One command installs Silicon Apps (if missing), the `peek` CLI and Peek.app. It does not log anyone in. With Silicon Apps already installed, `silicon-apps install 'peek'` also installs and starts Peek.app on a Mac.
 
 ```sh
 curl -fsSL https://peek.teamofsilicons.com/install.sh | sh
 ```
 
-Peek.app needs macOS 26 or newer. On Linux and Windows only the CLI is installed (`honeycomb install 'peek'`), and only the IAM commands work there. See [Platforms](platforms.md).
+Peek.app needs macOS 26 or newer. On Linux and Windows only the CLI is installed (`silicon-apps install 'peek'`), and only the Silicon Accounts commands work there. See [Platforms](platforms.md).
 
 ## Instructive: use peek
 
@@ -33,8 +33,7 @@ Peek.app needs macOS 26 or newer. On Linux and Windows only the CLI is installed
 
 | Topic | What it explains | CLI |
 |---|---|---|
-| [IAM and sessions](iam.md) | Scopes and why each exists, login, token custody, refresh. | `peek docs iam` |
-| [Testing environments](testing.md) | Running peek against an isolated IAM world with the same code path as production. | `peek docs testing` |
+| [Silicon Accounts and sessions](accounts.md) | Scopes and why each exists, login, token custody, refresh. | `peek docs accounts` |
 | [Telemetry](telemetry.md) | What is recorded, what never is, and every way to turn it off. | `peek docs telemetry` |
 | [Privacy](privacy.md) | Where voice, text and drawings go, and what the backend keeps. | `peek docs privacy` |
 | [Platforms](platforms.md) | macOS versus Linux and Windows, and the exact errors. | `peek docs platforms` |

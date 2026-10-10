@@ -15,13 +15,13 @@
 //! 6. On a transport error, 5xx, 429 or `409 idempotency_in_progress`: keep
 //!    the pending state, release the lock, and retry with the same key and
 //!    body at 1, 2, 5, 10, 30, 60, 120 and 240 s, within 10 minutes of
-//!    `refresh_started_at` (IAM's replay window).
+//!    `refresh_started_at` (ACCOUNTS's replay window).
 //! 7. On `401 session_rejected` or `409 idempotency_response_expired`: set
 //!    `rejected = {code, at, request_id}`. Terminal.
-//! 8. `503 iam_misconfigured` is an outage, never a rejection.
+//! 8. `503 accounts_misconfigured` is an outage, never a rejection.
 //!
 //! The deterministic key makes a lost response and two processes holding the
-//! same token safe: both derive the same key and IAM replays one rotation.
+//! same token safe: both derive the same key and ACCOUNTS replays one rotation.
 
 use std::time::Duration;
 
@@ -101,7 +101,7 @@ pub fn is_terminal(e: &Error) -> bool {
     }
     match e.code() {
         ErrorCode::SessionRejected | ErrorCode::IdempotencyResponseExpired => true,
-        ErrorCode::IamMisconfigured => false,
+        ErrorCode::AccountsMisconfigured => false,
         ErrorCode::Other(code) => {
             e.status() == Some(401)
                 || (e.status() == Some(400)
@@ -132,7 +132,7 @@ pub fn is_retryable(e: &Error) -> bool {
 ///
 /// # Errors
 /// `not_logged_in`, `session_rejected` (terminal; the slot is marked), or the
-/// last retryable error (`backend_unavailable`, `iam_misconfigured`, …) with
+/// last retryable error (`backend_unavailable`, `accounts_misconfigured`, …) with
 /// the refresh left pending for the next call.
 pub async fn fresh_session(
     store: &Store,
@@ -238,13 +238,13 @@ fn commit_rotation(
     started_at: i64,
 ) -> Result<SessionSlot> {
     super::session::validate_response(resp, SlotKey::parse(slot_key)?.context())?;
-    if resp.actor != sent.actor
-        || resp.org_id != sent.org_id
+    if resp.actor.actor_type != sent.actor.actor_type
+        || resp.account_id != sent.account_id
         || resp.membership_id != sent.membership_id
     {
         return Err(Error::new(
             ErrorCode::UnexpectedResponse,
-            "refresh changed this session's actor or organization",
+            "refresh changed this session's actor or account",
         ));
     }
     let mut file = store.read_session()?;
@@ -291,7 +291,7 @@ fn mark_rejected(
     Ok(Error::new(
         ErrorCode::SessionRejected,
         format!(
-            "IAM rejected the refresh of {}'s peek session ({code}): {}",
+            "ACCOUNTS rejected the refresh of {}'s peek session ({code}): {}",
             sent.actor.public_id,
             e.message()
         ),
@@ -364,7 +364,7 @@ async fn refresh_locked(
         // Step 4: the exact body, the persisted key.
         match client.refresh(&slot.refresh_token, &pending).await {
             Ok(resp) => {
-                let updated = commit_rotation(store, &lock, &slot_key, &slot, &resp, started_at)?;
+                let updated = commit_rotation(store, &lock, &slot_key, &slot, &resp, now)?;
                 drop(lock);
                 rotations += 1;
                 let now = unix_now();

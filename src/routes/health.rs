@@ -15,20 +15,16 @@ pub(crate) async fn healthz() -> Json<Health> {
     })
 }
 
-/// Readiness: both databases answer and the IAM app secret is configured.
+/// Readiness: both databases answer and the ACCOUNTS app secret is configured.
 /// Speech provider configuration is reported separately; missing provider keys
 /// do not make the core server unready (speech degrades to text, §5.5).
 pub(crate) async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<Ready>) {
-    let db = match (
-        state.0.production_db.ping().await,
-        state.0.testing_db.ping().await,
-    ) {
-        (Ok(()), Ok(())) => "ok".to_owned(),
-        (Err(_), _) => "error: the production database does not answer".to_owned(),
-        (_, Err(_)) => "error: the testing database does not answer".to_owned(),
+    let db = match state.0.production_db.ping().await {
+        Ok(()) => "ok".to_owned(),
+        Err(_) => "error: database unavailable".to_owned(),
     };
     let config = &state.0.config;
-    let iam_config = if config.iam.app_secret.is_some() {
+    let accounts_config = if config.accounts.app_secret.is_some() {
         "ok"
     } else {
         "missing"
@@ -47,7 +43,7 @@ pub(crate) async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<R
         }
         .to_owned(),
         db: db.clone(),
-        iam_config: iam_config.to_owned(),
+        accounts_config: accounts_config.to_owned(),
         ting_config: "ok".to_owned(),
         deepgram: if config.deepgram.api_key.is_some() {
             "configured"
@@ -56,7 +52,7 @@ pub(crate) async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<R
         }
         .to_owned(),
     };
-    let ready = db == "ok" && iam_config == "ok";
+    let ready = db == "ok" && accounts_config == "ok";
     (
         if ready {
             StatusCode::OK

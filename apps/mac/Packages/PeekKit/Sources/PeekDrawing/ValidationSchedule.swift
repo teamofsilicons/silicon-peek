@@ -107,7 +107,7 @@ enum ValidationSchedule {
         let show = i < 30 ? Self.show : nil
         let ask = self.ask(at: i)
 
-        let context: InputContext = (80..<85).contains(i) ? .testing : (85..<90).contains(i) ? .simulation : .production
+        let context: InputContext = (80..<90).contains(i) ? .simulation : .production
         let glassMode: GlassMode = glass == .live && (30..<40).contains(i) ? .frosted : glass
 
         let input = InputSnapshot(

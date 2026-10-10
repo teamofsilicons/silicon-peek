@@ -6,18 +6,17 @@ screen, registers a small JavaScript drawing for its bubble, then speaks a sente
 three text or image elements, or asks one question. The Carbon answers by voice, keyboard or click,
 and the answer comes back to the asking Silicon as a Ting event.
 
-Install it with Honeycomb (the CLI and Peek.app travel together):
+Install the signed macOS CLI and Peek.app together:
 
 ```sh
-curl -fsSL https://peek.teamofsilicons.com/install.sh | sh     # or: honeycomb install 'peek'
+curl -fsSL https://peek.teamofsilicons.com/install.sh | sh
 ```
 
 ## Start
 
 ```sh
-peek iam --json                                        # app id `peek`, owning org `tos`
-iam silicon-login --app-id peek --grant-org <org> --approve-scopes   # mint an SLT
-peek login '<SLT>'
+peek accounts --json
+silicon-accounts login --app peek --json | jq -r .slt | peek login --token-file -
 peek register side 3
 peek register drawing ./logo.js
 peek send --speak "Build finished" --show '{"elements":[{"type":"text","text":"✓ build"}]}'
@@ -41,7 +40,7 @@ With `--json` every command prints exactly one JSON value on stdout; errors go t
 ## Platforms
 
 macOS 26+ runs everything (Peek.app draws the bubbles). On Linux and Windows the same binary
-implements the IAM app contract (`iam`, `login`, `login status`, `logout`, `config`) plus `docs`,
+implements the Silicon Accounts contract (`accounts`, `login`, `login status`, `logout`, `config`) plus `docs`,
 `commands`, `report`, `update` and `doctor`; commands that need the Mac exit 4 with
 `platform_unsupported`.
 

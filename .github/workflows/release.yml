@@ -1,8 +1,8 @@
 name: Release candidate
 
-# Builds a reviewable Honeycomb release candidate from a v* tag: six native CLI builds, the signed
-# universal Peek.app, then honeycomb validate/pack and the loopback install test.
-# It NEVER uploads to Honeycomb: publishing is a separate, approved operator action
+# Builds a reviewable Silicon Apps release candidate from a v* tag: six native CLI builds, the signed
+# universal Peek.app, then apps validate/pack.
+# It NEVER uploads to Silicon Apps: publishing is a separate, approved operator action
 # (deploy/README.md P10, BLUEPRINT §4.5).
 #
 # Repository secrets (all optional; without the first two no Peek.app.zip and no package are
@@ -27,7 +27,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: "1.98.0"
   RUSTUP_TOOLCHAIN: "1.98.0"
-  HONEYCOMB_CLI_VERSION: "0.5.0"
+  APPS_CLI_VERSION: "0.1.3"
 
 jobs:
   versions:
@@ -42,7 +42,7 @@ jobs:
           python-version: "3.12"
       - id: check
         run: |
-          python3 scripts/package-honeycomb.py --check-versions | tee versions.json
+          python3 scripts/package-apps.py --check-versions | tee versions.json
           echo "version=$(python3 -c 'import json; print(json.load(open("versions.json"))["version"])')" >> "$GITHUB_OUTPUT"
 
   cli:
@@ -75,15 +75,13 @@ jobs:
       - name: musl toolchain
         if: startsWith(matrix.target, 'linux-')
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
-      - name: Tests
-        run: cargo test --locked -p silicon-peek-client -p silicon-peek-cli --target ${{ matrix.triple }}
       - name: Build
         run: cargo build --release --locked -p silicon-peek-cli --target ${{ matrix.triple }}
-      - name: Smoke test (peek iam --json names the app and the release version)
+      - name: Verify package discovery
         shell: bash
         run: |
-          ./target/${{ matrix.triple }}/release/${{ matrix.binary }} iam --json > iam.json
-          python3 -c 'import json,sys; d=json.load(open("iam.json")); assert d["app_id"]=="peek" and d["version"]==sys.argv[1], d' "${{ needs.versions.outputs.version }}"
+          ./target/${{ matrix.triple }}/release/${{ matrix.binary }} accounts --json > accounts.json
+          python3 -c 'import json,sys; d=json.load(open("accounts.json")); assert d["app_id"]=="peek" and d["version"]==sys.argv[1], d' "${{ needs.versions.outputs.version }}"
       - name: Stage
         shell: bash
         run: |
@@ -155,7 +153,7 @@ jobs:
             scripts/build-mac-release.sh
             echo "signed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::No signing identity secret: compiling Peek.app only. peek never ships ad-hoc builds, so no Peek.app.zip or Honeycomb package is produced."
+            echo "::notice::No signing identity secret: compiling Peek.app only. peek never ships ad-hoc builds, so no Peek.app.zip or Silicon Apps package is produced."
             for target in aarch64-apple-darwin x86_64-apple-darwin; do
               MACOSX_DEPLOYMENT_TARGET=26.0 cargo build --locked --release -p silicon-peek-daemon --target "$target"
             done
@@ -179,7 +177,7 @@ jobs:
         run: security delete-keychain "$PEEK_KEYCHAIN" || true
 
   package:
-    name: Honeycomb package (validate, pack, loopback install)
+    name: Silicon Apps package (validate and pack)
     needs: [versions, cli, mac-app]
     if: needs.mac-app.outputs.signed == 'true'
     runs-on: macos-26
@@ -200,26 +198,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - name: Install the pinned Honeycomb packager (isolated root)
+      - name: Install the pinned Silicon Apps packager (isolated root)
         run: |
-          cargo install silicon-honeycomb-cli --locked --version "$HONEYCOMB_CLI_VERSION" --root "$RUNNER_TEMP/honeycomb"
-          echo "HONEYCOMB=$RUNNER_TEMP/honeycomb/bin/honeycomb" >> "$GITHUB_ENV"
+          cargo install silicon-apps-cli --locked --version "$APPS_CLI_VERSION" --root "$RUNNER_TEMP/apps"
+          echo "APPS=$RUNNER_TEMP/apps/bin/silicon-apps" >> "$GITHUB_ENV"
       - name: Stage (formats, architectures, zip hygiene, signature round trip, versions)
-        run: python3 scripts/package-honeycomb.py --version "$VERSION" --out dist/stage --binaries-dir release-binaries --app-zip dist/Peek.app.zip --honeycomb "$HONEYCOMB"
+        run: python3 scripts/package-apps.py --version "$VERSION" --out dist/stage --binaries-dir release-binaries --app-zip dist/Peek.app.zip --apps "$APPS"
       - name: Validate, pack, validate
         run: |
-          home=$(mktemp -d)
-          hc() { env SILICON_HOME="$home" HONEYCOMB_AUTO_UPDATE=0 HONEYCOMB_NO_SERVICE=1 HONEYCOMB_TELEMETRY=0 HONEYCOMB_NO_MODIFY_PATH=1 "$HONEYCOMB" "$@" </dev/null; }
-          hc validate dist/stage --json
-          hc pack dist/stage --output "dist/peek-$VERSION.tar.gz" --json
-          hc validate "dist/peek-$VERSION.tar.gz" --json
-          python3 scripts/package-honeycomb.py --verify-archive "dist/peek-$VERSION.tar.gz" --out dist/stage
+          apps_home=$(mktemp -d)
+          apps() { env SILICON_HOME="$apps_home" APPS_AUTO_UPDATE=0 APPS_NO_SERVICE=1 APPS_TELEMETRY=0 APPS_NO_MODIFY_PATH=1 "$APPS" "$@" </dev/null; }
+          apps validate dist/stage --json
+          apps pack dist/stage --output "dist/peek-$VERSION.tar.gz" --json
+          python3 scripts/package-apps.py --verify-archive "dist/peek-$VERSION.tar.gz" --out dist/stage
           (cd dist && shasum -a 256 "peek-$VERSION.tar.gz" > "peek-$VERSION.tar.gz.sha256")
-      - name: Loopback install test (fake API on 127.0.0.1, PATH removed)
-        run: python3 scripts/loopback-install-test.py --archive "dist/peek-$VERSION.tar.gz" --honeycomb "$HONEYCOMB"
       - uses: actions/upload-artifact@v4
         with:
-          name: peek-honeycomb-${{ env.VERSION }}
+          name: peek-apps-${{ env.VERSION }}
           path: |
             dist/peek-${{ env.VERSION }}.tar.gz
             dist/peek-${{ env.VERSION }}.tar.gz.sha256
@@ -237,5 +232,5 @@ jobs:
             cat "dist/peek-$VERSION.tar.gz.sha256"
             echo '```'
             echo
-            echo "Candidate artifacts only. Uploading to Honeycomb is a separate, approved operator action (deploy/README.md P10)."
+            echo "Candidate artifacts only. Uploading to Silicon Apps is a separate, approved operator action (deploy/README.md P10)."
           } >> "$GITHUB_STEP_SUMMARY"

@@ -74,20 +74,14 @@ struct GeneralSettingsView: View {
             }
 
             Section("Updates") {
-                Toggle(
-                    "Keep Silicons' peek CLI up to date",
-                    isOn: Binding(get: { model.settings.cliWatchdog }, set: { model.setCLIWatchdog($0) }))
-                SettingsFootnote(
-                    "Honeycomb updates the CLI every minute. As a fallback, peekd checks hourly and runs "
-                        + "`honeycomb update 'peek'` for a Silicon whose CLI has been behind for more than two hours. "
-                        + "Peek.app itself always updates through peekd.")
+                SettingsFootnote("Silicon Apps updates Peek and its command-line tool automatically. Manage updates with `silicon-apps`.")
             }
 
             Section("Simulation") {
                 HStack(alignment: .firstTextBaseline) {
                     SettingsFootnote(
                         "Preview bubbles at any position with sample speech, shows and asks, using the real drawing runtime. "
-                            + "Nothing is sent to peekd, IAM, Ting, Deepgram or OpenAI.")
+                            + "Nothing is sent to peekd, Silicon Accounts, Ting, Deepgram or OpenAI.")
                     Spacer()
                     Button("Open Simulation…", action: openSimulation)
                 }

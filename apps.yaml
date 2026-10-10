@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "app_id": "peek",
+  "version": "0.3.0",
+  "command": "peek",
+  "targets": {
+    "macos-aarch64": {
+      "binary": "targets/macos-aarch64/bin/peek",
+      "install_script": "targets/macos-aarch64/install-app.sh"
+    },
+    "macos-x86_64": {
+      "binary": "targets/macos-x86_64/bin/peek",
+      "install_script": "targets/macos-x86_64/install-app.sh"
+    },
+    "linux-aarch64": {
+      "binary": "targets/linux-aarch64/bin/peek"
+    },
+    "linux-x86_64": {
+      "binary": "targets/linux-x86_64/bin/peek"
+    },
+    "windows-aarch64": {
+      "binary": "targets/windows-aarch64/bin/peek.exe"
+    },
+    "windows-x86_64": {
+      "binary": "targets/windows-x86_64/bin/peek.exe"
+    }
+  }
+}

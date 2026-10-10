@@ -1,0 +1,17 @@
+.account-menu { position: relative; color: var(--foreground); }
+.account-panel { position: absolute; right: 0; top: calc(100% + 12px); z-index: 80; width: min(360px, calc(100vw - 32px)); padding: var(--space-comfort); border: 1px solid var(--border); border-radius: var(--radius-container); background: var(--surface); box-shadow: var(--shadow-floating); font: 14px/1.5 var(--font-sans); }
+.account-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.account-heading button { border: 0; background: transparent; font-size: 22px; padding: 4px 8px; }
+.account-panel p { margin: 12px 0; }
+.account-panel details { margin-top: 20px; }
+.account-panel summary { cursor: pointer; }
+.account-panel form { display: grid; gap: 10px; }
+.account-panel input { width: 100%; min-height: var(--control-height-md); padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--background); }
+.account-panel code { font: 12px/1.6 var(--font-mono); overflow-wrap: anywhere; }
+.account-note { color: var(--text-secondary); }
+.account-error { color: var(--danger); overflow-wrap: anywhere; }
+@media (max-width: 620px) {
+  .site-nav { gap: 12px; }
+  .account-menu { margin-left: auto; }
+  .account-panel { position: fixed; top: 64px; left: 16px; right: 16px; width: auto; }
+}

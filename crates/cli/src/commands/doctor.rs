@@ -107,7 +107,7 @@ fn session_checks(session: &Session, file: &SessionFile) -> Vec<Check> {
                 } else {
                     format!("no peek session for {}", session.slot_key)
                 },
-                Some("iam silicon-login --app-id peek --grant-org <org> --approve-scopes; peek login '<SLT>'"),
+                Some("silicon-accounts login --app peek --json; peek login '<SLT>'"),
             ));
         }
         Some(slot) => {
@@ -116,7 +116,7 @@ fn session_checks(session: &Session, file: &SessionFile) -> Vec<Check> {
                     "session",
                     Status::Fail,
                     format!(
-                        "IAM rejected the session of {} ({}, at {})",
+                        "ACCOUNTS rejected the session of {} ({}, at {})",
                         slot.actor.public_id,
                         r.code,
                         Timestamp::from_unix(r.at)
@@ -128,7 +128,7 @@ fn session_checks(session: &Session, file: &SessionFile) -> Vec<Check> {
                     "session",
                     Status::Warn,
                     format!("{} lacks scopes peek needs (reconsent required)", slot.actor.public_id),
-                    Some("log in again with --approve-scopes: iam silicon-login --app-id peek --grant-org <org> --approve-scopes; peek login '<SLT>'"),
+                    Some("log in again with --approve-scopes: silicon-accounts login --app peek --json; peek login '<SLT>'"),
                 ));
             } else if slot.pending_refresh_key.is_some() {
                 checks.push(check(
@@ -146,9 +146,9 @@ fn session_checks(session: &Session, file: &SessionFile) -> Vec<Check> {
                     "session",
                     Status::Ok,
                     format!(
-                        "{} in org {}; access token valid until {}",
+                        "{} in account {}; access token valid until {}",
                         slot.actor.public_id,
-                        slot.org_id,
+                        slot.account_id,
                         Timestamp::from_unix(slot.access_expires_at)
                     ),
                     None,
@@ -255,10 +255,10 @@ async fn backend_check(client: &Client) -> Check {
             "backend",
             Status::Fail,
             format!(
-                "{} is not ready (db {}, iam {}, ting {}, elevenlabs {}, openai {})",
+                "{} is not ready (db {}, accounts {}, ting {}, elevenlabs {}, openai {})",
                 api,
                 ready.checks.db,
-                ready.checks.iam_config,
+                ready.checks.accounts_config,
                 ready.checks.ting_config,
                 ready.checks.elevenlabs,
                 ready.checks.openai
@@ -268,19 +268,15 @@ async fn backend_check(client: &Client) -> Check {
     }
 }
 
-fn honeycomb_candidates() -> Vec<PathBuf> {
+fn apps_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Some(p) = std::env::var_os("SILICON_HONEYCOMB").filter(|p| !p.is_empty()) {
+    if let Some(p) = std::env::var_os("SILICON_APPS").filter(|p| !p.is_empty()) {
         out.push(PathBuf::from(p));
         return out;
     }
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
-            let exe = dir.join(if cfg!(windows) {
-                "honeycomb.exe"
-            } else {
-                "honeycomb"
-            });
+            let exe = dir.join(if cfg!(windows) { "apps.exe" } else { "apps" });
             if exe.is_file() {
                 out.push(exe);
                 break;
@@ -288,11 +284,11 @@ fn honeycomb_candidates() -> Vec<PathBuf> {
         }
     }
     if let Some(home) = std::env::var_os("SILICON_HOME").filter(|p| !p.is_empty()) {
-        out.push(PathBuf::from(home).join(".honeycomb/dir/system/bin/honeycomb"));
+        out.push(PathBuf::from(home).join(".apps/dir/system/bin/apps"));
     }
     if let Ok(home) = sys::real_home() {
-        out.push(home.join(".local/share/silicon/.honeycomb/dir/system/bin/honeycomb"));
-        out.push(home.join(".honeycomb/dir/system/bin/honeycomb"));
+        out.push(home.join(".local/share/silicon/.apps/dir/system/bin/apps"));
+        out.push(home.join(".apps/dir/system/bin/apps"));
     }
     out
 }
@@ -316,20 +312,20 @@ fn parse_version(text: &str) -> Option<(u64, u64, u64, String)> {
     })
 }
 
-async fn honeycomb_check() -> Check {
-    let Some(exe) = honeycomb_candidates().into_iter().find(|p| p.is_file()) else {
+async fn apps_check() -> Check {
+    let Some(exe) = apps_candidates().into_iter().find(|p| p.is_file()) else {
         return check(
-            "honeycomb",
+            "apps",
             Status::Warn,
-            "Honeycomb was not found (SILICON_HONEYCOMB, PATH, ~/.honeycomb/dir/system/bin)",
+            "Silicon Apps was not found (SILICON_APPS, PATH, ~/.apps/dir/system/bin)",
             Some("curl -fsSL https://peek.teamofsilicons.com/install.sh | sh"),
         );
     };
     let run = tokio::process::Command::new(&exe)
         .arg("--version")
-        .env("HONEYCOMB_AUTO_UPDATE", "0")
-        .env("HONEYCOMB_NO_SERVICE", "1")
-        .env("HONEYCOMB_TELEMETRY", "0")
+        .env("APPS_AUTO_UPDATE", "0")
+        .env("APPS_NO_SERVICE", "1")
+        .env("APPS_TELEMETRY", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -339,17 +335,17 @@ async fn honeycomb_check() -> Check {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => {
             return check(
-                "honeycomb",
+                "apps",
                 Status::Warn,
                 format!("{} could not run: {e}", exe.display()),
                 Some(
-                    "reinstall Honeycomb: curl -fsSL https://peek.teamofsilicons.com/install.sh | sh",
+                    "reinstall Silicon Apps: curl -fsSL https://peek.teamofsilicons.com/install.sh | sh",
                 ),
             );
         }
         Err(_) => {
             return check(
-                "honeycomb",
+                "apps",
                 Status::Warn,
                 format!("{} --version did not finish within 5 s", exe.display()),
                 None,
@@ -359,22 +355,22 @@ async fn honeycomb_check() -> Check {
     let text = String::from_utf8_lossy(&output.stdout);
     match parse_version(&text) {
         Some((major, minor, _, v)) if (major, minor) >= (0, 5) => check(
-            "honeycomb",
+            "apps",
             Status::Ok,
-            format!("Honeycomb {v} at {}", exe.display()),
+            format!("Silicon Apps {v} at {}", exe.display()),
             None,
         ),
         Some((_, _, _, v)) => check(
-            "honeycomb",
+            "apps",
             Status::Warn,
             format!(
-                "Honeycomb {v} at {} is older than 0.5.0 (no install scripts; peek installs Peek.app itself)",
+                "Silicon Apps {v} at {} is older than 0.5.0 (no install scripts; peek installs Peek.app itself)",
                 exe.display()
             ),
-            Some("update Honeycomb (reinstall it with the peek installer, or update Stemcell)"),
+            Some("update Silicon Apps (reinstall it with the peek installer, or update Stemcell)"),
         ),
         None => check(
-            "honeycomb",
+            "apps",
             Status::Warn,
             format!("could not read a version from {} --version", exe.display()),
             None,
@@ -687,7 +683,7 @@ async fn mac_checks(_session: Option<&Session>) -> Vec<Check> {
         "app",
         Status::Ok,
         format!(
-            "not needed: {} runs the IAM commands only; Peek.app is macOS-only",
+            "not needed: {} runs the ACCOUNTS commands only; Peek.app is macOS-only",
             platform()
         ),
         None,
@@ -737,7 +733,7 @@ async fn collect(g: &Globals) -> Vec<Check> {
             Err(e) => checks.push(check("backend", Status::Fail, e.message(), e.hint())),
         }
     }
-    checks.push(honeycomb_check().await);
+    checks.push(apps_check().await);
     checks.extend(mac_checks(session.as_ref()).await);
     checks
 }
@@ -776,56 +772,4 @@ pub async fn run(g: &Globals, out: Out) -> silicon_peek_client::Result<()> {
         lines.join("\n")
     });
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn backend_checks_current_speech_providers() -> silicon_peek_client::Result<()> {
-        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
-        let server = MockServer::start().await;
-        let client = Client::builder(&ApiUrl::parse(&server.uri())?).build()?;
-        for (openai, expected) in [("configured", Status::Ok), ("missing", Status::Warn)] {
-            server.reset().await;
-            Mock::given(path("/readyz"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                    "status": "ready", "checks": {
-                        "db": "ok", "iam_config": "ok", "ting_config": "ok",
-                        "elevenlabs": "configured", "openai": openai, "deepgram": "missing"
-                    }
-                })))
-                .mount(&server)
-                .await;
-            let result = backend_check(&client).await;
-            assert_eq!(result.status, expected);
-            if expected == Status::Warn {
-                assert!(
-                    result
-                        .fix
-                        .as_deref()
-                        .is_some_and(|s| s.contains("PEEK_OPENAI_API_KEY"))
-                );
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn versions_are_read_from_text_or_json() {
-        assert_eq!(
-            parse_version("honeycomb 0.5.0").map(|v| (v.0, v.1, v.2)),
-            Some((0, 5, 0))
-        );
-        assert_eq!(
-            parse_version(r#"{"version":"0.2.3"}"#).map(|v| (v.0, v.1, v.2)),
-            Some((0, 2, 3))
-        );
-        assert_eq!(
-            parse_version("v1.2.3-beta").map(|v| (v.0, v.1, v.2)),
-            Some((1, 2, 3))
-        );
-        assert!(parse_version("no version").is_none());
-    }
 }

@@ -4,6 +4,7 @@ import { CRATE_URL, HOTKEY, INSTALL_COMMAND, REPO_URL, TOPICS, TOPIC_GROUPS, VER
 import TelemetryToggle from "../shared/TelemetryToggle.tsx";
 import { track } from "../shared/telemetry.ts";
 import Hero from "./Hero.tsx";
+import AccountMenu from "../shared/AccountMenu.tsx";
 
 export function Mark(props: { size?: number }): JSX.Element {
   return (
@@ -31,6 +32,7 @@ function Header() {
             GitHub <span aria-hidden="true">↗</span>
           </a>
         </div>
+        <AccountMenu />
         <a class="nav-cta" href="#install" onClick={() => track("download_cta", { place: "header" })}>
           Install
         </a>
@@ -93,30 +95,30 @@ function InstallSection() {
       </div>
       <ol class="steps">
         <li>
-          <strong>Honeycomb</strong>
-          <span>Installed if missing. Version 0.5.0 or newer is required.</span>
+          <strong>Silicon Apps</strong>
+          <span>Installed if missing. Keeps every installed app up to date.</span>
         </li>
         <li>
           <strong>The peek CLI</strong>
           <span>
-            <code>honeycomb install 'peek'</code>. Updated automatically from then on.
+            <code>silicon-apps install peek</code>. Updated automatically from then on.
           </span>
         </li>
         <li>
           <strong>Peek.app</strong>
           <span>
             Installed by the same command into ~/Applications, Developer ID signature verified, and started. It lives in the menu bar
-            and updates itself.
+            with updates delivered by Silicon Apps.
           </span>
         </li>
         <li>
-          <strong>No login</strong>
-          <span>Silicons log in with their own short-lived IAM tokens. Carbons never log in.</span>
+          <strong>Your own account</strong>
+          <span>Carbons and Silicons use their own Silicon Accounts identity. Sessions stay signed in until they expire or you sign out.</span>
         </li>
       </ol>
       <p class="fine">
-        Needs macOS 26 or newer on Apple silicon or Intel. On Linux and Windows, <code>honeycomb install 'peek'</code> installs
-        the CLI for its IAM commands only. <a href={docsHref("platforms")}>Platforms</a>
+        Needs macOS 26 or newer on Apple silicon or Intel. On Linux and Windows, <code>silicon-apps install peek</code> installs
+        the CLI for its account commands. <a href={docsHref("platforms")}>Platforms</a>
       </p>
     </section>
   );
@@ -181,11 +183,8 @@ function CarbonsSection() {
   );
 }
 
-const YAML = `silicon:
-  id: si:dj
-  # …
-  apps:
-    - peek   # Stemcell installs it and logs you in`;
+const INSTALL = `silicon-apps install peek
+silicon-accounts login --app peek --json | jq -r .slt | peek login --token-file -`;
 const REGISTER = `# one position per Silicon (1 top, then clockwise)
 peek register side 5
 # your face on the Carbon's screen
@@ -229,11 +228,11 @@ function SiliconsSection() {
       </div>
       <ol class="silicon-steps">
         <li>
-          <h3>Add peek to silicon.yaml</h3>
+          <h3>Install Peek and sign in</h3>
           <p>
-            Or from a running ISI: <code>si app install peek</code>.
+            Install through Silicon Apps, then use your own Silicon Accounts identity.
           </p>
-          <CodeBlock label="silicon.yaml" code={YAML} lang="yaml" />
+          <CodeBlock label="install and sign in" code={INSTALL} lang="sh" />
         </li>
         <li>
           <h3>Claim a position and register a drawing</h3>
@@ -253,7 +252,7 @@ function SiliconsSection() {
         <li>
           <h3>Approve Ting, then receive the answer</h3>
           <p>
-            Review Ting permission in IAM when prompted. After approval, answers are delivered at least once and retried while the Mac is offline. Route it to the asking ISI with the flow snippets in the docs.
+            Enable Ting deliveries for your account when prompted. Once enabled, answers are delivered at least once and retried while the Mac is offline. Route it to the asking ISI with the flow snippets in the docs.
           </p>
           <CodeBlock label="peek.ask.answered" code={TING} lang="json" />
         </li>
@@ -281,9 +280,8 @@ function SiliconsSection() {
 const FACTS: { title: string; body: string; slug: string }[] = [
   { title: "Local first", body: "Bubbles, history and caches stay on the Mac.", slug: "privacy" },
   { title: "Voice only when you answer", body: "Recorded while you speak, then sent through Peek to OpenAI after you stop.", slug: "privacy" },
-  { title: "Each Silicon keeps its own keys", body: "Ordinary sessions stay in each Silicon’s profile. Approved Ting permission is encrypted separately on the backend.", slug: "iam" },
+  { title: "Each Silicon keeps its own keys", body: "Ordinary sessions stay in each Silicon’s profile. Ting deliveries use verified permission for the same account.", slug: "accounts" },
   { title: "Delivered through Ting", body: "Answers wait in an outbox and retry until Ting accepts them.", slug: "ting" },
-  { title: "Tested like production", body: "Testing environments use the same code path with isolated identities.", slug: "testing" },
   { title: "Open source", body: "Find a bug, patch it, and send the PR with peek report --pr.", slug: "development" },
 ];
 
@@ -374,7 +372,7 @@ function Footer() {
             <h2>Source</h2>
             <a href={REPO_URL}>GitHub</a>
             <a href={CRATE_URL}>Rust crate</a>
-            <a href={docsHref("development", "contribute")}>Report a bug</a>
+            <a href={docsHref("development")}>Report a bug</a>
           </div>
         </nav>
       </div>

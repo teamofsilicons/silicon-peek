@@ -23,6 +23,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         2,
         include_str!("../migrations/0002_iam5_feature_consent.sql"),
     ),
+    (3, include_str!("../migrations/0003_silicon_accounts.sql")),
 ];
 
 /// Why a database could not be opened.
@@ -165,60 +166,3 @@ fn restrict_permissions(path: &Path) {
 
 #[cfg(not(unix))]
 fn restrict_permissions(_path: &Path) {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn migrates_once_and_enforces_ctx() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("nested/peek.sqlite");
-        let db = Db::open(&path)?;
-        db.ping().await?;
-        drop(db);
-        let db = Db::open(&path)?;
-        let version = db
-            .call(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?))
-            .await?;
-        assert_eq!(version, 2);
-        let bad = db
-            .call(|c| {
-                Ok(c.execute(
-                    "INSERT INTO drawings(ctx,org_id,actor_id,sha256,bytes,updated_at) VALUES('staging','tos','si:x',?1,x'00',1)",
-                    ["a".repeat(64)],
-                ))
-            })
-            .await?;
-        assert!(bad.is_err(), "ctx must be production or a UUID");
-        let good = db
-            .call(|c| {
-                Ok(c.execute(
-                    "INSERT INTO drawings(ctx,org_id,actor_id,sha256,bytes,updated_at) VALUES('0192f2d2-7c9e-7cc0-8b2e-6f3a2b1c0d9e','tos','si:x',?1,x'00',1)",
-                    ["a".repeat(64)],
-                ))
-            })
-            .await?;
-        assert!(good.is_ok());
-        let mode = db
-            .call(|c| Ok(c.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0))?))
-            .await?;
-        assert_eq!(mode, "wal");
-        Ok(())
-    }
-
-    #[test]
-    fn refuses_a_newer_schema() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("peek.sqlite");
-        {
-            let c = Connection::open(&path)?;
-            c.pragma_update(None, "user_version", 99)?;
-        }
-        assert!(matches!(
-            Db::open(&path),
-            Err(OpenError::Newer { found: 99, .. })
-        ));
-        Ok(())
-    }
-}

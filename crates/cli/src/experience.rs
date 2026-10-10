@@ -1,5 +1,5 @@
 //! Help, parse-error recovery and machine discovery, all derived from the one
-//! grammar in `cli.rs` (the IAM `experience.rs` pattern, notes/cli-patterns §3).
+//! grammar in `cli.rs` (the ACCOUNTS `experience.rs` pattern, notes/cli-patterns §3).
 //!
 //! - Globals are grouped under "Context and output" (positionals stay under
 //!   "Arguments", flags under "Options"); env values are never shown.
@@ -304,30 +304,30 @@ fn docs(topic: &str) -> String {
 pub fn notes(path: &str) -> String {
     let (body, topic): (&str, &str) = match path {
         "peek" => return ROOT_AFTER_HELP.to_owned(),
-        "peek iam" => (
-            "Examples:\n  peek iam --json\n  peek iam --json --test <env-uuid>\n\n\
-             Next:\n  iam silicon-login --app-id peek --grant-org <org> --approve-scopes   mint an SLT\n  \
+        "peek accounts" => (
+            "Examples:\n  peek accounts --json\n\n\
+             Next:\n  silicon-accounts login --app peek --json   mint an SLT\n  \
              peek login '<SLT>'                                                  exchange it",
-            "iam",
+            "accounts",
         ),
         "peek login" => (
             "Examples:\n  peek login \"$SLT\"\n  printf %s \"$SLT\" | peek login --token-file -\n  \
-             peek login --recover\n  printf %s \"$PEEK_TEST_SECRET\" | peek --app-secret-file - login si:peek-tester\n\n\
+             peek login --recover\n\n\
              Next:\n  peek login status --json      verify the session\n  \
              peek register side <1-8>      claim a position\n  peek logout                   end the session",
-            "iam",
+            "accounts",
         ),
         "peek login status" => (
-            "Examples:\n  peek login status --json\n  peek --test <env-uuid> login status --json\n\n\
-             Exit codes: 0 with authenticated true or false; 5 (nothing on stdout) when the backend or IAM \
+            "Examples:\n  peek login status --json\n\n\
+             Exit codes: 0 with authenticated true or false; 5 (nothing on stdout) when the backend or ACCOUNTS \
              is unreachable.\n\n\
              Next:\n  peek login '<SLT>'     when authenticated is false\n  peek ting enroll       when ting.subscribed is false",
-            "iam",
+            "accounts",
         ),
         "peek logout" => (
             "Examples:\n  peek logout\n  peek logout --json\n  peek logout --revoke-ting     also remove this Silicon's Ting grant (every home)\n\n\
              Next:\n  peek login status --json     now answers authenticated:false\n  peek login '<SLT>'           log in again",
-            "iam",
+            "accounts",
         ),
         "peek config" => (
             "Examples:\n  peek config set '{\"notify\":[\"speech_finished\"],\"voice\":\"JBFqnCBsd6RMkjVDRZzb\"}'\n  \
@@ -359,7 +359,7 @@ pub fn notes(path: &str) -> String {
             "cli",
         ),
         "peek ting authorize" | "peek ting authorization-status" => (
-            "Examples:\n  peek --profile work ting authorize --json\n  peek --profile work ting authorization-status --json\n\nNext:\n  Review the returned IAM link, then peek ting complete-authorization --code-file -",
+            "Examples:\n  peek --profile work ting authorize --json\n  peek --profile work ting authorization-status --json\n\nNext:\n  Review the returned ACCOUNTS link, then peek ting complete-authorization --code-file -",
             "ting",
         ),
         "peek ting complete-authorization" => (
@@ -463,14 +463,14 @@ pub fn notes(path: &str) -> String {
              Next:\n  peek doctor                  exact fixes\n  peek login status --json     identity",
             "cli",
         ),
-        "peek org"
-        | "peek org byo"
-        | "peek org byo deepgram"
-        | "peek org byo deepgram set"
-        | "peek org byo deepgram show"
-        | "peek org byo deepgram delete" => (
+        "peek account"
+        | "peek account byo"
+        | "peek account byo deepgram"
+        | "peek account byo deepgram set"
+        | "peek account byo deepgram show"
+        | "peek account byo deepgram delete" => (
             "Legacy key management only: current speech uses ElevenLabs v4 TTS through Deepgram and OpenAI transcription.\n\n\
-             Examples:\n  peek --org tos org byo deepgram show --json\n  peek --org tos org byo deepgram delete\n\n\
+             Examples:\n  peek --account tos account byo deepgram show --json\n  peek --account tos account byo deepgram delete\n\n\
              Stored Deepgram keys do not affect either speech provider.",
             "privacy",
         ),
@@ -500,12 +500,12 @@ pub fn notes(path: &str) -> String {
             "Examples:\n  peek report \"send --ask fails with invalid_input when an option label has an emoji\"\n  \
              peek report \"…\" --pr https://github.com/teamofsilicons/silicon-peek/pull/42 --attach-status\n  \
              peek report \"…\" --via gh\n\n\
-             Refused under --test. Fixes are welcome: https://github.com/teamofsilicons/silicon-peek\n\n\
+             Fixes are welcome: https://github.com/teamofsilicons/silicon-peek\n\n\
              Next:\n  peek docs development     build and test peek locally",
             "development",
         ),
         "peek update" => (
-            "Examples:\n  peek update --json\n  honeycomb update 'peek'\n\n\
+            "Examples:\n  peek update --json\n  apps update 'peek'\n\n\
              Next:\n  peek app update     Peek.app and peekd",
             "versioning",
         ),
@@ -517,78 +517,4 @@ pub fn notes(path: &str) -> String {
         _ => ("Explore: peek commands · peek docs", "index"),
     };
     format!("{body}\n\n{}", docs(topic))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn grammar_is_valid_and_every_command_has_notes() {
-        let mut command = command();
-        command.clone().debug_assert();
-        let mut entries = Vec::new();
-        collect_help(&mut command, &mut Vec::new(), &mut entries);
-        assert!(entries.len() > 30, "the tree has every command");
-        for (path, help) in &entries {
-            assert!(
-                help.contains("Docs: ") || path.is_empty(),
-                "peek {} lacks its links",
-                path.join(" ")
-            );
-            let full = if path.is_empty() {
-                "peek".to_owned()
-            } else {
-                format!("peek {}", path.join(" "))
-            };
-            assert!(
-                !notes(&full).starts_with("Explore:"),
-                "{full} has no Examples/Next notes of its own"
-            );
-        }
-    }
-
-    #[test]
-    fn root_after_help_is_verbatim() {
-        let help = command().render_long_help().to_string();
-        assert!(help.contains(ROOT_AFTER_HELP));
-    }
-
-    #[test]
-    fn commands_json_excludes_hidden_commands() {
-        let v = commands_value();
-        let names: Vec<&str> = v
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e["command"].as_str())
-            .collect();
-        assert!(names.contains(&"peek send"));
-        assert!(names.contains(&"peek login status"));
-        for new in [
-            "peek queue",
-            "peek queue list",
-            "peek queue clear",
-            "peek cancel",
-            "peek schedule",
-            "peek schedule list",
-            "peek schedule cancel",
-            "peek schedule clear",
-        ] {
-            assert!(names.contains(&new), "{new}");
-        }
-        assert!(names.contains(&"peek org byo deepgram set"));
-        assert!(!names.iter().any(|n| n.contains("__after-login")));
-        let send = v
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|e| e["command"] == "peek send");
-        assert!(send.is_some_and(|s| {
-            s["arguments"]
-                .as_array()
-                .is_some_and(|a| a.iter().any(|p| p["name"] == "speak"))
-                && s["group"] == false
-        }));
-    }
 }

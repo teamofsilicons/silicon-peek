@@ -11,8 +11,7 @@ use std::{
 };
 
 use silicon_peek_client::{
-    api::TestingEnvironment,
-    identity::{ActorId, ApiUrl, Context, OrgId},
+    identity::{AccountId, ActorId, ApiUrl, Context},
     ids::{AskId, SendId},
     ipc::cli::AskResult,
     runtime::Store,
@@ -27,15 +26,44 @@ use crate::{
 };
 
 /// A Silicon in a data context: the key of slots, drawings, asks and
-/// deliveries (`(context, org_id, actor_id)`).
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// deliveries. Ownership uses the immutable account UUID; the public handle is metadata.
+#[derive(Clone, Debug)]
 pub struct ActorKey {
     /// `production` or a testing environment.
     pub context: Context,
-    /// The org.
-    pub org: OrgId,
+    /// The account.
+    pub account: AccountId,
     /// The Silicon.
     pub actor: ActorId,
+}
+
+impl PartialEq for ActorKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+impl Eq for ActorKey {}
+impl PartialOrd for ActorKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for ActorKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.context, &self.account, self.actor.actor_type()).cmp(&(
+            other.context,
+            &other.account,
+            other.actor.actor_type(),
+        ))
+    }
+}
+impl std::hash::Hash for ActorKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(
+            &(self.context, &self.account, self.actor.actor_type()),
+            state,
+        );
+    }
 }
 
 impl ActorKey {
@@ -57,8 +85,6 @@ pub struct Caller {
     pub display_name: Option<String>,
     /// The opened store.
     pub store: Store,
-    /// The testing environment, in a testing context.
-    pub testing: Option<TestingEnvironment>,
     /// Whether the session slot records an active Ting enrollment.
     pub ting_subscribed: Option<bool>,
 }

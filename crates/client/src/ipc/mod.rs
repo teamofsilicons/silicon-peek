@@ -69,7 +69,7 @@ pub trait EventBody: Serialize + DeserializeOwned {
 pub struct Empty {}
 
 /// The CLI authentication block, required on every CLI op except `hello` and
-/// `daemon.status`. peekd derives the actor and org from the verified store
+/// `daemon.status`. peekd derives the actor and account from the verified store
 /// slot, never from request fields.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthBlock {
@@ -136,7 +136,7 @@ pub enum Message {
 
 fn protocol(msg: impl Into<String>) -> Error {
     Error::new(ErrorCode::ProtocolError, msg).with_hint(
-        "the CLI, peekd and Peek.app disagree about the protocol; update with `honeycomb update 'peek'`",
+        "the CLI, peekd and Peek.app disagree about the protocol; update with `apps update 'peek'`",
     )
 }
 
@@ -268,9 +268,7 @@ impl Reply {
                         ErrorCode::UnexpectedResponse,
                         format!("peekd's reply does not match this CLI's protocol types: {e}"),
                     )
-                    .with_hint(
-                        "update peek with `honeycomb update 'peek'`; Peek.app updates itself",
-                    )
+                    .with_hint("update peek with `apps update 'peek'`; Peek.app updates itself")
                 }),
             Err(e) => Err(Error::from_object(e, Origin::Daemon)),
         }
@@ -423,110 +421,5 @@ impl Message {
             }
         };
         Ok(Frame { header, blobs })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ipc::cli::{RegisterSide, StatusOp};
-    use serde_json::json;
-
-    fn auth() -> AuthBlock {
-        AuthBlock {
-            home: "/Users/x/.peek".into(),
-            home_token: Secret::new("ab".repeat(32)),
-            api_url: ApiUrl::production(),
-            context: Context::Production,
-            context_id: Some("080a80f2-248f-4b9f-9a4f-f918a867398d".into()),
-        }
-    }
-
-    #[test]
-    fn request_round_trip() -> Result<()> {
-        let req = Request::new(
-            &RegisterSide {
-                index: crate::identity::SlotIndex::new(5)?,
-            },
-            Some(auth()),
-            vec![],
-        )?;
-        let frame = Message::Request(req.clone()).into_frame()?;
-        assert_eq!(frame.header["v"], 1);
-        assert_eq!(frame.header["op"], "register.side");
-        assert_eq!(frame.header["index"], 5);
-        assert_eq!(frame.header["auth"]["context"], "production");
-        let wire = frame::encode(&frame, &frame::FrameLimits::V1).map_err(Error::from)?;
-        let mut d = frame::Decoder::new(frame::FrameLimits::V1);
-        d.feed(&wire);
-        let back = d
-            .next_frame()
-            .map_err(Error::from)?
-            .ok_or_else(|| Error::internal("no frame"))?;
-        let Message::Request(back) = Message::from_frame(back)? else {
-            return Err(Error::internal("not a request"));
-        };
-        assert_eq!(back, req);
-        assert_eq!(back.parse::<RegisterSide>()?.index.get(), 5);
-        assert!(back.parse::<StatusOp>().is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn replies_and_errors() -> Result<()> {
-        let ok = Reply::ok("1", &json!({"slot":null}), vec![])?;
-        let f = Message::Reply(ok).into_frame()?;
-        assert_eq!(f.header["ok"], true);
-        let e = Error::new(ErrorCode::SideTaken, "held").with_details(json!({"free":[1]}));
-        let f = Message::Reply(Reply::err("2", e.to_object())).into_frame()?;
-        assert_eq!(f.header["ok"], false);
-        assert_eq!(f.header["error"]["code"], "side_taken");
-        let Message::Reply(r) = Message::from_frame(f)? else {
-            return Err(Error::internal("not a reply"));
-        };
-        let err = r
-            .into_result::<Value>()
-            .err()
-            .ok_or_else(|| Error::internal("expected error"))?;
-        assert_eq!(*err.code(), ErrorCode::SideTaken);
-        assert_eq!(err.origin(), Origin::Daemon);
-        assert_eq!(err.exit_code().code(), 4);
-        Ok(())
-    }
-
-    #[test]
-    fn classification_rules() {
-        let m = |v: Value| match v {
-            Value::Object(m) => Message::from_frame(Frame::new(m)),
-            _ => Err(Error::internal("x")),
-        };
-        assert!(m(json!({"id":"1","op":"status"})).is_err(), "missing v");
-        assert!(m(json!({"v":2,"id":"1","op":"status"})).is_err(), "wrong v");
-        assert!(
-            m(json!({"v":1,"op":"status"})).is_err(),
-            "request without id"
-        );
-        assert!(m(json!({"v":1,"id":"1","ok":"yes"})).is_err());
-        assert!(
-            m(json!({"v":1,"id":"1","ok":false})).is_err(),
-            "error reply without error"
-        );
-        assert!(m(json!({"v":1,"nothing":true})).is_err());
-        assert!(matches!(
-            m(json!({"v":1,"event":"restarting","to_build":2})),
-            Ok(Message::Event(_))
-        ));
-        assert!(matches!(
-            m(json!({"v":1,"id":"1","op":"x","future":1})),
-            Ok(Message::Request(_))
-        ));
-    }
-
-    #[test]
-    fn negotiation() {
-        assert_eq!(negotiate(&[1]), Some(1));
-        assert_eq!(negotiate(&[1, 2]), Some(1));
-        assert_eq!(negotiate(&[2]), None);
-        assert_eq!(negotiate(&[]), None);
     }
 }

@@ -1,5 +1,5 @@
-//! `peek update` (BLUEPRINT §4.6): Honeycomb guidance. peek never replaces
-//! its own binary; Honeycomb's per-home worker updates the CLI and peekd
+//! `peek update` (BLUEPRINT §4.6): Silicon Apps guidance. peek never replaces
+//! its own binary; Silicon Apps's per-home worker updates the CLI and peekd
 //! updates Peek.app.
 
 use serde_json::{Value, json};
@@ -24,20 +24,20 @@ async fn app_value() -> Value {
 }
 
 pub async fn run(_g: &Globals, out: Out) -> Result<()> {
-    let auto_update = !std::env::var("HONEYCOMB_AUTO_UPDATE").is_ok_and(|v| is_off_value(&v));
+    let auto_update = !std::env::var("APPS_AUTO_UPDATE").is_ok_and(|v| is_off_value(&v));
     let value = json!({
-        "manager": "honeycomb",
+        "manager": "apps",
         "app_id": "peek",
         "current_version": VERSION,
         "auto_update": auto_update,
         "can_replace_running_binary": false,
-        "command": "honeycomb update 'peek'",
+        "command": "apps update 'peek'",
         "app": app_value().await,
-        "message": "Honeycomb manages the peek CLI: its per-home worker installs new releases every minute. peekd updates Peek.app (newest build wins, never a downgrade). peek never replaces itself.",
+        "message": "Silicon Apps manages the peek CLI: its per-home worker installs new releases every minute. peekd updates Peek.app (newest build wins, never a downgrade). peek never replaces itself.",
     });
     out.value(&value, |v| {
         let mut s = format!(
-            "peek {} is managed by Honeycomb (automatic updates {}).\nUpdate now: {}",
+            "peek {} is managed by Silicon Apps (automatic updates {}).\nUpdate now: {}",
             v["current_version"].as_str().unwrap_or_default(),
             if v["auto_update"] == true {
                 "on"

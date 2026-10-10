@@ -2,8 +2,7 @@
 use crate::{homes::home_id, net::HomeRef, state::Shared};
 use serde::{Deserialize, Serialize};
 use silicon_peek_client::{
-    Error, ErrorCode, Result, Secret,
-    authorization::TingAuthorization,
+    Error, ErrorCode, Result,
     identity::{Actor, SlotKey},
     ipc::Op,
     runtime::{
@@ -17,7 +16,6 @@ pub(crate) struct PermissionAction {
     pub home_id: String,
     pub context_id: String,
     pub action: String,
-    pub code: Option<Secret>,
 }
 impl Op for PermissionAction {
     const NAME: &'static str = "permissions.ting";
@@ -27,7 +25,6 @@ impl Op for PermissionAction {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct PermissionResult {
     pub context_id: String,
-    pub request: Option<TingAuthorization>,
     pub enrolled: bool,
 }
 #[derive(Serialize)]
@@ -35,7 +32,7 @@ struct PublicContext {
     home_id: String,
     context_id: String,
     actor: Actor,
-    org_id: String,
+    account_id: String,
     api_url: String,
     context: String,
     label: String,
@@ -68,14 +65,14 @@ impl Shared {
                     home_id: home_id(&home.home_path),
                     context_id: slot.context_id()?.into(),
                     actor: slot.actor.clone(),
-                    org_id: slot.org_id.to_string(),
+                    account_id: slot.account_id.to_string(),
                     api_url: key.api_url().to_string(),
                     context: key.context().to_string(),
                     label: format!(
                         "{} · {} · {} · {}",
                         profile,
                         slot.actor.public_id,
-                        slot.org_id,
+                        slot.account_id,
                         key.context()
                     ),
                 });
@@ -87,18 +84,9 @@ impl Shared {
         &self,
         request: PermissionAction,
     ) -> Result<PermissionResult> {
-        let action = match request.action.as_str() {
-            "start" => Action::Start,
-            "status" => Action::Status,
-            "complete" => Action::Complete(request.code),
-            "cancel" => Action::Cancel,
-            "enroll" => Action::Enroll(None),
-            _ => {
-                return Err(Error::invalid_input(
-                    "choose start, status, complete, cancel or enroll",
-                ));
-            }
-        };
+        if !matches!(request.action.as_str(), "status" | "enroll") {
+            return Err(Error::invalid_input("choose status or enroll"));
+        }
         let home = self
             .known_homes()
             .await?
@@ -136,16 +124,21 @@ impl Shared {
             api_url: key.api_url().clone(),
             context: key.context(),
         };
-        let client = if matches!(action, Action::Cancel) {
-            self.net.client(&home_ref)?.1
-        } else {
-            self.net
+        if request.action == "enroll" {
+            let client = self
+                .net
                 .session(&home_ref, CLI_MARGIN, &RefreshPolicy::single_attempt())
                 .await?
-                .0
-        };
-        let result =
-            authorization::perform(&store, &client, &key, &request.context_id, action).await?;
+                .0;
+            authorization::perform(
+                &store,
+                &client,
+                &key,
+                &request.context_id,
+                Action::Enroll(None),
+            )
+            .await?;
+        }
         let file = store.read_session()?;
         let slot = file.usable_slot(&key, store.dir())?;
         if slot.context_id()? != request.context_id {
@@ -158,7 +151,7 @@ impl Shared {
         if request.action == "enroll" && enrolled {
             let actor_key = crate::state::ActorKey {
                 context: key.context(),
-                org: slot.org_id.clone(),
+                account: slot.account_id.clone(),
                 actor: slot.actor.public_id.clone(),
             };
             self.wake_authority_rows(&actor_key, key.api_url(), true)
@@ -166,7 +159,6 @@ impl Shared {
         }
         Ok(PermissionResult {
             context_id: request.context_id,
-            request: result,
             enrolled,
         })
     }

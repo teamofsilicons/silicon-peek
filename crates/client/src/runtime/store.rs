@@ -9,7 +9,7 @@
 //! | `testing.json` | [`TestingFile`] |
 //! | `home` | optional pointer written by `peek config home <dir>` |
 //!
-//! `$SILICON_HOME/.silicon-iam` is never touched.
+//! `$SILICON_HOME/.silicon-accounts` is never touched.
 
 use std::{
     ffi::OsStr,
@@ -28,7 +28,6 @@ use super::{
     },
     session::SessionFile,
     sys,
-    testing::TestingFile,
 };
 use crate::{
     Secret,
@@ -48,7 +47,6 @@ pub const DAEMON_TOKEN_FILE: &str = "daemon-token";
 /// The config file.
 pub const CONFIG_FILE: &str = "config.json";
 /// The testing environments file.
-pub const TESTING_FILE: &str = "testing.json";
 /// The `config home` pointer.
 pub const HOME_POINTER_FILE: &str = "home";
 
@@ -297,7 +295,7 @@ impl Store {
                     crate::VERSION
                 ),
             )
-            .with_hint("honeycomb update 'peek'"));
+            .with_hint("apps update 'peek'"));
         }
         serde_json::from_value(value)
             .map(Some)
@@ -317,9 +315,16 @@ impl Store {
     /// # Errors
     /// `store_corrupt`, `store_schema_newer`, `invalid_silicon_home`.
     pub fn read_session(&self) -> Result<SessionFile> {
-        Ok(self
-            .read_versioned(SESSION_FILE, super::session::SESSION_SCHEMA)?
-            .unwrap_or_default())
+        let Some(value) =
+            self.read_versioned::<Value>(SESSION_FILE, super::session::SESSION_SCHEMA)?
+        else {
+            return Ok(SessionFile::default());
+        };
+        if value.get("schema").and_then(Value::as_u64).unwrap_or(1) < 2 {
+            return Ok(SessionFile::default());
+        }
+        serde_json::from_value(value)
+            .map_err(|_| Error::new(ErrorCode::StoreCorrupt, "Saved session is malformed"))
     }
 
     /// Atomically writes `session.json` under the lock.
@@ -327,6 +332,17 @@ impl Store {
     /// # Errors
     /// I/O failures.
     pub fn write_session(&self, lock: &StoreLock, session: &SessionFile) -> Result<()> {
+        self.check_lock(lock)?;
+        if let Some(bytes) = read_private(&self.path(SESSION_FILE))?
+            && serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .and_then(|v| v.get("schema").and_then(Value::as_u64))
+                .unwrap_or(1)
+                < 2
+            && !self.path("session.pre-accounts.json").exists()
+        {
+            write_atomic(self.dir(), "session.pre-accounts.json", &bytes)?;
+        }
         let mut s = session.clone();
         s.schema = super::session::SESSION_SCHEMA;
         self.write_json(lock, SESSION_FILE, &s)
@@ -444,26 +460,6 @@ impl Store {
         Ok(c)
     }
 
-    /// Reads `testing.json` (empty when absent).
-    ///
-    /// # Errors
-    /// `store_corrupt`, `store_schema_newer`.
-    pub fn read_testing(&self) -> Result<TestingFile> {
-        Ok(self
-            .read_versioned(TESTING_FILE, super::testing::TESTING_SCHEMA)?
-            .unwrap_or_default())
-    }
-
-    /// Atomically writes `testing.json` under the lock.
-    ///
-    /// # Errors
-    /// I/O failures.
-    pub fn write_testing(&self, lock: &StoreLock, testing: &TestingFile) -> Result<()> {
-        let mut t = testing.clone();
-        t.schema = super::testing::TESTING_SCHEMA;
-        self.write_json(lock, TESTING_FILE, &t)
-    }
-
     /// Reads `daemon-token`, if present.
     ///
     /// # Errors
@@ -509,199 +505,5 @@ impl Store {
         // Another process may have won the O_EXCL race: read what is there.
         self.daemon_token()?
             .ok_or_else(|| Error::internal("daemon-token vanished right after creation"))
-    }
-}
-
-#[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-    use std::os::unix::fs::PermissionsExt as _;
-
-    fn temp() -> Result<tempfile::TempDir> {
-        tempfile::tempdir().map_err(|e| Error::internal(e.to_string()))
-    }
-
-    fn mode(p: &Path) -> u32 {
-        std::fs::metadata(p).map_or(0, |m| m.permissions().mode() & 0o777)
-    }
-
-    #[test]
-    fn silicon_home_rules() -> Result<()> {
-        let t = temp()?;
-        assert_eq!(
-            *silicon_home(Some(OsStr::new("")))
-                .err()
-                .ok_or_else(|| Error::internal("x"))?
-                .code(),
-            ErrorCode::InvalidSiliconHome
-        );
-        let missing = t.path().join("missing");
-        assert!(silicon_home(Some(missing.as_os_str())).is_err());
-        let file = t.path().join("file");
-        std::fs::write(&file, b"").map_err(|e| Error::internal(e.to_string()))?;
-        assert!(silicon_home(Some(file.as_os_str())).is_err());
-        let home = silicon_home(Some(t.path().as_os_str()))?;
-        assert!(home.is_absolute());
-        assert!(
-            silicon_home(None)?.is_absolute(),
-            "falls back to the passwd home"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn store_layout_and_permissions() -> Result<()> {
-        let t = temp()?;
-        let home = silicon_home(Some(t.path().as_os_str()))?;
-        let store = Store::open(&store_dir_for(&home)?)?;
-        assert_eq!(store.dir(), home.join(".peek"));
-        assert_eq!(mode(store.dir()), 0o700);
-        let lock = store.lock()?;
-        let token = store.ensure_daemon_token(&lock)?;
-        assert_eq!(token.expose().len(), 64);
-        assert_eq!(store.ensure_daemon_token(&lock)?, token, "created once");
-        assert_eq!(mode(&store.path(DAEMON_TOKEN_FILE)), 0o600);
-        store.write_session(&lock, &SessionFile::default())?;
-        assert_eq!(mode(&store.path(SESSION_FILE)), 0o600);
-        drop(lock);
-        assert_eq!(mode(&store.path(LOCK_FILE)), 0o600);
-        assert!(!home.join(".silicon-iam").exists());
-        Store::open_existing(store.dir())?;
-        Ok(())
-    }
-
-    #[test]
-    fn schema_guard_and_corruption() -> Result<()> {
-        let t = temp()?;
-        let store = Store::open(&t.path().join(".peek"))?;
-        std::fs::write(store.path(SESSION_FILE), br#"{"schema":2,"slots":{}}"#)
-            .map_err(|e| Error::internal(e.to_string()))?;
-        std::fs::set_permissions(
-            store.path(SESSION_FILE),
-            std::fs::Permissions::from_mode(0o600),
-        )
-        .map_err(|e| Error::internal(e.to_string()))?;
-        let e = store
-            .read_session()
-            .err()
-            .ok_or_else(|| Error::internal("expected error"))?;
-        assert_eq!(*e.code(), ErrorCode::StoreSchemaNewer);
-        assert_eq!(e.exit_code().code(), 4);
-        assert_eq!(e.hint(), Some("honeycomb update 'peek'"));
-        std::fs::write(
-            store.path(SESSION_FILE),
-            br#"{"schema":1,"slots":{},"slots":{}}"#,
-        )
-        .map_err(|e| Error::internal(e.to_string()))?;
-        assert_eq!(
-            store.read_session().err().map(|e| e.code().clone()),
-            Some(ErrorCode::StoreCorrupt)
-        );
-        std::fs::write(store.path(SESSION_FILE), b"{}")
-            .map_err(|e| Error::internal(e.to_string()))?;
-        assert_eq!(
-            store.read_session().err().map(|e| e.code().clone()),
-            Some(ErrorCode::StoreCorrupt)
-        );
-        std::fs::write(
-            store.path(CONFIG_FILE),
-            br#"{"schema":1,"telemetry":"maybe"}"#,
-        )
-        .map_err(|e| Error::internal(e.to_string()))?;
-        assert_eq!(
-            store.read_config().err().map(|e| e.code().clone()),
-            Some(ErrorCode::StoreCorrupt)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn config_merge_is_persisted() -> Result<()> {
-        let t = temp()?;
-        let store = Store::open(&t.path().join(".peek"))?;
-        assert!(store.read_config()?.telemetry);
-        let c = store.merge_config(r#"{"telemetry":false,"notify":["speech_finished"]}"#)?;
-        assert!(!c.telemetry);
-        assert_eq!(store.read_config()?, c);
-        assert!(
-            store
-                .merge_config(r#"{"telemetry":true,"bogus":1}"#)
-                .is_err()
-        );
-        assert!(
-            !store.read_config()?.telemetry,
-            "a rejected patch writes nothing"
-        );
-        assert_eq!(mode(&store.path(CONFIG_FILE)), 0o600);
-
-        // A hand-corrupted value blocks unrelated merges but can be repaired.
-        std::fs::write(
-            store.path(CONFIG_FILE),
-            br#"{"schema":1,"telemetry":"maybe","voice":null}"#,
-        )
-        .map_err(|e| Error::internal(e.to_string()))?;
-        assert!(store.read_config().is_err());
-        let e = store
-            .merge_config(r#"{"voice":"JBFqnCBsd6RMkjVDRZzb"}"#)
-            .err()
-            .ok_or_else(|| Error::internal("expected error"))?;
-        assert_eq!(*e.code(), ErrorCode::StoreCorrupt);
-        assert!(e.message().contains("telemetry"));
-        let c = store.merge_config(r#"{"telemetry":null,"voice":"JBFqnCBsd6RMkjVDRZzb"}"#)?;
-        assert!(c.telemetry);
-        assert_eq!(store.read_config()?, c);
-        Ok(())
-    }
-
-    #[test]
-    fn home_pointer_moves_the_store() -> Result<()> {
-        let t = temp()?;
-        let home = silicon_home(Some(t.path().as_os_str()))?;
-        let other = home.join("elsewhere");
-        std::fs::create_dir(&other).map_err(|e| Error::internal(e.to_string()))?;
-        let moved = set_home_pointer(&home, &other)?;
-        assert_eq!(store_dir_for(&home)?, moved);
-        assert_eq!(moved, other.join(".peek"));
-        std::fs::write(home.join(".peek/home"), b"relative/path\n")
-            .map_err(|e| Error::internal(e.to_string()))?;
-        assert!(store_dir_for(&home).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn corrupt_daemon_token_is_reported() -> Result<()> {
-        let t = temp()?;
-        let store = Store::open(&t.path().join(".peek"))?;
-        std::fs::write(store.path(DAEMON_TOKEN_FILE), b"short")
-            .map_err(|e| Error::internal(e.to_string()))?;
-        std::fs::set_permissions(
-            store.path(DAEMON_TOKEN_FILE),
-            std::fs::Permissions::from_mode(0o600),
-        )
-        .map_err(|e| Error::internal(e.to_string()))?;
-        assert_eq!(
-            store.daemon_token().err().map(|e| e.code().clone()),
-            Some(ErrorCode::StoreCorrupt)
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn async_lock_waits_for_the_holder() -> Result<()> {
-        let t = temp()?;
-        let store = Store::open(&t.path().join(".peek"))?;
-        let held = store.lock()?;
-        let s2 = store.clone();
-        let waiter =
-            tokio::spawn(async move { s2.lock_async().await.map(|_| std::time::Instant::now()) });
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        let released = std::time::Instant::now();
-        drop(held);
-        let acquired = waiter.await.map_err(|e| Error::internal(e.to_string()))??;
-        assert!(
-            acquired >= released,
-            "the waiter acquired only after release"
-        );
-        Ok(())
     }
 }

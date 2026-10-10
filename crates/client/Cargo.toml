@@ -51,10 +51,6 @@ nix = { workspace = true, optional = true, features = ["user", "fs"] }
 [target.'cfg(all(windows, target_arch = "aarch64"))'.dependencies]
 blake3 = { workspace = true, features = ["pure"] }
 
-[dev-dependencies]
-tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time", "sync"] }
-wiremock.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

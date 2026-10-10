@@ -44,7 +44,7 @@ app="$derived/Build/Products/$configuration/Peek.app"
 [ -d "$app" ] || { echo "build-dev: expected $app after the build" >&2; exit 1; }
 links="$(find "$app" -type l)"
 if [ -n "$links" ]; then
-  echo "build-dev: Peek.app contains symlinks, which Honeycomb rejects:" >&2
+  echo "build-dev: Peek.app contains symlinks; release bundles must contain their files directly:" >&2
   echo "$links" >&2
   exit 1
 fi

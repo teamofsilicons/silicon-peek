@@ -65,8 +65,6 @@ public struct BubbleTiming: Sendable, Equatable {
     public var summonIdle: Double = 12
     /// The double-click window (`NSEvent.doubleClickInterval`).
     public var doubleClick: Double = 0.5
-    /// A test bubble shows "Sent to test silicon" this long before it leaves (gap-testing §9.3).
-    public var sentLinger: Double = 0.9
     /// After the pointer leaves the bubble (or its popup closes), the show stays at least this long (ui-feedback.md:
     /// reading a revealed or expanded text must not be cut off by the auto-dismiss).
     public var afterHover: Double = 2.5
@@ -97,7 +95,6 @@ public enum BubbleTimer: Hashable, Sendable, CaseIterable {
     case notice
     case summonIdle
     case doubleClick
-    case sentLinger
     /// The double-Esc window (and an ask's first-Esc arm).
     case escDouble
     /// "Esc again to dismiss" on a compact ask.
@@ -256,7 +253,6 @@ public struct BubbleMachine: Sendable, Equatable {
     public static let transcribeFailedNotice = "Couldn't transcribe — type instead"
     public static let nothingHeardNotice = "Didn't hear anything — try again or type"
     public static let stillTranscribingNotice = "Still transcribing — tap an option or type"
-    public static let sentToTestNotice = "Sent to test silicon"
     public static let escAgainHint = "Esc again to dismiss"
 
     public let id: BubbleID
@@ -779,9 +775,6 @@ public struct BubbleMachine: Sendable, Equatable {
             guard stage == .leaving else { return [] }
             leaveAnimationDone = true
             return finishIfDone()
-        case .sentLinger:
-            guard stage == .entering || stage == .visible else { return [] }
-            return beginLeaving(.answered, now: now)
         case .prewarm:
             // The cap: slide in whatever is still missing (the manager logs what).
             return slideIn(now: now)
@@ -991,10 +984,6 @@ public struct BubbleMachine: Sendable, Equatable {
     }
 
     private mutating func leaveAfterSending(now: Double) -> [BubbleEffect] {
-        if event?.context.inputContext == .testing {
-            notice = Self.sentToTestNotice
-            return [.schedule(.sentLinger, seconds: timing.sentLinger)]
-        }
         return beginLeaving(.answered, now: now)
     }
 
@@ -1021,7 +1010,7 @@ public struct BubbleMachine: Sendable, Equatable {
             effects.append(.cancelRecording)
             input = .none
         }
-        for timer in [BubbleTimer.enter, .autoDismiss, .speechStart, .transcribe, .summonIdle, .sentLinger, .escDouble,
+        for timer in [BubbleTimer.enter, .autoDismiss, .speechStart, .transcribe, .summonIdle, .escDouble,
                       .escHint, .prewarm] {
             effects.append(.cancel(timer))
         }

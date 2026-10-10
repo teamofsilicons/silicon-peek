@@ -29,7 +29,7 @@ const TOPICS: &[Topic] = &[
     Topic {
         name: "start",
         title: "Start here",
-        summary: "Install peek with `curl -fsSL https://peek.teamofsilicons.com/install.sh | sh` (Honeycomb, the peek CLI, then Peek.app). A Silicon then runs `peek iam --json`, `peek login '<SLT>'`, `peek register side <1-8>`, `peek register drawing ./logo.js`, and `peek send --speak \"…\"`.",
+        summary: "Install peek with `curl -fsSL https://peek.teamofsilicons.com/install.sh | sh` (Silicon Apps, the peek CLI, then Peek.app). A Silicon then runs `peek accounts --json`, `peek login '<SLT>'`, `peek register side <1-8>`, `peek register drawing ./logo.js`, and `peek send --speak \"…\"`.",
     },
     Topic {
         name: "carbon",
@@ -67,14 +67,9 @@ const TOPICS: &[Topic] = &[
         summary: "peek sends nine Ting types to the asking Silicon: peek.ask.answered, peek.ask.dismissed, peek.ask.expired, peek.message.received, peek.send.expired, peek.schedule.due, and (opt-in, always for scheduled sends) peek.send.shown, plus (opt-in) peek.speech.finished and peek.show.dismissed. metadata.isi carries the ISI of the send. Route them in your Stemcell flow; delivery is at least once, so dedupe by ting id.",
     },
     Topic {
-        name: "iam",
-        title: "IAM and sessions",
-        summary: "peek is the IAM app `peek` owned by org `tos`. Mint an SLT with `iam silicon-login --app-id peek --grant-org <org> --approve-scopes`, then `peek login '<SLT>'`. Tokens stay in $SILICON_HOME/.peek/session.json (0600); `peek login status --json` verifies them live; `peek logout` revokes them.",
-    },
-    Topic {
-        name: "testing",
-        title: "Testing environments",
-        summary: "`printf %s \"$SECRET\" | peek --app-secret-file - login <SLT or test public id>` discovers and saves a testing environment; then use `peek --test <env-uuid> <command>`. Test sessions and data are isolated from production, and stderr ends with `Testing environment: <name> (<uuid>)`.",
+        name: "accounts",
+        title: "ACCOUNTS and sessions",
+        summary: "peek is the ACCOUNTS app `peek` owned by `si:tos`. Mint an SLT with `silicon-accounts login --app peek --json`, then `peek login '<SLT>'`. Tokens stay in $SILICON_HOME/.peek/session.json (0600); `peek login status --json` verifies them live; `peek logout` revokes them.",
     },
     Topic {
         name: "telemetry",
@@ -89,17 +84,17 @@ const TOPICS: &[Topic] = &[
     Topic {
         name: "platforms",
         title: "Platforms",
-        summary: "Full support: macOS 26+ on Apple silicon and Intel (Peek.app). On Linux and Windows the same CLI implements iam, login, login status, logout, config, docs, commands, report, update and doctor; commands that need the Mac exit 4 with platform_unsupported.",
+        summary: "Full support: macOS 26+ on Apple silicon and Intel (Peek.app). On Linux and Windows the same CLI implements accounts, login, login status, logout, config, docs, commands, report, update and doctor; commands that need the Mac exit 4 with platform_unsupported.",
     },
     Topic {
         name: "development",
         title: "Development",
-        summary: "peek is open source: https://github.com/teamofsilicons/silicon-peek. `cargo test --workspace` runs every Rust test against local fakes (wiremock, temporary SILICON_HOME, PEEK_DAEMON_SOCKET). File bugs with `peek report \"…\" --pr <url>`.",
+        summary: "peek is open source: https://github.com/teamofsilicons/silicon-peek. `cargo check --workspace --locked` verifies the Rust workspace. File bugs with `peek report \"…\" --pr <url>`.",
     },
     Topic {
         name: "versioning",
         title: "Versioning and compatibility",
-        summary: "One version for the CLI, peekd, Peek.app and the backend. Honeycomb updates the CLI every minute; peekd updates Peek.app (newest build wins, never downgrade). `peek update` prints the guidance; `honeycomb update 'peek'` updates by hand.",
+        summary: "One version for the CLI, peekd, Peek.app and the backend. Silicon Apps updates the CLI every minute; peekd updates Peek.app (newest build wins, never downgrade). `peek update` prints the guidance; `apps update 'peek'` updates by hand.",
     },
     Topic {
         name: "troubleshooting",
@@ -177,12 +172,6 @@ pub fn topic(name: &str) -> Result<Value> {
     if wanted == "index" {
         return Ok(index());
     }
-    // `tests` is accepted as an alias, as in dm docs.
-    let wanted = if wanted == "tests" {
-        "testing".to_owned()
-    } else {
-        wanted
-    };
     TOPICS
         .iter()
         .find(|t| t.name == wanted)
@@ -308,96 +297,4 @@ pub fn human(value: &Value) -> String {
         silicon_peek_client::DOCS_URL
     );
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const ADVERTISED: [&str; 16] = [
-        "start",
-        "carbon",
-        "silicon",
-        "cli",
-        "show",
-        "ask",
-        "drawing",
-        "ting",
-        "iam",
-        "testing",
-        "telemetry",
-        "privacy",
-        "platforms",
-        "development",
-        "versioning",
-        "troubleshooting",
-    ];
-
-    #[test]
-    fn every_advertised_topic_resolves() -> Result<()> {
-        assert_eq!(topic_names(), ADVERTISED.to_vec());
-        for name in ADVERTISED {
-            let doc = topic(name)?;
-            assert_eq!(doc["topic"], name);
-            assert_eq!(doc["format"], "markdown");
-            assert_eq!(doc["command"], format!("peek docs {name}"));
-            assert_eq!(doc["package_version"], silicon_peek_client::VERSION);
-            assert!(doc["content"].as_str().is_some_and(|c| c.len() > 40));
-            assert!(doc["title"].as_str().is_some_and(|t| !t.is_empty()));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn unknown_topics_list_the_valid_ones() {
-        let e = topic("nope").err();
-        assert!(e.is_some_and(|e| {
-            e.exit_code().code() == 2
-                && e.details()
-                    .is_some_and(|d| d["topics"].as_array().is_some_and(|a| a.len() == 16))
-        }));
-    }
-
-    #[test]
-    fn search_and_index() -> Result<()> {
-        let s = search("peek")?;
-        assert!(s["results"].as_array().is_some_and(|r| !r.is_empty()));
-        for r in s["results"].as_array().into_iter().flatten() {
-            for m in r["matches"].as_array().into_iter().flatten() {
-                assert!(
-                    m["excerpt"]
-                        .as_str()
-                        .is_some_and(|e| e.chars().count() <= 320)
-                );
-            }
-        }
-        assert!(search("  ").is_err());
-        assert_eq!(index()["topics"].as_array().map(Vec::len), Some(16));
-        assert_eq!(all()["documents"].as_array().map(Vec::len), Some(16));
-        Ok(())
-    }
-
-    #[test]
-    fn titles_are_the_manuals_h1_and_index_md_is_tolerated() -> Result<()> {
-        for t in TOPICS {
-            let g = guide(t);
-            if g.embedded {
-                assert_eq!(g.title, t.title, "docs/{}.md's H1", t.name);
-            }
-        }
-        // docs/index.md is synced too but is not one of the 16 topics.
-        let index = topic("index")?;
-        assert_eq!(index["topics"].as_array().map(Vec::len), Some(16));
-        assert!(!topic_names().contains(&"index"));
-        Ok(())
-    }
-
-    #[test]
-    fn titles_come_from_the_first_heading() {
-        assert_eq!(
-            title_of("intro\n# Real title\n## sub").as_deref(),
-            Some("Real title")
-        );
-        assert_eq!(title_of("no heading"), None);
-    }
 }

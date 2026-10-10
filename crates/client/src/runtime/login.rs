@@ -14,7 +14,7 @@ use crate::{
     api::{SessionResponse, TingEnrollment},
     error::{Error, ErrorCode, Result},
     http::Client,
-    identity::{ActorId, Context, OrgId, SlotKey},
+    identity::{AccountId, ActorId, Context, SlotKey},
     ids::IdempotencyKey,
     timestamp::unix_now,
 };
@@ -51,48 +51,31 @@ fn is_uncertain(e: &Error) -> bool {
 /// session under the lock and creates `daemon-token` if absent.
 ///
 /// # Errors
-/// `slt_is_public_id` (production), `slt_rejected`, `private_application_organization_required`,
+/// `slt_is_public_id` (production), `slt_rejected`, `private_application_account_required`,
 /// or the last uncertain error, with `pending_login` kept for `--recover`.
 pub async fn login(
     store: &Store,
     client: &Client,
     context: Context,
     slt: &Secret,
-    org_hint: Option<&OrgId>,
+    account_hint: Option<&AccountId>,
     delays: &[Duration],
 ) -> Result<LoginOutcome> {
     let slt_text = slt.expose().trim();
     if slt_text.is_empty() {
-        return Err(Error::invalid_input("the SLT is empty").with_hint(
-            "mint one: iam silicon-login --app-id peek --grant-org <org> --approve-scopes",
-        ));
+        return Err(Error::invalid_input("the SLT is empty")
+            .with_hint("mint one: silicon-accounts login --app peek --json"));
     }
     if context == Context::Production && ActorId::looks_like_public_id(slt_text) {
         return Err(Error::new(
             ErrorCode::SltIsPublicId,
-            "that looks like a public ID (si:… or c:…), not a short-lived token; only testing environments accept public IDs",
+            "that looks like a public ID (si:… or c:…), not a short-lived token",
         )
-        .with_hint("mint an SLT: iam silicon-login --app-id peek --grant-org <org> --approve-scopes"));
-    }
-    if context != Context::Production
-        && ActorId::looks_like_public_id(slt_text)
-        && org_hint.is_none()
-    {
-        return Err(Error::invalid_input(
-            "testing public actor login requires an explicit organization",
-        )
-        .with_hint("pass --org <organization>"));
+        .with_hint("mint an SLT: silicon-accounts login --app peek --json"));
     }
     let slt = Secret::new(slt_text);
     let key = SlotKey::new(client.api_url().clone(), context);
-    // A real SLT is single-use, so its derived key names exactly one login.
-    // A public ID (testing environments only; refused above in production)
-    // repeats on every login: each attempt gets its own key.
-    let idem = if ActorId::looks_like_public_id(slt.expose()) {
-        IdempotencyKey::login_attempt(slt.expose())
-    } else {
-        IdempotencyKey::login(slt.expose())
-    };
+    let idem = IdempotencyKey::login(slt.expose());
     let started_at = unix_now();
     store
         .update_session_async(|f| {
@@ -109,19 +92,26 @@ pub async fn login(
                 slt: slt.clone(),
                 started_at,
                 slot: Some(key.as_string()),
-                org_hint: org_hint.map(|o| o.as_str().to_owned()),
+                account_hint: account_hint.map(|o| o.as_str().to_owned()),
             });
             Ok(())
         })
         .await?;
     exchange_and_commit(
-        store, client, &key, &slt, org_hint, &idem, started_at, delays,
+        store,
+        client,
+        &key,
+        &slt,
+        account_hint,
+        &idem,
+        started_at,
+        delays,
     )
     .await
 }
 
 /// `peek login --recover`: retries the pending exchange with its original key
-/// and SLT within IAM's 10-minute replay window.
+/// and SLT within ACCOUNTS's 10-minute replay window.
 ///
 /// # Errors
 /// `invalid_input` when nothing is pending or it targets another API or
@@ -147,7 +137,7 @@ pub async fn recover_login(
             "the interrupted login targeted {}, not {key}",
             pending.slot.as_deref().unwrap_or("?")
         ))
-        .with_hint("rerun --recover with the same --api and --test as the original login"));
+        .with_hint("rerun --recover with the same --api and --profile as the original login"));
     }
     if unix_now().saturating_sub(pending.started_at) > REPLAY_WINDOW_SECS {
         store
@@ -163,18 +153,22 @@ pub async fn recover_login(
             .await?;
         return Err(Error::new(
             ErrorCode::LoginAttemptExpired,
-            "the interrupted login is older than 10 minutes, so IAM can no longer replay it",
+            "the interrupted login is older than 10 minutes, so ACCOUNTS can no longer replay it",
         )
         .with_hint("mint a new SLT and run peek login '<SLT>'"));
     }
     let idem = IdempotencyKey::parse(&pending.key)?;
-    let org = pending.org_hint.as_deref().map(OrgId::parse).transpose()?;
+    let account = pending
+        .account_hint
+        .as_deref()
+        .map(AccountId::parse)
+        .transpose()?;
     exchange_and_commit(
         store,
         client,
         &key,
         &pending.slt,
-        org.as_ref(),
+        account.as_ref(),
         &idem,
         pending.started_at,
         delays,
@@ -188,15 +182,16 @@ async fn exchange_and_commit(
     client: &Client,
     key: &SlotKey,
     slt: &Secret,
-    org_hint: Option<&OrgId>,
+    account_hint: Option<&AccountId>,
     idem: &IdempotencyKey,
-    started_at: i64,
+    _started_at: i64,
     delays: &[Duration],
 ) -> Result<LoginOutcome> {
     let mut attempt = 0usize;
-    let resp: SessionResponse = loop {
-        match client.login(slt, org_hint, idem).await {
-            Ok(r) => break r,
+    let (resp, response_started_at): (SessionResponse, i64) = loop {
+        let request_started_at = unix_now();
+        match client.login(slt, account_hint, idem).await {
+            Ok(r) => break (r, request_started_at),
             Err(e) if is_uncertain(&e) => {
                 if let Some(d) = delays.get(attempt) {
                     attempt += 1;
@@ -235,21 +230,14 @@ async fn exchange_and_commit(
         }
     };
     super::session::validate_response(&resp, key.context())?;
-    if org_hint.is_some_and(|org| org != &resp.org_id) {
+    if account_hint.is_some_and(|account| account != &resp.account_id) {
         return Err(Error::new(
             ErrorCode::UnexpectedResponse,
-            "login returned a different organization",
-        ));
-    }
-    if ActorId::looks_like_public_id(slt.expose()) && resp.actor.public_id.as_str() != slt.expose()
-    {
-        return Err(Error::new(
-            ErrorCode::UnexpectedResponse,
-            "testing login returned a different actor",
+            "login returned a different account",
         ));
     }
     let now = unix_now();
-    let session = SessionSlot::from_login(&resp, started_at, now);
+    let session = SessionSlot::from_login(&resp, response_started_at, now);
     let lock = store.lock_async().await?;
     let mut file = store.read_session()?;
     if !file.pending_login.as_ref().is_some_and(|pending| {
@@ -336,7 +324,7 @@ pub async fn logout(
     };
     let idem = IdempotencyKey::parse(&revocation.key)?;
     let result = client
-        .with_session(slot.access_token.clone(), slot.org_id.clone())
+        .with_session(slot.access_token.clone(), slot.account_id.clone())
         .logout(&revocation.token, &idem, revoke_ting)
         .await;
     let (remote, error) = match &result {

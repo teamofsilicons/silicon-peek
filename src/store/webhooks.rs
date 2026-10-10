@@ -1,4 +1,4 @@
-//! `webhook_events`: IAM webhook dedupe.
+//! `webhook_events`: ACCOUNTS webhook dedupe.
 
 use rusqlite::{Connection, params};
 

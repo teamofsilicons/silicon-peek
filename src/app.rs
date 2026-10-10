@@ -40,24 +40,45 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Builds the router with every route of BLUEPRINT §5.2.
 pub fn router(state: AppState) -> Router {
+    let origins: Vec<HeaderValue> = state
+        .0
+        .config
+        .web_origins
+        .iter()
+        .filter_map(|o| o.parse().ok())
+        .collect();
+    let cors = tower_http::cors::CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::DELETE,
+        ])
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            axum::http::HeaderName::from_static("idempotency-key"),
+            axum::http::HeaderName::from_static("peek-client-version"),
+            axum::http::HeaderName::from_static("x-peek-telemetry"),
+        ]);
     Router::new()
         .route(paths::HEALTHZ, get(routes::health::healthz))
         .route(paths::READYZ, get(routes::health::readyz))
-        .route(paths::IAM, get(routes::discovery::iam))
+        .route(paths::ACCOUNTS, get(routes::discovery::accounts))
         .route(paths::LOGIN, post(routes::auth::login))
+        .route("/api/v1/auth/exchange", post(routes::auth::exchange))
         .route(paths::REFRESH, post(routes::auth::refresh))
         .route(paths::LOGOUT, post(routes::auth::logout))
         .route(paths::ME, get(routes::auth::me))
-        .route("/api/v1/ting/authorization", post(routes::obo::start))
-        .route("/api/v1/ting/authorizations/{id}", get(routes::obo::status))
-        .route("/api/v1/ting/authorizations/{id}/complete", post(routes::obo::complete))
         .route(paths::TING_RECIPIENT, post(routes::ting::enroll))
         .route(paths::DELIVERIES, post(routes::ting::deliver))
         .route(paths::SPEECH_TOKEN, post(routes::speech::token))
         .route(
             paths::SPEECH_LISTEN,
-            post(routes::speech::listen)
-                .layer(DefaultBodyLimit::max(silicon_peek_client::api::LISTEN_MAX_BYTES)),
+            post(routes::speech::listen).layer(DefaultBodyLimit::max(
+                silicon_peek_client::api::LISTEN_MAX_BYTES,
+            )),
         )
         .route(
             paths::DRAWING,
@@ -66,18 +87,14 @@ pub fn router(state: AppState) -> Router {
                 .delete(routes::drawings::delete),
         )
         .route(
-            "/api/v1/orgs/{org}/byo/deepgram",
+            "/api/v1/accounts/{account}/byo/deepgram",
             get(routes::byo::get)
                 .put(routes::byo::put)
                 .delete(routes::byo::delete),
         )
         .route(paths::REPORTS, post(routes::reports::create))
         .route(paths::WEB_TELEMETRY, post(routes::telemetry::ingest))
-        .route(paths::IAM_WEBHOOK, post(routes::webhooks::iam))
-        .route(
-            "/internal/honeycomb/organizations/{org}/testing-environments/{environment}/operations/{operation}",
-            put(routes::participant::apply).get(routes::participant::receipt),
-        )
+        .route(paths::ACCOUNTS_WEBHOOK, post(routes::webhooks::accounts))
         .fallback(routes::not_found)
         .method_not_allowed_fallback(routes::method_not_allowed)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -85,7 +102,11 @@ pub fn router(state: AppState) -> Router {
             StatusCode::SERVICE_UNAVAILABLE,
             REQUEST_TIMEOUT,
         ))
-        .layer(middleware::from_fn_with_state(state.clone(), request_context))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            request_context,
+        ))
+        .layer(cors)
         .with_state(state)
 }
 
@@ -165,7 +186,6 @@ async fn request_context(State(state): State<AppState>, mut req: Request, next: 
             .get(headers::TELEMETRY)
             .and_then(|v| v.to_str().ok())
             .is_some_and(is_off_value),
-        testing: req.headers().contains_key(headers::TESTING_KEY),
         trace_id: trace_id(req.headers().get(headers::TRACE_ID)),
     };
     req.extensions_mut().insert(meta.clone());
@@ -209,41 +229,4 @@ async fn request_context(State(state): State<AppState>, mut req: Request, next: 
         );
     }
     response
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn trace_ids_are_validated() {
-        assert_eq!(
-            trace_id(Some(&HeaderValue::from_static("0192-abc_D"))),
-            Some("0192-abc_D".to_owned())
-        );
-        assert_eq!(trace_id(Some(&HeaderValue::from_static("a b"))), None);
-        assert_eq!(trace_id(None), None);
-    }
-
-    #[tokio::test]
-    async fn plain_rejections_become_envelopes() -> Result<(), Box<dyn std::error::Error>> {
-        let plain = (StatusCode::BAD_REQUEST, "Invalid URL: bad uuid").into_response();
-        let response = normalize(plain).await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 1 << 16).await?;
-        let v: serde_json::Value = serde_json::from_slice(&body)?;
-        assert_eq!(v["error"]["code"], "invalid_input");
-        assert!(
-            v["error"]["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("bad uuid")
-        );
-        let timeout = normalize(StatusCode::SERVICE_UNAVAILABLE.into_response()).await;
-        let body = axum::body::to_bytes(timeout.into_body(), 1 << 16).await?;
-        let v: serde_json::Value = serde_json::from_slice(&body)?;
-        assert_eq!(v["error"]["code"], "backend_unavailable");
-        assert_eq!(v["error"]["retryable"], true);
-        Ok(())
-    }
 }

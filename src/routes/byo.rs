@@ -1,6 +1,6 @@
-//! `GET/PUT/DELETE /api/v1/orgs/{org}/byo/deepgram`: an org's own Deepgram
-//! legacy key (unused by speech). Any member may read the status; changes need `org_role` owner or
-//! admin (disclosed by `self.membership.read`). The key is never returned.
+//! `GET/PUT/DELETE /api/v1/accounts/{account}/byo/deepgram`: an account's own Deepgram
+//! legacy key (unused by speech). Any member may read the status; changes need `account_role` owner or
+//! admin (disclosed by `profile`). The key is never returned.
 
 use axum::{
     Json,
@@ -28,51 +28,28 @@ async fn principal_for(
     state: &AppState,
     plane: &Plane,
     headers: &HeaderMap,
-    org: &str,
+    account: &str,
 ) -> ApiResult<Principal> {
     let principal = auth::authenticate(
         plane,
         Bearer::required(headers)?,
-        &state.0.config.iam.app_id,
+        &state.0.config.accounts.app_id,
     )
     .await?;
-    if principal.org.as_str() != org {
+    if principal.account.as_str() != account {
         return Err(ApiError::invalid_input(format!(
-            "the path names org `{org}` but the session is for org `{}` (X-Org-ID)",
-            principal.org
+            "the path names account `{account}` but the session is for account `{}` (X-Account-ID)",
+            principal.account
         )));
     }
     Ok(principal)
 }
 
-fn require_admin(principal: &Principal) -> ApiResult<()> {
-    if principal.is_org_admin() {
-        return Ok(());
-    }
-    let (message, hint) = match principal.org_role.as_deref() {
-        None => (
-            format!(
-                "changing org `{}`'s Deepgram key needs an owner or admin, and IAM did not disclose this session's org role",
-                principal.org
-            ),
-            "log in again approving self.membership.read so peek can see your role",
-        ),
-        Some(role) => (
-            format!(
-                "changing org `{}`'s Deepgram key needs an owner or admin; this session's role is `{role}`",
-                principal.org
-            ),
-            "ask an org owner or admin to set it",
-        ),
-    };
-    Err(ApiError::new(StatusCode::FORBIDDEN, ErrorCode::NotOrgAdmin, message).with_hint(hint))
-}
-
-async fn status(plane: &Plane, org: String) -> ApiResult<ByoStatus> {
+async fn status(plane: &Plane, account: String) -> ApiResult<ByoStatus> {
     let ctx = plane.ctx_string();
     let row = plane
         .db
-        .call(move |conn| Ok(store::byo::get(conn, &ctx, &org)?))
+        .call(move |conn| Ok(store::byo::get(conn, &ctx, &account)?))
         .await?;
     Ok(match row {
         Some(row) => ByoStatus {
@@ -88,15 +65,15 @@ async fn status(plane: &Plane, org: String) -> ApiResult<ByoStatus> {
     })
 }
 
-/// `GET`: whether the org has a key.
+/// `GET`: whether the account has a key.
 pub(crate) async fn get(
     State(state): State<AppState>,
     plane: Plane,
-    Path(org): Path<String>,
+    Path(account): Path<String>,
     headers: HeaderMap,
 ) -> ApiResult<Json<ByoStatus>> {
-    principal_for(&state, &plane, &headers, &org).await?;
-    status(&plane, org).await.map(Json)
+    principal_for(&state, &plane, &headers, &account).await?;
+    status(&plane, account).await.map(Json)
 }
 
 /// `PUT {"api_key","base_url"?}`: validates the key with Deepgram, then
@@ -104,12 +81,11 @@ pub(crate) async fn get(
 pub(crate) async fn put(
     State(state): State<AppState>,
     plane: Plane,
-    Path(org): Path<String>,
+    Path(account): Path<String>,
     headers: HeaderMap,
     body: JsonBody<ByoDeepgramRequest>,
 ) -> ApiResult<Json<ByoStatus>> {
-    let principal = principal_for(&state, &plane, &headers, &org).await?;
-    require_admin(&principal)?;
+    let principal = principal_for(&state, &plane, &headers, &account).await?;
     let request = body.value;
     let key = request.api_key.expose().trim();
     if !(16..=512).contains(&key.len()) || !key.bytes().all(|b| b.is_ascii_graphic()) {
@@ -144,15 +120,15 @@ pub(crate) async fn put(
     let sealed = state
         .0
         .sealer
-        .seal(&byo_aad(&ctx, &org), key.expose().as_bytes())?;
-    let (org_db, by) = (org.clone(), principal.actor.to_string());
+        .seal(&byo_aad(&ctx, &account), key.expose().as_bytes())?;
+    let (account_db, by) = (account.clone(), principal.actor.to_string());
     plane
         .db
         .call(move |conn| {
             Ok(store::byo::put(
                 conn,
                 &ctx,
-                &org_db,
+                &account_db,
                 &sealed,
                 base_url.as_deref(),
                 unix_now(),
@@ -160,23 +136,22 @@ pub(crate) async fn put(
             )?)
         })
         .await?;
-    tracing::info!(org = %org, "org configured its own Deepgram key");
-    status(&plane, org).await.map(Json)
+    tracing::info!(account = %account, "account configured its own Deepgram key");
+    status(&plane, account).await.map(Json)
 }
 
 /// `DELETE`: removes the stored legacy key; active speech routing is unchanged.
 pub(crate) async fn delete(
     State(state): State<AppState>,
     plane: Plane,
-    Path(org): Path<String>,
+    Path(account): Path<String>,
     headers: HeaderMap,
 ) -> ApiResult<StatusCode> {
-    let principal = principal_for(&state, &plane, &headers, &org).await?;
-    require_admin(&principal)?;
+    let principal = principal_for(&state, &plane, &headers, &account).await?;
     let ctx = plane.ctx_string();
     plane
         .db
-        .call(move |conn| Ok(store::byo::delete(conn, &ctx, &org)?))
+        .call(move |conn| Ok(store::byo::delete(conn, &ctx, &account)?))
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

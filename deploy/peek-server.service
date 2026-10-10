@@ -28,7 +28,7 @@ LimitNOFILE=65536
 MemoryHigh=768M
 MemoryMax=1G
 
-# Hardening: the server needs outbound TCP (IAM, Ting, Deepgram, Space Station, GitHub), the
+# Hardening: the server needs outbound TCP (Silicon Accounts, Ting, Deepgram, Space Station, GitHub), the
 # loopback listener and its SQLite directory; nothing else.
 NoNewPrivileges=true
 CapabilityBoundingSet=

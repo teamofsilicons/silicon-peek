@@ -15,10 +15,8 @@ public struct PeekSettings: Sendable, Equatable {
         case display
         case backdrop
         case telemetry
-        case showTestPeeks = "show_test_peeks"
         case voiceDefaults = "voice_defaults"
         case sttLanguage = "stt_language"
-        case cliWatchdog = "updates.cli_watchdog"
     }
 
     public var mode: DisplayMode = .normal
@@ -26,12 +24,10 @@ public struct PeekSettings: Sendable, Equatable {
     public var display: DisplayTarget = .main
     public var backdrop: BackdropSourceSetting = .wallpaper
     public var telemetry = true
-    public var showTestPeeks = true
     /// Language (BCP 47 primary subtag) → ElevenLabs voice.
     public var voiceDefaults: [String: String] = DefaultVoices.byLanguage
     /// `auto` or a BCP 47 tag.
     public var sttLanguage = "auto"
-    public var cliWatchdog = true
     /// Top-level keys this build does not understand, preserved verbatim.
     public var extra: [String: JSONValue] = [:]
 
@@ -48,10 +44,8 @@ public struct PeekSettings: Sendable, Equatable {
         case .display: .string(display.rawValue)
         case .backdrop: .string(backdrop.rawValue)
         case .telemetry: .bool(telemetry)
-        case .showTestPeeks: .bool(showTestPeeks)
         case .voiceDefaults: .object(voiceDefaults.mapValues(JSONValue.string))
         case .sttLanguage: .string(sttLanguage)
-        case .cliWatchdog: .bool(cliWatchdog)
         }
     }
 
@@ -68,8 +62,6 @@ public struct PeekSettings: Sendable, Equatable {
         case .display: display = try Self.enumValue(key, value)
         case .backdrop: backdrop = try Self.enumValue(key, value)
         case .telemetry: telemetry = try Self.boolValue(key, value)
-        case .showTestPeeks: showTestPeeks = try Self.boolValue(key, value)
-        case .cliWatchdog: cliWatchdog = try Self.boolValue(key, value)
         case .sttLanguage:
             guard let text = value.stringValue, text == "auto" || Self.isLanguageTag(text) else {
                 throw SettingsError(key: key.rawValue, message: "must be \"auto\" or a BCP 47 language tag such as \"en\" or \"pt-BR\"; got \(value.jsonString)")
@@ -99,16 +91,13 @@ public struct PeekSettings: Sendable, Equatable {
 
     // MARK: JSON
 
-    /// The settings.json document (keys sorted; `updates` nested as in §1.7).
+    /// The settings.json document.
     public var jsonValue: JSONValue {
         var object = extra
         object["schema"] = .int(Self.schema)
-        for key in Key.allCases where key != .cliWatchdog {
+        for key in Key.allCases {
             object[key.rawValue] = value(for: key)
         }
-        var updates = extra["updates"]?.objectValue ?? [:]
-        updates["cli_watchdog"] = .bool(cliWatchdog)
-        object["updates"] = .object(updates)
         return .object(object)
     }
 
@@ -128,19 +117,9 @@ public struct PeekSettings: Sendable, Equatable {
         if let schema = object.removeValue(forKey: "schema"), schema.intValue.map({ $0 > Int(Self.schema) }) == true {
             warnings.append("settings.json schema \(schema.jsonString) is newer than this build (\(Self.schema)); unknown keys are kept")
         }
-        if let updates = object.removeValue(forKey: "updates") {
-            if let watchdog = updates["cli_watchdog"] {
-                do throws(SettingsError) {
-                    try settings.apply(.cliWatchdog, watchdog)
-                } catch {
-                    warnings.append(error.description)
-                }
-            }
-            var rest = updates.objectValue ?? [:]
-            rest.removeValue(forKey: "cli_watchdog")
-            if !rest.isEmpty { settings.extra["updates"] = .object(rest) }
-        }
-        for key in Key.allCases where key != .cliWatchdog {
+        object.removeValue(forKey: "updates")
+        object.removeValue(forKey: "show_test_peeks")
+        for key in Key.allCases {
             guard let value = object.removeValue(forKey: key.rawValue) else { continue }
             do throws(SettingsError) {
                 try settings.apply(key, value)

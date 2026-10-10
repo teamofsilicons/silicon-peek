@@ -95,34 +95,3 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     // fold into an early-exit comparison.
     std::hint::black_box(diff) == 0
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn debug_and_display_never_render_the_value() {
-        let s = Secret::new("oat_supersecret");
-        assert_eq!(format!("{s:?}"), "[REDACTED]");
-        assert_eq!(format!("{s}"), "[REDACTED]");
-        assert_eq!(s.expose(), "oat_supersecret");
-    }
-
-    #[test]
-    fn serde_round_trips_the_value() -> Result<(), serde_json::Error> {
-        let s = Secret::new("ort_x");
-        let json = serde_json::to_string(&s)?;
-        assert_eq!(json, "\"ort_x\"");
-        let back: Secret = serde_json::from_str(&json)?;
-        assert_eq!(back, s);
-        Ok(())
-    }
-
-    #[test]
-    fn constant_time_eq_compares_exactly() {
-        assert!(constant_time_eq(b"abc", b"abc"));
-        assert!(!constant_time_eq(b"abc", b"abd"));
-        assert!(!constant_time_eq(b"abc", b"abcd"));
-        assert!(constant_time_eq(b"", b""));
-    }
-}

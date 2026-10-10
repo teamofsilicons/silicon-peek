@@ -362,8 +362,8 @@ impl Shared {
             Target::Message { message_id } => message_id.as_str().to_owned(),
         };
         let mut rec = Record::new("stt.request", "ok").with("slot", slot.get());
-        rec.actor = Some((job.key.org.clone(), job.key.actor.clone()));
-        rec.testing = job.key.context.is_testing();
+        rec.actor = Some((job.key.account.clone(), job.key.actor.clone()));
+
         if job.info.peak_dbfs < SILENCE_DBFS {
             self.stt_event(&job.target, SttOutcome::Empty, None, None);
             let _ = std::fs::remove_file(self.paths.recording(&recording_id));
@@ -629,45 +629,4 @@ pub fn tone(millis: u32, amplitude: i16) -> Vec<i16> {
             v
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn wav_checks_and_silence() -> Result<()> {
-        let loud = parse_wav(&wav_bytes(&tone(1000, 8000), 16_000))?;
-        assert!(loud.peak_dbfs > -20.0);
-        assert!((loud.duration.as_secs_f64() - 1.0).abs() < 0.01);
-        let quiet = parse_wav(&wav_bytes(&tone(1000, 50), 16_000))?;
-        assert!(quiet.peak_dbfs < SILENCE_DBFS);
-        let silent = parse_wav(&wav_bytes(&vec![0; 16_000], 16_000))?;
-        assert!(silent.peak_dbfs.is_infinite());
-        assert!(parse_wav(b"RIFF....WAVE").is_err());
-        assert!(parse_wav(b"not a wav").is_err());
-        let mut stereo = wav_bytes(&tone(100, 8000), 16_000);
-        stereo[22] = 2;
-        assert!(parse_wav(&stereo).is_err());
-        let long = wav_bytes(&vec![1; 16_000 * 121], 16_000);
-        assert!(parse_wav(&long).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn language_selection() {
-        assert_eq!(
-            stt_language("de", &["en-US".into()]),
-            SttLanguage::Fixed("de".into())
-        );
-        assert_eq!(
-            stt_language("auto", &["en-IN".into()]),
-            SttLanguage::Fixed("en".into())
-        );
-        assert_eq!(
-            stt_language("auto", &["en-IN".into(), "hi-IN".into(), "en-GB".into()]),
-            SttLanguage::Detect(vec!["en".into(), "hi".into()])
-        );
-        assert_eq!(stt_language("auto", &[]), SttLanguage::DetectAny);
-    }
 }

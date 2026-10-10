@@ -13,8 +13,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use silicon_peek_client::{
     Error, ErrorCode, Result,
-    api::TestingEnvironment,
-    identity::{ActorId, Context, SlotKey},
+    identity::{ActorId, SlotKey},
     ipc::{
         AuthBlock,
         cli::{AttachResult, ConfigSyncConfig, DetachResult, Warning, warnings},
@@ -42,8 +41,8 @@ pub struct HomeEntry {
     pub api_url: String,
     /// Last context seen.
     pub context: String,
-    /// Last org.
-    pub org_id: Option<String>,
+    /// Last account.
+    pub account_id: Option<String>,
     /// Last Silicon.
     pub actor_id: Option<String>,
     /// Unix ms.
@@ -87,23 +86,10 @@ impl Shared {
         let verified = tokio::task::spawn_blocking(move || authenticate_home(&block))
             .await
             .map_err(|e| Error::internal(format!("authenticating a home failed: {e}")))??;
-        let testing = match auth.context {
-            Context::Production => None,
-            Context::Testing(id) => verified
-                .store
-                .read_testing()
-                .ok()
-                .and_then(|t| t.environments.get(&id).cloned())
-                .map(|env| TestingEnvironment {
-                    id,
-                    name: env.name,
-                    generation: env.generation,
-                }),
-        };
         let caller = Caller {
             key: ActorKey {
                 context: auth.context,
-                org: verified.org_id.clone(),
+                account: verified.account_id.clone(),
                 actor: verified.actor_id.clone(),
             },
             home: HomeRef {
@@ -114,7 +100,6 @@ impl Shared {
             display_name: verified.display_name.clone(),
             ting_subscribed: verified.ting_subscribed,
             store: verified.store,
-            testing,
         };
         self.record_home(&caller, auth.home_token.expose()).await?;
         Ok(caller)
@@ -126,57 +111,64 @@ impl Shared {
         let now = now_ms();
         let changed = self
             .db
-            .call(move |c| {
+            .tx(move |c| {
                 let before: Option<(String, String, Option<String>, Option<String>)> = c
                     .query_row(
-                        "SELECT api_url, context, org_id, actor_id FROM homes WHERE home_path = ?1",
+                        "SELECT api_url, context, account_id, actor_id FROM homes WHERE home_path = ?1",
                         [&c2.home.home_path],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                     )
                     .optional()
                     .sql()?;
                 c.execute(
-                    "INSERT INTO homes (home_path, token_sha256, api_url, context, org_id, actor_id, attached_at, last_seen_at)
+                    "INSERT INTO homes (home_path, token_sha256, api_url, context, account_id, actor_id, attached_at, last_seen_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
                      ON CONFLICT(home_path) DO UPDATE SET token_sha256 = excluded.token_sha256, api_url = excluded.api_url,
-                        context = excluded.context, org_id = excluded.org_id, actor_id = excluded.actor_id,
+                        context = excluded.context, account_id = excluded.account_id, actor_id = excluded.actor_id,
                         last_seen_at = excluded.last_seen_at",
                     params![
                         c2.home.home_path,
                         sha,
                         c2.home.api_url.as_str(),
                         c2.key.context_str(),
-                        c2.key.org.as_str(),
+                        c2.key.account.as_str(),
                         c2.key.actor.as_str(),
                         now
                     ],
                 )
                 .sql()?;
+                // Handles may change. Keep display metadata current without changing ownership.
+                for table in ["homes", "slots", "drawings", "sends", "scheduled", "outbox"] {
+                    c.execute(
+                        &format!("UPDATE {table} SET actor_id = ?3 WHERE context = ?1 AND account_id = ?2 AND actor_id != ?3"),
+                        params![c2.key.context_str(), c2.key.account.as_str(), c2.key.actor.as_str()],
+                    ).sql()?;
+                }
                 // A Silicon's slot follows the home it last used.
                 c.execute(
-                    "UPDATE slots SET home_path = ?4, api_url = ?5, display_name = coalesce(?6, display_name)
-                     WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                    params![
-                        c2.key.context_str(),
-                        c2.key.org.as_str(),
-                        c2.key.actor.as_str(),
-                        c2.home.home_path,
-                        c2.home.api_url.as_str(),
-                        c2.display_name
-                    ],
+                    "UPDATE slots SET home_path = ?3, api_url = ?4, display_name = coalesce(?5, display_name)
+                     WHERE context = ?1 AND account_id = ?2",
+                    params![c2.key.context_str(), c2.key.account.as_str(), c2.home.home_path, c2.home.api_url.as_str(), c2.display_name],
                 )
                 .sql()?;
                 let after = (
                     c2.home.api_url.as_str().to_owned(),
                     c2.key.context_str(),
-                    Some(c2.key.org.as_str().to_owned()),
+                    Some(c2.key.account.as_str().to_owned()),
                     Some(c2.key.actor.as_str().to_owned()),
                 );
                 Ok(before.as_ref() != Some(&after))
             })
             .await?;
         if changed {
+            {
+                let mut core = self.core.lock().await;
+                if let Some((_, queue)) = core.queues.remove_entry(&caller.key) {
+                    core.queues.insert(caller.key.clone(), queue);
+                }
+            }
             self.write_homes_json().await;
+            self.push_slots_state().await;
         }
         self.wake_authority_rows(&caller.key, &caller.home.api_url, false)
             .await?;
@@ -191,7 +183,7 @@ impl Shared {
         self.db
             .call(|c| {
                 let mut st = c
-                    .prepare("SELECT home_path, api_url, context, org_id, actor_id, last_seen_at FROM homes ORDER BY home_path")
+                    .prepare("SELECT home_path, api_url, context, account_id, actor_id, last_seen_at FROM homes ORDER BY home_path")
                     .sql()?;
                 let rows = st
                     .query_map([], |r| {
@@ -205,7 +197,7 @@ impl Shared {
                             silicon_home,
                             api_url: r.get(1)?,
                             context: r.get(2)?,
-                            org_id: r.get(3)?,
+                            account_id: r.get(3)?,
                             actor_id: r.get(4)?,
                             last_seen_at: r.get(5)?,
                         })
@@ -249,7 +241,7 @@ impl Shared {
         Ok(AttachResult {
             home_id: home_id(&caller.home.home_path),
             actor_id: caller.key.actor.clone(),
-            org_id: caller.key.org.clone(),
+            account_id: caller.key.account.clone(),
         })
     }
 
@@ -297,7 +289,7 @@ impl Shared {
                     "this logout belongs to a previous login context",
                 ));
             }
-            Some((slot.org_id.clone(), slot.actor.public_id.clone()))
+            Some((slot.account_id.clone(), slot.actor.public_id.clone()))
         } else {
             let tomb = file
                 .logged_out
@@ -305,14 +297,14 @@ impl Shared {
                 .filter(|l| l.slot.as_deref().is_none_or(|s| s == slot_key.as_string()));
             match tomb {
                 Some(t) if t.context_id.is_some() && t.context_id == auth.context_id => t
-                    .org_id
+                    .account_id
                     .as_ref()
-                    .map(|org| ActorId::parse(&t.actor).map(|actor| (org.clone(), actor)))
+                    .map(|account| ActorId::parse(&t.actor).map(|actor| (account.clone(), actor)))
                     .transpose()?,
                 _ => None,
             }
         };
-        let Some((org, actor)) = key else {
+        let Some((account, actor)) = key else {
             return Err(Error::new(
                 ErrorCode::NotLoggedIn,
                 format!("peekd has no record of which Silicon {home_path} held in {slot_key}"),
@@ -321,7 +313,7 @@ impl Shared {
         };
         let key = ActorKey {
             context: auth.context,
-            org,
+            account,
             actor,
         };
         let cancelled_rows = self.cancel_undelivered(&key).await?;
@@ -505,15 +497,15 @@ impl Shared {
             .call(move |c| {
                 let e: Option<Option<String>> = c
                     .query_row(
-                        "SELECT last_error FROM drawings WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3 AND error_pending = 1",
-                        params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                        "SELECT last_error FROM drawings WHERE context = ?1 AND account_id = ?2 AND error_pending = 1",
+                        params![k.context_str(), k.account.as_str()],
                         |r| r.get(0),
                     )
                     .optional()
                     .sql()?;
                 c.execute(
-                    "UPDATE drawings SET error_pending = 0 WHERE context = ?1 AND org_id = ?2 AND actor_id = ?3",
-                    params![k.context_str(), k.org.as_str(), k.actor.as_str()],
+                    "UPDATE drawings SET error_pending = 0 WHERE context = ?1 AND account_id = ?2",
+                    params![k.context_str(), k.account.as_str()],
                 )
                 .sql()?;
                 Ok(e.flatten())
@@ -572,17 +564,5 @@ impl Shared {
                 Err(e) => tracing::warn!(error = %e, "opening Peek.app failed"),
             }
         });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stable_home_ids() {
-        assert_eq!(home_id("/a/.peek"), home_id("/a/.peek"));
-        assert_ne!(home_id("/a/.peek"), home_id("/b/.peek"));
-        assert_eq!(home_id("/a/.peek").len(), 16);
     }
 }

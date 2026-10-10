@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Build the peek CLI (silicon-peek-cli, bin `peek`) for all six Honeycomb targets from one Mac
-# (BLUEPRINT §4.4 step 1, notes/honeycomb §5):
-#   macOS  aarch64/x86_64   cargo build, MACOSX_DEPLOYMENT_TARGET=11.0 (iam/login work on old Macs too)
+# Build the peek CLI (silicon-peek-cli, bin `peek`) for all six Silicon Apps targets from one Mac
+# (BLUEPRINT §4.4 step 1, Silicon Apps §5):
+#   macOS  aarch64/x86_64   cargo build, MACOSX_DEPLOYMENT_TARGET=11.0 (accounts/login work on old Macs too)
 #   Linux  aarch64/x86_64   cargo zigbuild, musl, fully static (glibc builds would need 2.39)
 #   Windows aarch64/x86_64  cargo xwin, MSVC with the CRT linked statically
-# Then verifies every binary's format and architecture (scripts/package-honeycomb.py --check-binaries).
+# Then verifies every binary's format and architecture (scripts/package-apps.py --check-binaries).
 #
 # Environment:
 #   CARGO_TARGET_DIR  cargo output directory (default: <repo>/target)
@@ -82,4 +82,4 @@ else
 fi
 
 step "verify formats and architectures"
-python3 "$ROOT/scripts/package-honeycomb.py" --check-binaries --target-dir "$TARGET_DIR"
+python3 "$ROOT/scripts/package-apps.py" --check-binaries --target-dir "$TARGET_DIR"

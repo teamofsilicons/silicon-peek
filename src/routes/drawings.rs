@@ -29,7 +29,7 @@ async fn principal(state: &AppState, plane: &Plane, headers: &HeaderMap) -> ApiR
     auth::authenticate(
         plane,
         Bearer::required(headers)?,
-        &state.0.config.iam.app_id,
+        &state.0.config.accounts.app_id,
     )
     .await
 }
@@ -84,9 +84,9 @@ pub(crate) async fn put(
         .with_hint("retry the upload"));
     }
     let now = unix_now();
-    let (ctx, org, actor, sha, body) = (
+    let (ctx, account, actor, sha, body) = (
         plane.ctx_string(),
-        principal.org.to_string(),
+        principal.account.to_string(),
         principal.actor.to_string(),
         actual.clone(),
         bytes.to_vec(),
@@ -95,14 +95,14 @@ pub(crate) async fn put(
         .db
         .call(move |conn| {
             Ok(store::drawings::upsert(
-                conn, &ctx, &org, &actor, &sha, &body, now,
+                conn, &ctx, &account, &actor, &sha, &body, now,
             )?)
         })
         .await?;
     state.0.telemetry.record(
         &meta,
         Event::new("drawing.put", "drawing.put")
-            .actor(&principal.org, &principal.actor)
+            .actor(&principal.account, &principal.actor)
             .context("drawing_bytes", bytes.len())
             .context("drawing_sha256", actual.clone()),
     );
@@ -120,14 +120,14 @@ pub(crate) async fn get(
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let principal = principal(&state, &plane, &headers).await?;
-    let (ctx, org, actor) = (
+    let (ctx, account, actor) = (
         plane.ctx_string(),
-        principal.org.to_string(),
+        principal.account.to_string(),
         principal.actor.to_string(),
     );
     let drawing = plane
         .db
-        .call(move |conn| Ok(store::drawings::get(conn, &ctx, &org, &actor)?))
+        .call(move |conn| Ok(store::drawings::get(conn, &ctx, &account, &actor)?))
         .await?
         .ok_or_else(|| {
             ApiError::new(
@@ -173,14 +173,14 @@ pub(crate) async fn delete(
     headers: HeaderMap,
 ) -> ApiResult<StatusCode> {
     let principal = principal(&state, &plane, &headers).await?;
-    let (ctx, org, actor) = (
+    let (ctx, account, actor) = (
         plane.ctx_string(),
-        principal.org.to_string(),
+        principal.account.to_string(),
         principal.actor.to_string(),
     );
     plane
         .db
-        .call(move |conn| Ok(store::drawings::delete(conn, &ctx, &org, &actor)?))
+        .call(move |conn| Ok(store::drawings::delete(conn, &ctx, &account, &actor)?))
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

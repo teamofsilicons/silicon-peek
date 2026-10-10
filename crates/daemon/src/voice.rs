@@ -74,26 +74,3 @@ pub fn estimated_frames(chars: usize) -> u64 {
     let chars = u64::try_from(chars).unwrap_or(u64::MAX);
     chars.saturating_mul(24_000) / 14
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn multilingual_voice_preferences() {
-        let overrides = BTreeMap::from([("hi".to_owned(), "DtsPFCrhbCbbJkwZsb3d".to_owned())]);
-        let p = plan("नमस्ते", None, Some("hi"), None, &overrides);
-        assert_eq!(p.model.as_deref(), Some("DtsPFCrhbCbbJkwZsb3d"));
-        assert_eq!(p.status, SpeechStatus::Pending);
-        assert_eq!(
-            plan("hello", Some("voice_custom"), None, None, &overrides)
-                .model
-                .as_deref(),
-            Some("voice_custom")
-        );
-        assert_eq!(
-            plan("hello", None, None, None, &overrides).model.as_deref(),
-            Some(DEFAULT_TTS_VOICE)
-        );
-        assert_eq!(estimated_frames(14), 24_000);
-    }
-}

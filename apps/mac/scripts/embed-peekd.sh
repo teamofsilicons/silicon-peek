@@ -118,7 +118,7 @@ fi
 check_archs "$source_binary"
 mkdir -p "$dest_dir"
 rm -f "$dest"
-# A plain copy: no symlinks inside Peek.app (Honeycomb rejects them).
+# A plain copy keeps the daemon self-contained inside Peek.app.
 cp "$source_binary" "$dest"
 chmod 0755 "$dest"
 

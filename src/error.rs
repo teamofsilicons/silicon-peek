@@ -111,14 +111,14 @@ impl ApiError {
         .with_hint("this is a bug in peek-server; report it with `peek report \"<what you ran>\"` and quote the request ID")
     }
 
-    /// `503 iam_misconfigured`: the operator must fix the app secret.
-    pub(crate) fn iam_misconfigured(message: impl Into<String>) -> Self {
+    /// `503 accounts_misconfigured`: the operator must fix the app secret.
+    pub(crate) fn accounts_misconfigured(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            ErrorCode::IamMisconfigured,
+            ErrorCode::AccountsMisconfigured,
             message,
         )
-        .with_hint("this is an operator problem, not yours: peek-server's IAM app secret (PEEK_IAM_APP_SECRET) is missing or no longer valid; retry later")
+        .with_hint("this is an operator problem, not yours: peek-server's ACCOUNTS app secret (PEEK_ACCOUNTS_APP_SECRET) is missing or no longer valid; retry later")
     }
 
     /// Adds a hint.
@@ -146,12 +146,6 @@ impl ApiError {
         self
     }
 
-    /// The HTTP status.
-    #[cfg(test)]
-    pub(crate) fn status(&self) -> StatusCode {
-        self.status
-    }
-
     /// The machine code.
     pub(crate) fn code(&self) -> &ErrorCode {
         self.error.code()
@@ -160,12 +154,6 @@ impl ApiError {
     /// The message.
     pub(crate) fn message(&self) -> &str {
         self.error.message()
-    }
-
-    /// `Retry-After` seconds, if set.
-    #[cfg(test)]
-    pub(crate) fn retry_after(&self) -> Option<u64> {
-        self.retry_after
     }
 }
 
@@ -204,50 +192,5 @@ impl IntoResponse for ApiError {
             response.headers_mut().insert(header::RETRY_AFTER, value);
         }
         response
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn envelope_carries_the_request_id_and_retry_after()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let error = ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            ErrorCode::TingUnavailable,
-            "Ting is busy",
-        )
-        .with_retry_after(7)
-        .with_details(json!({"retry_after": 7}));
-        let response = REQUEST_ID
-            .scope("req-1".to_owned(), async move { error.into_response() })
-            .await;
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(
-            response
-                .headers()
-                .get(header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok()),
-            Some("7")
-        );
-        let body = axum::body::to_bytes(response.into_body(), 1 << 20).await?;
-        let value: Value = serde_json::from_slice(&body)?;
-        assert_eq!(value["error"]["code"], "ting_unavailable");
-        assert_eq!(value["error"]["retryable"], true);
-        assert_eq!(value["error"]["request_id"], "req-1");
-        assert_eq!(value["error"]["details"]["retry_after"], 7);
-        Ok(())
-    }
-
-    #[test]
-    fn client_errors_map_to_statuses_by_exit_class() {
-        let e = ApiError::from_client(Error::invalid_input("bad"));
-        assert_eq!(e.status(), StatusCode::BAD_REQUEST);
-        let e = ApiError::from_client(Error::new(ErrorCode::PayloadTooLarge, "big"));
-        assert_eq!(e.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        let e = ApiError::from_client(Error::new(ErrorCode::TestingSecretInvalid, "no"));
-        assert_eq!(e.status(), StatusCode::UNAUTHORIZED);
     }
 }

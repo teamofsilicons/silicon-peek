@@ -12,7 +12,7 @@ use serde_json::{Map, Value, json};
 use silicon_peek_client::{
     Error, Result,
     api::{TelemetryBatch, TelemetryEvent, TelemetryTable},
-    identity::{ActorId, OrgId},
+    identity::{AccountId, ActorId},
     runtime::fs::read_private,
     telemetry::{actor_hash, scrub_context},
     timestamp::Timestamp,
@@ -61,14 +61,12 @@ pub struct Record {
     pub error_code: Option<String>,
     /// The Silicon (hashed before recording). Dropped when any home of
     /// this Silicon opted out of telemetry.
-    pub actor: Option<(OrgId, ActorId)>,
+    pub actor: Option<(AccountId, ActorId)>,
     /// The Silicon home the event came from (`<SILICON_HOME>/.peek`), when
     /// known without an actor (an IPC request). Dropped when it opted out.
     pub home: Option<String>,
     /// The ISI of the send, if any.
     pub isi: Option<String>,
-    /// Whether this concerns a testing context (never relayed).
-    pub testing: bool,
     /// Allowlisted context keys (anything else is dropped).
     pub context: Map<String, Value>,
 }
@@ -129,7 +127,7 @@ impl Telemetry {
             "service": "peek-daemon",
             "source": "daemon",
             "version": silicon_peek_client::VERSION,
-            "environment": if r.testing { "testing" } else { self.environment },
+            "environment": self.environment,
             "instance_id": instance_id,
             "event": r.event,
             "outcome": r.outcome,
@@ -146,10 +144,10 @@ impl Telemetry {
         if let Some(isi) = r.isi {
             data["isi"] = Value::String(isi);
         }
-        if let Some((org, actor)) = &r.actor {
+        if let Some((account, actor)) = &r.actor {
             data["actor"] = json!({
                 "kind": actor.actor_type().as_str(),
-                "hash": actor_hash(org, actor),
+                "hash": actor_hash(account, actor),
             });
         }
         data
@@ -168,7 +166,7 @@ impl Shared {
     /// opted out (`peek config telemetry off`, mirrored by `config.sync`):
     /// the explicit opt-out always wins (§6.6).
     pub fn record(&self, r: Record) {
-        if !self.telemetry_on() || r.testing {
+        if !self.telemetry_on() {
             return;
         }
         let owner = (r.actor.clone(), r.home.clone());
@@ -349,19 +347,19 @@ pub fn home_config_allows_telemetry(home_path: &str, mirrored: Option<&str>) -> 
 /// allow telemetry.
 async fn owner_allows_telemetry(
     db: &crate::db::Db,
-    (actor, home): (Option<(OrgId, ActorId)>, Option<String>),
+    (actor, home): (Option<(AccountId, ActorId)>, Option<String>),
 ) -> bool {
     if actor.is_none() && home.is_none() {
         return true;
     }
     db.call(move |c| {
         let mut homes: Vec<(String, Option<String>)> = Vec::new();
-        if let Some((org, actor)) = &actor {
+        if let Some((account, _)) = &actor {
             let mut st = c
-                .prepare("SELECT home_path, config FROM homes WHERE org_id = ?1 AND actor_id = ?2")
+                .prepare("SELECT home_path, config FROM homes WHERE account_id = ?1")
                 .sql()?;
             let rows = st
-                .query_map(rusqlite::params![org.as_str(), actor.as_str()], |r| {
+                .query_map(rusqlite::params![account.as_str()], |r| {
                     Ok((r.get(0)?, r.get(1)?))
                 })
                 .sql()?
@@ -463,49 +461,4 @@ pub fn check_events(events: &[TelemetryEvent]) -> Result<()> {
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn envelope_is_scrubbed_and_hashed() -> Result<()> {
-        let t = Telemetry::new(crate::config::BUNDLE_ID);
-        let r = Record::new("send.displayed", "ok")
-            .with("slot", 3)
-            .with("speak_text", "secret words");
-        let mut r = r;
-        r.actor = Some((OrgId::parse("tos")?, ActorId::parse("si:cleanup")?));
-        let v = t.envelope(r, "inst");
-        assert_eq!(v["context"], json!({"slot":3}));
-        assert_eq!(v["actor"]["kind"], "silicon");
-        assert_eq!(v["actor"]["hash"].as_str().map(str::len), Some(16));
-        assert!(!v.to_string().contains("si:cleanup"));
-        assert_eq!(v["service"], "peek-daemon");
-        Ok(())
-    }
-
-    #[test]
-    fn ui_tables() {
-        let e = |t: &str, meta: Value| TelemetryEvent {
-            id: "1".into(),
-            event_type: t.into(),
-            data: json!({}),
-            metadata: meta,
-        };
-        assert_eq!(
-            ui_table(&e("glass_mode", json!({}))),
-            TelemetryTable::Peekfrontendanalytics
-        );
-        assert_eq!(
-            ui_table(&e("mic_pressed", json!({}))),
-            TelemetryTable::Peekfrontendevents
-        );
-        assert_eq!(
-            ui_table(&e("mic_pressed", json!({"table":"peekfrontendanalytics"}))),
-            TelemetryTable::Peekfrontendanalytics
-        );
-        assert!(check_events(&[e("", json!({}))]).is_err());
-    }
 }

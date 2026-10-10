@@ -215,7 +215,7 @@ mod mac {
                 )
             }
         });
-        out.hint("`honeycomb uninstall 'peek'` removes the CLI itself");
+        out.hint("`apps uninstall 'peek'` removes the CLI itself");
         Ok(())
     }
 

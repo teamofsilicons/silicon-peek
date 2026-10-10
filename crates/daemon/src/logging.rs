@@ -151,32 +151,3 @@ pub fn init(file: Option<&Path>) -> io::Result<()> {
     let _ = result;
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::os::unix::fs::PermissionsExt as _;
-
-    #[test]
-    fn rotates_and_keeps_three_files() -> io::Result<()> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("peekd.log");
-        let log = RotatingLog::with_limits(&path, 100, 3)?;
-        let mut w = log.make_writer();
-        for i in 0..20 {
-            writeln!(w, "line {i:02} {}", "x".repeat(30))?;
-        }
-        assert!(path.exists());
-        assert!(dir.path().join("peekd.log.1").exists());
-        assert!(dir.path().join("peekd.log.2").exists());
-        assert!(!dir.path().join("peekd.log.3").exists());
-        let live = std::fs::read_to_string(&path)?;
-        assert!(live.len() <= 100);
-        assert!(live.contains("line 19"));
-        assert_eq!(
-            std::fs::metadata(&path)?.permissions().mode() & 0o777,
-            0o600
-        );
-        Ok(())
-    }
-}

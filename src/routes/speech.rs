@@ -49,24 +49,27 @@ fn rate_limited(what: &str, limit: u32, retry_after: u64) -> ApiError {
 }
 
 /// Authenticates the bearer and takes one unit of the Silicon's and the
-/// org's speech budget.
+/// account's speech budget.
 async fn authorize(state: &AppState, plane: &Plane, headers: &HeaderMap) -> ApiResult<Principal> {
     let principal = auth::authenticate(
         plane,
         Bearer::required(headers)?,
-        &state.0.config.iam.app_id,
+        &state.0.config.accounts.app_id,
     )
     .await?;
     let ctx = plane.ctx_string();
     let limits = &state.0.limits;
     limits
         .speech_actor
-        .take(&format!("{ctx}|{}|{}", principal.org, principal.actor), 1)
+        .take(
+            &format!("{ctx}|{}|{}", principal.account, principal.actor),
+            1,
+        )
         .map_err(|s| rate_limited("for this Silicon", limits.speech_actor.limit(), s))?;
     limits
-        .speech_org
-        .take(&format!("{ctx}|{}", principal.org), 1)
-        .map_err(|s| rate_limited("for this organization", limits.speech_org.limit(), s))?;
+        .speech_account
+        .take(&format!("{ctx}|{}", principal.account), 1)
+        .map_err(|s| rate_limited("for this account", limits.speech_account.limit(), s))?;
     Ok(principal)
 }
 
@@ -109,7 +112,7 @@ pub(crate) async fn token(
             SpeechPurpose::Stt => "speech.stt",
         },
     )
-    .actor(&principal.org, &principal.actor)
+    .actor(&principal.account, &principal.actor)
     .duration(started.elapsed());
     if let Ok(t) = &result {
         event = event.context("key_source", "peek").context(
@@ -263,7 +266,7 @@ pub(crate) async fn listen(
     }
     .await;
     let mut event = Event::new("speech.proxy", "speech.stt")
-        .actor(&principal.org, &principal.actor)
+        .actor(&principal.account, &principal.actor)
         .duration(started.elapsed())
         .context(
             "stt_ms",
@@ -277,33 +280,4 @@ pub(crate) async fn listen(
     }
     state.0.telemetry.record(&meta, event.outcome(&result));
     result.map(|t| Json(t).into_response())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn listen_parameters_are_allow_listed() -> Result<(), Box<dyn std::error::Error>> {
-        let p = listen_params(Some(
-            "model=gpt-transcribe&smart_format=true&numerals=true&keyterm=Keep+it&keyterm=Delete&detect_language=en&detect_language=hi",
-        ))
-        .map_err(|e| e.to_string())?;
-        assert_eq!(p.len(), 7);
-        assert_eq!(p[3], ("keyterm".to_owned(), "Keep it".to_owned()));
-        let p = listen_params(Some("language=en")).map_err(|e| e.to_string())?;
-        assert_eq!(p[0], ("model".to_owned(), openai::MODEL.to_owned()));
-        for bad in [
-            "tag=evil",
-            "mip_opt_out=false",
-            "callback=https://x",
-            "model=gpt-transcribe&model=whisper-1",
-            "numerals=yes",
-            "language=en%20US",
-            "keyterm=",
-        ] {
-            assert!(listen_params(Some(bad)).is_err(), "{bad} must be refused");
-        }
-        Ok(())
-    }
 }

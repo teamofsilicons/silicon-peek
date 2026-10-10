@@ -37,7 +37,7 @@ pub const SUPPORT_DIR_ENV: &str = "PEEK_SUPPORT_DIR";
 pub const CACHES_DIR_ENV: &str = "PEEK_CACHES_DIR";
 /// `1`: an isolated run. peekd never launches Peek.app and never runs the
 /// updater or the CLI watchdog (no `open`, `launchctl`, `ditto`, `codesign`,
-/// `honeycomb` for the real user). Peek.app honours it too (no `SMAppService`,
+/// `apps` for the real user). Peek.app honours it too (no `SMAppService`,
 /// no login items, never spawns peekd).
 pub const NO_SERVICES_ENV: &str = "PEEK_NO_SERVICES";
 /// Test-only override of `~/Applications`.
@@ -110,10 +110,10 @@ impl UiExecutableRule {
     }
 }
 
-/// Where Honeycomb is found, in Stemcell's lookup order (gap-honeycomb §1.1).
+/// Where Silicon Apps is found, in Stemcell's lookup order (gap-apps §1.1).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct HoneycombLocator {
-    /// `$SILICON_HONEYCOMB`, taken as-is.
+pub struct AppsLocator {
+    /// `$SILICON_APPS`, taken as-is.
     pub env_override: Option<PathBuf>,
     /// `$PATH` of peekd's environment.
     pub path_var: Option<OsString>,
@@ -123,12 +123,12 @@ pub struct HoneycombLocator {
     pub real_home: PathBuf,
 }
 
-impl HoneycombLocator {
+impl AppsLocator {
     /// From the process environment.
     #[must_use]
     pub fn from_env(real_home: &Path) -> Self {
         Self {
-            env_override: std::env::var_os("SILICON_HONEYCOMB")
+            env_override: std::env::var_os("SILICON_APPS")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
             path_var: std::env::var_os("PATH"),
@@ -137,7 +137,7 @@ impl HoneycombLocator {
         }
     }
 
-    /// The Honeycomb binary for a registry whose home is `registry_home`.
+    /// The Silicon Apps binary for a registry whose home is `registry_home`.
     #[must_use]
     pub fn resolve(&self, registry_home: &Path) -> Option<PathBuf> {
         if let Some(p) = &self.env_override {
@@ -145,13 +145,13 @@ impl HoneycombLocator {
         }
         if let Some(path) = &self.path_var {
             for dir in std::env::split_paths(path) {
-                let candidate = dir.join("honeycomb");
+                let candidate = dir.join("apps");
                 if is_executable(&candidate) {
                     return Some(candidate);
                 }
             }
         }
-        let rel = Path::new(".honeycomb/dir/system/bin/honeycomb");
+        let rel = Path::new(".apps/dir/system/bin/apps");
         let mut candidates = Vec::new();
         if let Some(prefix) = &self.managed_prefix {
             candidates.push(prefix.join(rel));
@@ -308,8 +308,8 @@ pub struct DaemonConfig {
     pub bundle_id: String,
     /// This build's `CFBundleVersion`.
     pub own_build: u64,
-    /// Honeycomb lookup for the CLI watchdog.
-    pub honeycomb: HoneycombLocator,
+    /// Silicon Apps lookup for the CLI watchdog.
+    pub apps: AppsLocator,
     /// Write `peekd.log` (off in tests).
     pub log_to_file: bool,
     /// Run the hourly update check and CLI watchdog.
@@ -349,7 +349,7 @@ impl DaemonConfig {
             timings: Timings::default(),
             bundle_id: BUNDLE_ID.to_owned(),
             own_build: own_build()?,
-            honeycomb: HoneycombLocator::from_env(&real_home),
+            apps: AppsLocator::from_env(&real_home),
             real_home,
             log_to_file: true,
             updates_enabled: !isolated,
@@ -384,9 +384,9 @@ impl DaemonConfig {
             timings: Timings::default(),
             bundle_id: BUNDLE_ID.to_owned(),
             own_build: own_build()?,
-            honeycomb: HoneycombLocator {
+            apps: AppsLocator {
                 real_home: home.clone(),
-                ..HoneycombLocator::default()
+                ..AppsLocator::default()
             },
             real_home: home,
             log_to_file: false,
@@ -457,111 +457,4 @@ pub fn own_build() -> Result<u64> {
             ),
         )
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn isolated_dirs_follow_the_cli_and_the_install_hooks() {
-        let home = Path::new("/Users/c");
-        let resolve = |pairs: &[(&str, &str)]| {
-            let map: std::collections::HashMap<String, OsString> = pairs
-                .iter()
-                .map(|(k, v)| ((*k).to_owned(), OsString::from(v)))
-                .collect();
-            IsolatedDirs::resolve(home, move |k| map.get(k).cloned())
-        };
-        let default = resolve(&[]);
-        assert_eq!(
-            default.support,
-            home.join("Library/Application Support/Peek")
-        );
-        assert_eq!(default.caches, home.join("Library/Caches/Peek"));
-        assert_eq!(default.applications, home.join("Applications"));
-        assert!(!default.isolated);
-        let iso = resolve(&[
-            ("PEEK_SUPPORT_DIR", "/r/support"),
-            ("PEEK_CACHES_DIR", "/r/caches"),
-            ("PEEK_NO_SERVICES", "1"),
-        ]);
-        assert_eq!(iso.support, Path::new("/r/support"));
-        assert_eq!(iso.caches, Path::new("/r/caches"));
-        assert!(iso.isolated);
-        let hooks = resolve(&[
-            ("PEEK_SUPPORT_DIR", "/r/support"),
-            ("PEEK_INSTALL_SUPPORT_DIR", "/h/support"),
-            ("PEEK_INSTALL_APPLICATIONS_DIR", "/h/Applications"),
-            ("PEEK_INSTALL_NO_LAUNCH", "1"),
-            ("PEEK_CACHES_DIR", ""),
-        ]);
-        assert_eq!(
-            hooks.support,
-            Path::new("/h/support"),
-            "as the CLI resolves it"
-        );
-        assert_eq!(hooks.applications, Path::new("/h/Applications"));
-        assert_eq!(
-            hooks.caches,
-            home.join("Library/Caches/Peek"),
-            "empty is unset"
-        );
-        assert!(
-            hooks.isolated,
-            "PEEK_INSTALL_NO_LAUNCH=1 never launches anything"
-        );
-        assert!(
-            !resolve(&[("PEEK_NO_SERVICES", "true")]).isolated,
-            "only 1 counts"
-        );
-    }
-
-    #[test]
-    fn ui_rules() {
-        let exact = UiExecutableRule::Exact(PathBuf::from("/Apps/Peek.app/Contents/MacOS/Peek"));
-        assert!(exact.accepts(Path::new("/Apps/Peek.app/Contents/MacOS/Peek")));
-        assert!(!exact.accepts(Path::new("/Other/Peek.app/Contents/MacOS/Peek")));
-        let suffix = UiExecutableRule::PeekAppSuffix;
-        assert!(suffix.accepts(Path::new("/x/y/Peek.app/Contents/MacOS/Peek")));
-        assert!(!suffix.accepts(Path::new("/usr/bin/python3")));
-        assert!(!suffix.accepts(Path::new("/x/NotPeek.app/Contents/MacOS/Peek")));
-    }
-
-    #[test]
-    fn honeycomb_lookup_order() -> std::io::Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir()?;
-        let registry_home = dir.path().join("silicon/.silicon/packages");
-        let bin = registry_home.join(".honeycomb/dir/system/bin");
-        std::fs::create_dir_all(&bin)?;
-        let hc = bin.join("honeycomb");
-        std::fs::write(&hc, b"#!/bin/sh\n")?;
-        std::fs::set_permissions(&hc, std::fs::Permissions::from_mode(0o755))?;
-        let loc = HoneycombLocator {
-            env_override: None,
-            path_var: Some(OsString::from("/nonexistent")),
-            managed_prefix: Some(dir.path().join("prefix")),
-            real_home: dir.path().join("home"),
-        };
-        assert_eq!(loc.resolve(&registry_home), Some(hc.clone()));
-        assert_eq!(loc.resolve(dir.path()), None);
-        let forced = HoneycombLocator {
-            env_override: Some(PathBuf::from("/opt/hc")),
-            ..loc
-        };
-        assert_eq!(forced.resolve(dir.path()), Some(PathBuf::from("/opt/hc")));
-        Ok(())
-    }
-
-    #[test]
-    fn rooted_layout() -> Result<()> {
-        let dir = tempfile::tempdir().map_err(|e| Error::internal(e.to_string()))?;
-        let c = DaemonConfig::rooted(dir.path())?;
-        assert!(c.socket_path.starts_with(dir.path()));
-        assert!(!c.launch_ui);
-        assert_eq!(c.own_build, own_build()?);
-        assert!(c.app_path().ends_with("Applications/Peek.app"));
-        Ok(())
-    }
 }

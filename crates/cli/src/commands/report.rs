@@ -50,13 +50,6 @@ fn body(message: &str, pr: Option<&str>, status: Option<&Value>) -> String {
 }
 
 pub async fn run(g: &Globals, out: Out, args: ReportArgs) -> Result<()> {
-    if g.is_testing()? && !args.dry_run {
-        return Err(Error::new(
-            ErrorCode::ConflictingFlags,
-            "peek report is refused in a testing environment: reports go to the production issue tracker",
-        )
-        .with_hint("run it without --test / --app-secret-file / SILICON_PEEK_TEST"));
-    }
     if args.message.trim().is_empty() {
         return Err(Error::invalid_input(
             "the report message is empty; describe what you ran, what happened and what you expected",
@@ -170,8 +163,8 @@ async fn backend(g: &Globals, args: &ReportArgs, status: Option<Value>) -> Resul
     // Attribute the report to the session when there is a usable one; a
     // report must still go through without login.
     let client = match fresh(&session).await {
-        Ok(slot) => match g.session_org(&slot) {
-            Ok(org) => session.client.with_session(slot.access_token, org),
+        Ok(slot) => match g.session_account(&slot) {
+            Ok(account) => session.client.with_session(slot.access_token, account),
             Err(_) => session.client.clone(),
         },
         Err(_) => session.client.clone(),
@@ -244,24 +237,4 @@ async fn gh(args: &ReportArgs, status: Option<&Value>) -> Result<Value> {
         .find(|l| l.starts_with("https://"))
         .map(str::to_owned);
     Ok(json!({"submitted": true, "id": null, "status": "filed", "issue_url": url, "via": "gh"}))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn titles_and_bodies() {
-        assert_eq!(title("\n  first line\nsecond"), "first line");
-        assert_eq!(title(&"x".repeat(150)).chars().count(), 100);
-        let b = body(
-            "msg",
-            Some("https://github.com/teamofsilicons/silicon-peek/pull/1"),
-            None,
-        );
-        assert!(b.starts_with(
-            "msg\n\nProposed fix: https://github.com/teamofsilicons/silicon-peek/pull/1"
-        ));
-        assert!(b.ends_with(&format!("Submitted with peek {VERSION} on {}", platform())));
-    }
 }

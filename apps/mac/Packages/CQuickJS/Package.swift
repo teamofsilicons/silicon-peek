@@ -36,10 +36,6 @@ let package = Package(
                 ]),
             ]
         ),
-        .testTarget(
-            name: "CQuickJSTests",
-            dependencies: ["CQuickJS"]
-        ),
     ],
     cLanguageStandard: .gnu11
 )

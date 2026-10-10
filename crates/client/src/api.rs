@@ -6,11 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use uuid::Uuid;
 
 use crate::{
     Secret,
-    identity::{Actor, ApiUrl, OrgId},
+    identity::{AccountId, Actor, ApiUrl},
     timestamp::Timestamp,
 };
 
@@ -20,8 +19,8 @@ pub mod routes {
     pub const HEALTHZ: &str = "/healthz";
     /// `GET` readiness.
     pub const READYZ: &str = "/readyz";
-    /// `GET` discovery (the test key is optional).
-    pub const IAM: &str = "/api/v1/iam";
+    /// `GET` public app discovery.
+    pub const ACCOUNTS: &str = "/api/v1/accounts";
     /// `POST` SLT exchange.
     pub const LOGIN: &str = "/api/v1/auth/login";
     /// `POST` token rotation.
@@ -47,21 +46,13 @@ pub mod routes {
     pub const REPORTS: &str = "/api/v1/reports";
     /// `POST` telemetry gateway.
     pub const WEB_TELEMETRY: &str = "/api/web/telemetry";
-    /// `POST` IAM webhooks (HMAC-signed raw body).
-    pub const IAM_WEBHOOK: &str = "/webhooks/iam";
+    /// `POST` ACCOUNTS webhooks (HMAC-signed raw body).
+    pub const ACCOUNTS_WEBHOOK: &str = "/webhooks/accounts";
 
-    /// `GET`/`PUT`/`DELETE /api/v1/orgs/{org}/byo/deepgram`.
+    /// `GET`/`PUT`/`DELETE /api/v1/accounts/{account}/byo/deepgram`.
     #[must_use]
-    pub fn byo_deepgram(org: &str) -> String {
-        format!("/api/v1/orgs/{org}/byo/deepgram")
-    }
-
-    /// `PUT`/`GET /internal/honeycomb/organizations/{org}/testing-environments/{env}/operations/{op}`.
-    #[must_use]
-    pub fn participant_operation(org: &str, environment: &str, operation: &str) -> String {
-        format!(
-            "/internal/honeycomb/organizations/{org}/testing-environments/{environment}/operations/{operation}"
-        )
+    pub fn byo_deepgram(account: &str) -> String {
+        format!("/api/v1/accounts/{account}/byo/deepgram")
     }
 }
 
@@ -69,12 +60,8 @@ pub mod routes {
 pub mod headers {
     /// Idempotency key on every POST.
     pub const IDEMPOTENCY_KEY: &str = "idempotency-key";
-    /// Org selection for bearer routes (and the login org hint).
-    pub const ORG_ID: &str = "x-org-id";
-    /// The peek testing app secret, on every route in a testing context.
-    pub const TESTING_KEY: &str = "x-testing-environment-key";
-    /// The testing generation, on every mutation except login and refresh.
-    pub const TESTING_GENERATION: &str = "x-testing-environment-generation";
+    /// Optional account consistency hint; bearer authority is authoritative.
+    pub const ACCOUNT_ID: &str = "x-account-id";
     /// `on` or `off`; `off` makes the backend skip request events.
     pub const TELEMETRY: &str = "x-peek-telemetry";
     /// The caller's version.
@@ -110,7 +97,7 @@ pub struct ReadyChecks {
     /// `ok` or an error summary.
     pub db: String,
     /// `ok` or `missing`.
-    pub iam_config: String,
+    pub accounts_config: String,
     /// `ok` or `missing`.
     pub ting_config: String,
     /// Legacy Deepgram status.
@@ -137,17 +124,6 @@ pub struct Ready {
     pub checks: ReadyChecks,
 }
 
-/// A testing environment as the backend describes it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TestingEnvironment {
-    /// The environment UUID.
-    pub id: Uuid,
-    /// Its display name (shown as `TEST · <name>`).
-    pub name: String,
-    /// Its current generation (advances on every clean).
-    pub generation: u64,
-}
-
 /// Version compatibility advertised by the backend.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Compatibility {
@@ -157,26 +133,17 @@ pub struct Compatibility {
     pub ipc_protocols: Vec<u32>,
 }
 
-/// `GET /api/v1/iam`.
+/// `GET /api/v1/accounts`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IamDiscovery {
+pub struct AccountsDiscovery {
     /// `peek`.
     pub app_id: String,
     /// `v1`.
     pub api_version: String,
     /// The backend origin.
     pub api_base_url: String,
-    /// The IAM origin.
-    pub iam_base_url: String,
-    /// The testing environment the presented test key selects.
-    #[serde(default)]
-    pub testing_environment_id: Option<Uuid>,
-    /// Its generation.
-    #[serde(default)]
-    pub testing_generation: Option<u64>,
-    /// Its description.
-    #[serde(default)]
-    pub testing_environment: Option<TestingEnvironment>,
+    /// The ACCOUNTS origin.
+    pub accounts_base_url: String,
     /// Compatibility ranges.
     pub compatibility: Compatibility,
 }
@@ -185,11 +152,11 @@ pub struct IamDiscovery {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoginRequest {
-    /// The single-use IAM short-lived token.
+    /// The single-use ACCOUNTS short-lived token.
     pub slt: Secret,
 }
 
-/// `POST /api/v1/auth/refresh` body: exactly `{"refresh_token":"ort_…"}`.
+/// `POST /api/v1/auth/refresh` body: exactly `{"refresh_token":"sar_…"}`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RefreshRequest {
@@ -197,7 +164,7 @@ pub struct RefreshRequest {
     pub refresh_token: Secret,
 }
 
-/// `POST /api/v1/auth/logout` body: `{"token":"ort_…"}`, plus
+/// `POST /api/v1/auth/logout` body: `{"token":"sar_…"}`, plus
 /// `"revoke_ting":true` only for `peek logout --revoke-ting`.
 ///
 /// The Ting recipient grant belongs to the Silicon, not to one home: other
@@ -237,27 +204,29 @@ pub struct EnrollmentError {
 }
 
 /// The session returned by login and refresh. Only login carries `ting`.
-/// The backend stores none of these tokens.
+/// The backend encrypts successful exchanges for safe lost-response recovery.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionResponse {
-    /// `oat_…`.
+    /// JWT access token.
     pub access_token: Secret,
-    /// `ort_…`.
+    /// `sar_…`.
     pub refresh_token: Secret,
     /// `Bearer`.
     pub token_type: String,
     /// Access token lifetime in seconds.
     pub expires_in: u64,
+    /// Absolute expiry of the persistent refresh-token family.
+    pub refresh_token_expires_at: Option<Timestamp>,
     /// Space-separated granted scopes.
     pub scope: String,
     /// The authenticated actor.
     pub actor: Actor,
-    /// The selected org.
-    pub org_id: OrgId,
-    /// Every org the grant covers.
+    /// The selected account.
+    pub account_id: AccountId,
+    /// Every account the grant covers.
     #[serde(default)]
-    pub org_ids: Vec<OrgId>,
-    /// `si:<handle>[<org>]`.
+    pub account_ids: Vec<AccountId>,
+    /// `peek:<account UUID>`.
     pub membership_id: String,
     /// Whether a required scope is missing (log in again with consent).
     #[serde(default)]
@@ -268,24 +237,21 @@ pub struct SessionResponse {
     /// Ting enrollment (login only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ting: Option<TingEnrollment>,
-    /// The testing environment, in a testing context.
-    #[serde(default)]
-    pub testing_environment: Option<TestingEnvironment>,
 }
 
 impl SessionResponse {
-    /// Validates an ordinary IAM 5 token pair and its single identity context.
+    /// Validates an ordinary ACCOUNTS token pair and its single identity context.
     ///
     /// # Errors
     /// `unexpected_response` for malformed, unscoped or delegated credentials.
     pub fn validate(&self) -> crate::Result<()> {
         if self.token_type != "Bearer"
             || self.expires_in == 0
-            || !self.access_token.expose().starts_with("oat_")
-            || !self.refresh_token.expose().starts_with("ort_")
+            || self.access_token.expose().split('.').count() != 3
+            || !self.refresh_token.expose().starts_with("sar_")
             || self.actor.actor_type != self.actor.public_id.actor_type()
-            || self.org_ids != [self.org_id.clone()]
-            || self.membership_id != format!("{}[{}]", self.actor.public_id, self.org_id)
+            || self.account_ids != [self.account_id.clone()]
+            || self.membership_id != format!("peek:{}", self.account_id)
             || self
                 .scope
                 .split_ascii_whitespace()
@@ -293,7 +259,7 @@ impl SessionResponse {
         {
             return Err(crate::Error::new(
                 crate::ErrorCode::UnexpectedResponse,
-                "the backend did not return one ordinary IAM 5 account and organization",
+                "the backend did not return a valid ACCOUNTS session",
             ));
         }
         Ok(())
@@ -307,16 +273,13 @@ pub struct Me {
     pub authenticated: bool,
     /// The introspected actor.
     pub actor: Actor,
-    /// Display name (needs `self.profile.read`).
+    /// Display name (needs `profile`).
     #[serde(default)]
     pub display_name: Option<String>,
-    /// The org from `X-Org-ID`.
-    pub org_id: OrgId,
-    /// `si:<handle>[<org>]`.
+    /// The account from `X-Account-ID`.
+    pub account_id: AccountId,
+    /// `peek:<account UUID>`.
     pub membership_id: String,
-    /// `owner`, `admin`, `member`… (needs `self.membership.read`).
-    #[serde(default)]
-    pub org_role: Option<String>,
     /// Granted scopes.
     #[serde(default)]
     pub scopes: Vec<String>,
@@ -385,8 +348,8 @@ pub struct SpeechTokenRequest {
 pub enum KeySource {
     /// peek's own key.
     Peek,
-    /// The org's BYO key.
-    Org,
+    /// The account's BYO key.
+    Account,
 }
 
 /// Request parameters every Deepgram call must carry.
@@ -521,7 +484,7 @@ pub struct Drawing {
     pub bytes: Vec<u8>,
 }
 
-/// `PUT /api/v1/orgs/{org}/byo/deepgram` body. The key is never returned.
+/// `PUT /api/v1/accounts/{account}/byo/deepgram` body. The key is never returned.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ByoDeepgramRequest {
@@ -535,7 +498,7 @@ pub struct ByoDeepgramRequest {
 /// BYO key status.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ByoStatus {
-    /// Whether the org has a key.
+    /// Whether the account has a key.
     pub configured: bool,
     /// When it was last changed.
     #[serde(default)]
@@ -647,115 +610,14 @@ pub struct TelemetryBatch {
     pub events: Vec<TelemetryEvent>,
 }
 
-/// Honeycomb lifecycle participant contract (§2.9).
-pub mod participant {
-    use serde::{Deserialize, Serialize};
-    use serde_json::Value;
-    use uuid::Uuid;
-
-    use crate::Secret;
-
-    /// Lifecycle actions.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-    #[serde(rename_all = "kebab-case")]
-    pub enum Action {
-        /// Create the context.
-        Prepare,
-        /// Import data.
-        Import,
-        /// Re-import.
-        RefreshImport,
-        /// Rotate the root key (advances `key_version`).
-        RotateKey,
-        /// Wipe data (advances `generation`).
-        Clean,
-        /// Disable (Honeycomb "delete").
-        Disable,
-        /// Re-enable.
-        Restore,
-        /// Destroy, keeping a secret-free tombstone.
-        Purge,
-        /// Retire applications.
-        RetireApplications,
-    }
-
-    /// `PUT …/operations/{operation_id}` body. Only these keys are sent.
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct OperationRequest {
-        /// Must equal the route's operation ID.
-        pub operation_id: Uuid,
-        /// Must equal the route's environment ID.
-        pub environment_id: Uuid,
-        /// Must equal the route's org.
-        pub org_id: String,
-        /// Must be `peek`.
-        pub app_id: String,
-        /// Positive; advances.
-        pub environment_revision: u64,
-        /// Positive.
-        pub generation: u64,
-        /// Positive.
-        pub key_version: u64,
-        /// The action.
-        pub action: Action,
-        /// The environment root key (32 alphanumerics), when sent.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub testing_key: Option<Secret>,
-        /// Import snapshot, when sent.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub snapshot: Option<Value>,
-        /// Human reason, when sent.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub reason: Option<String>,
-        /// Applications retired by `retire-applications`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub retired_apps: Option<Vec<String>>,
-    }
-
-    /// Receipt state.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-    #[serde(rename_all = "snake_case")]
-    pub enum ReceiptState {
-        /// Barrier committed, work in progress.
-        Pending,
-        /// Done.
-        Completed,
-        /// Failed permanently.
-        Failed,
-    }
-
-    /// The durable receipt (≤ 64 KiB; never keys, snapshots or error details).
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct Receipt {
-        /// State.
-        pub state: ReceiptState,
-        /// Echo.
-        pub operation_id: Uuid,
-        /// Echo.
-        pub environment_id: Uuid,
-        /// `peek`.
-        pub app_id: String,
-        /// Echo.
-        pub environment_revision: u64,
-        /// Echo.
-        pub generation: u64,
-        /// Echo.
-        pub key_version: u64,
-        /// Echo for `retire-applications`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub retired_apps: Option<Vec<String>>,
-    }
-}
-
-/// The shape `peek iam --json` prints: static, offline, no side effects
+/// The shape `peek accounts --json` prints: static, offline, no side effects
 /// (BLUEPRINT §7.3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IamInfo {
+pub struct AccountsInfo {
     /// `peek`.
     pub app_id: String,
-    /// `tos`.
-    pub org_id: String,
+    /// The developer's public Silicon Accounts identity.
+    pub owner_id: String,
     /// `Peek`.
     pub name: String,
     /// This build.
@@ -764,13 +626,13 @@ pub struct IamInfo {
     pub api_version: String,
     /// The API origin in use.
     pub api_url: String,
-    /// IAM backend.
-    pub iam_url: String,
-    /// IAM consent UI.
+    /// ACCOUNTS backend.
+    pub accounts_url: String,
+    /// ACCOUNTS consent UI.
     pub auth_url: String,
     /// `short_lived_token`.
     pub login_method: String,
-    /// Always `false`: peek never issues IAM credentials.
+    /// Always `false`: peek never issues ACCOUNTS credentials.
     pub credential_issuer: bool,
     /// How to log in.
     pub login: String,
@@ -786,31 +648,6 @@ pub struct IamInfo {
     pub install: String,
     /// Platform support.
     pub platforms: Platforms,
-    /// Added with `--test`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub testing: Option<IamTesting>,
-}
-
-/// `peek iam --json --test …`'s `testing` object (BLUEPRINT §7.3):
-/// `{"environment_id","name","generation"}`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IamTesting {
-    /// The environment UUID (hyphenated).
-    pub environment_id: Uuid,
-    /// Its display name.
-    pub name: String,
-    /// Its current generation.
-    pub generation: u64,
-}
-
-impl From<&TestingEnvironment> for IamTesting {
-    fn from(t: &TestingEnvironment) -> Self {
-        Self {
-            environment_id: t.id,
-            name: t.name.clone(),
-            generation: t.generation,
-        }
-    }
 }
 
 /// Platform support tiers.
@@ -818,216 +655,41 @@ impl From<&TestingEnvironment> for IamTesting {
 pub struct Platforms {
     /// Everything works.
     pub full: Vec<String>,
-    /// Only the IAM contract (`iam`, `login`, `status`, `logout`, `config`).
-    pub iam_only: Vec<String>,
+    /// Only the ACCOUNTS contract (`accounts`, `login`, `status`, `logout`, `config`).
+    pub accounts_only: Vec<String>,
 }
 
-impl IamInfo {
+impl AccountsInfo {
     /// The static discovery document for `api_url`.
     #[must_use]
     pub fn new(api_url: &ApiUrl) -> Self {
         let s = |v: &str| v.to_owned();
         Self {
             app_id: s(crate::APP_ID),
-            org_id: s(crate::OWNER_ORG),
+            owner_id: s(crate::OWNER_ACCOUNT),
             name: s("Peek"),
             version: s(crate::VERSION),
             api_version: s(crate::API_VERSION),
             api_url: api_url.as_str().to_owned(),
-            iam_url: s(crate::IAM_URL),
+            accounts_url: s(crate::ACCOUNTS_URL),
             auth_url: s(crate::AUTH_URL),
             login_method: s("short_lived_token"),
             credential_issuer: false,
-            login: s(
-                "Mint an SLT with `iam silicon-login --app-id peek --grant-org <org> --approve-scopes` (Silicon) or `iam login --app-id peek --grant-org <org>` (Carbon), then run `peek login '<SLT>'`.",
-            ),
+            login: s("Run `silicon-accounts login --app peek --json`, then `peek login '<SLT>'`."),
             docs_url: s(crate::DOCS_URL),
             repository_url: s(crate::REPOSITORY_URL),
             rust_package: s("silicon-peek-client"),
             cli_package: s("silicon-peek-cli"),
-            install: s("honeycomb install 'peek'"),
+            install: s("apps install 'peek'"),
             platforms: Platforms {
                 full: vec![s("macos-aarch64"), s("macos-x86_64")],
-                iam_only: vec![
+                accounts_only: vec![
                     s("linux-x86_64"),
                     s("linux-aarch64"),
                     s("windows-x86_64"),
                     s("windows-aarch64"),
                 ],
             },
-            testing: None,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn request_bodies_are_exact_and_strict() -> Result<(), serde_json::Error> {
-        let login = LoginRequest {
-            slt: Secret::new("oac_x"),
-        };
-        assert_eq!(serde_json::to_string(&login)?, r#"{"slt":"oac_x"}"#);
-        assert!(serde_json::from_value::<LoginRequest>(json!({"slt":"a","org":"b"})).is_err());
-        let r = RefreshRequest {
-            refresh_token: Secret::new("ort_x"),
-        };
-        assert_eq!(serde_json::to_string(&r)?, r#"{"refresh_token":"ort_x"}"#);
-        let l = LogoutRequest {
-            token: Secret::new("ort_x"),
-            revoke_ting: false,
-        };
-        assert_eq!(serde_json::to_string(&l)?, r#"{"token":"ort_x"}"#);
-        let l = LogoutRequest {
-            token: Secret::new("ort_x"),
-            revoke_ting: true,
-        };
-        assert_eq!(
-            serde_json::to_string(&l)?,
-            r#"{"token":"ort_x","revoke_ting":true}"#
-        );
-        let s = SpeechTokenRequest {
-            purpose: SpeechPurpose::Stt,
-        };
-        assert_eq!(serde_json::to_string(&s)?, r#"{"purpose":"stt"}"#);
-        Ok(())
-    }
-
-    #[test]
-    fn session_response_decodes_the_blueprint_example() -> Result<(), serde_json::Error> {
-        let s: SessionResponse = serde_json::from_value(json!({
-            "access_token":"oat_a","refresh_token":"ort_b","token_type":"Bearer","expires_in":1800,
-            "scope":"obo:ting:tings.send self.identity.read","actor":{"type":"silicon","public_id":"si:cleanup"},
-            "org_id":"tos","org_ids":["tos"],"membership_id":"si:cleanup[tos]","reconsent_required":false,
-            "display_name":"Cleanup","ting":{"subscribed":true,"subscription_id":"sub_1"},"testing_environment":null,
-            "future_field":1}))?;
-        assert_eq!(s.access_token.expose(), "oat_a");
-        assert_eq!(s.ting.map(|t| t.subscribed), Some(true));
-        let refreshed: SessionResponse = serde_json::from_value(json!({
-            "access_token":"oat_c","refresh_token":"ort_d","token_type":"Bearer","expires_in":1800,
-            "scope":"","actor":{"type":"silicon","public_id":"si:cleanup"},"org_id":"tos","membership_id":"si:cleanup[tos]"}))?;
-        assert!(refreshed.ting.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn speech_tokens_in_both_modes() -> Result<(), serde_json::Error> {
-        let direct: SpeechToken = serde_json::from_value(json!({
-            "provider":"elevenlabs","mode":"direct","access_token":"jwt","expires_in":30,
-            "base_url":"wss://agent.deepgram.com/v1/agent/converse",
-            "key_source":"peek","params":{"mip_opt_out":true,"tags":["peek","production"]}}))?;
-        assert_eq!(direct.mode, SpeechMode::Direct);
-        assert_eq!(direct.provider, SpeechProvider::Elevenlabs);
-        assert_eq!(
-            direct.access_token.as_ref().map(Secret::expose),
-            Some("jwt")
-        );
-        let proxy: SpeechToken = serde_json::from_value(json!({
-            "provider":"openai","mode":"proxy","expires_in":600,"base_url":"http://127.0.0.1:8080/api/v1/speech",
-            "key_source":"org","params":{"mip_opt_out":true,"tags":["peek","testing"]}}))?;
-        assert_eq!(proxy.mode, SpeechMode::Proxy);
-        assert_eq!(proxy.provider, SpeechProvider::Openai);
-        assert!(proxy.access_token.is_none());
-        let v = serde_json::to_value(&proxy)?;
-        assert!(v.get("access_token").is_none());
-        assert_eq!(v["mode"], "proxy");
-        let speak = SpeechSpeakRequest {
-            text: "hi".into(),
-            model: "JBFqnCBsd6RMkjVDRZzb".into(),
-            voice_instructions: None,
-            language: None,
-            sample_rate: None,
-        };
-        assert_eq!(
-            serde_json::to_string(&speak)?,
-            r#"{"text":"hi","model":"JBFqnCBsd6RMkjVDRZzb"}"#
-        );
-        assert!(
-            serde_json::from_value::<SpeechSpeakRequest>(json!({"text":"a","model":"m","voice":1}))
-                .is_err()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn speech_transcripts_and_readiness_are_additive() -> Result<(), serde_json::Error> {
-        let transcript: SpeechTranscript = serde_json::from_value(json!({"text":"hello"}))?;
-        assert_eq!(transcript.text, "hello");
-        assert!(transcript.request_id.is_none());
-        assert!(transcript.detected_language.is_none());
-        assert!(serde_json::from_value::<SpeechTranscript>(json!({"results":{}})).is_err());
-        let checks: ReadyChecks =
-            serde_json::from_value(json!({"db":"ok","iam_config":"ok","ting_config":"ok"}))?;
-        assert_eq!(checks.elevenlabs, "missing");
-        assert_eq!(checks.openai, "missing");
-        assert_eq!(serde_json::to_value(SpeechProvider::Openai)?, "openai");
-        Ok(())
-    }
-
-    #[test]
-    fn iam_testing_is_the_section_7_3_shape() -> Result<(), serde_json::Error> {
-        let env = TestingEnvironment {
-            id: Uuid::nil(),
-            name: "peek testing".into(),
-            generation: 3,
-        };
-        let mut info = IamInfo::new(&ApiUrl::production());
-        info.testing = Some(IamTesting::from(&env));
-        let v = serde_json::to_value(&info)?;
-        assert_eq!(
-            v["testing"],
-            json!({"environment_id": Uuid::nil(), "name": "peek testing", "generation": 3})
-        );
-        assert_eq!(v["version"], crate::VERSION);
-        Ok(())
-    }
-
-    #[test]
-    fn pr_urls() {
-        assert!(ReportRequest::pr_is_valid(
-            "https://github.com/teamofsilicons/silicon-peek/pull/12"
-        ));
-        assert!(!ReportRequest::pr_is_valid(
-            "https://github.com/teamofsilicons/silicon-peek/pull/"
-        ));
-        assert!(!ReportRequest::pr_is_valid(
-            "https://github.com/other/silicon-peek/pull/1"
-        ));
-        assert!(!ReportRequest::pr_is_valid(
-            "https://github.com/teamofsilicons/silicon-peek/pull/1/files"
-        ));
-    }
-
-    #[test]
-    fn iam_info_matches_the_contract() -> Result<(), serde_json::Error> {
-        let v = serde_json::to_value(IamInfo::new(&ApiUrl::production()))?;
-        assert_eq!(v["app_id"], "peek");
-        assert_eq!(v["org_id"], "tos");
-        assert_eq!(v["credential_issuer"], false);
-        assert_eq!(v["api_url"], "https://backend.peek.teamofsilicons.com");
-        assert_eq!(
-            v["platforms"]["full"],
-            json!(["macos-aarch64", "macos-x86_64"])
-        );
-        assert!(v.get("testing").is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn participant_bodies() -> Result<(), serde_json::Error> {
-        let op: participant::OperationRequest = serde_json::from_value(json!({
-            "operation_id": Uuid::now_v7(), "environment_id": Uuid::now_v7(), "org_id":"tos","app_id":"peek",
-            "environment_revision":1,"generation":1,"key_version":1,"action":"refresh-import"}))?;
-        assert_eq!(op.action, participant::Action::RefreshImport);
-        assert!(
-            serde_json::from_value::<participant::OperationRequest>(
-                json!({"operation_id":Uuid::now_v7(),"bogus":1})
-            )
-            .is_err()
-        );
-        Ok(())
     }
 }

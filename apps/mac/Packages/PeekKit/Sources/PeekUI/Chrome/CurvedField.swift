@@ -148,8 +148,8 @@ struct CurvedFieldView: View {
                     symbol: "arrow.up", radius: field.submitRadius,
                     tint: canSend ? Color.accentColor.opacity(0.9) : shade.tint, ink: canSend ? .white : shade.secondaryInk,
                     glass: glass, hovered: canSend && model.isHovered(.submit), forcePressed: model.isPressed(.submit),
-                    accessibilityLabel: model.context == .testing ? "Send to test silicon" : "Send",
-                    help: model.context == .testing ? "Send to test silicon (Return)" : "Send (Return)",
+                    accessibilityLabel: "Send",
+                    help: "Send (Return)",
                     action: model.actions.submitTyping
                 )
                 .disabled(!canSend)

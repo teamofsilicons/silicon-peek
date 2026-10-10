@@ -31,9 +31,6 @@ public struct SettingsRootView: View {
             Tab("Permissions", systemImage: "person.badge.key") {
                 PermissionsView(model: permissions)
             }
-            Tab("Testing", systemImage: "testtube.2") {
-                TestingEnvironmentsView(model: model)
-            }
             Tab("Startup", systemImage: "power") {
                 StartupSettingsView(model: model)
             }

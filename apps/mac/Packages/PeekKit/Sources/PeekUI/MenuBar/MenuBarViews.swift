@@ -43,7 +43,7 @@ public struct MenuBarContentView: View {
 
     public var body: some View {
         let summary = MenuBarSummary(
-            slots: controls.slots, modifier: controls.settings.hotkeyModifier, showTestPeeks: controls.settings.showTestPeeks)
+            slots: controls.slots, modifier: controls.settings.hotkeyModifier)
         VStack(alignment: .leading, spacing: 0) {
             header
                 .padding(.horizontal, 18)
@@ -116,7 +116,6 @@ public struct MenuBarContentView: View {
             HStack {
                 Text(summary.freePositionsText)
                 Spacer()
-                if let tests = summary.testEnvironmentsText { Text(tests) }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -156,15 +155,15 @@ private struct MenuBarSlotRow: View {
                 .frame(width: 22, height: 15)
             Text(row.name)
                 .lineLimit(1)
-                .foregroundStyle(row.muted ? .secondary : .primary)
-            if let pill = row.testPill {
-                Text(pill)
+                .foregroundStyle(.primary)
+            if row.simulation {
+                Text("SIMULATION")
                     .font(.caption2.weight(.semibold))
                     .lineLimit(1)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
                     .background(.orange.opacity(0.22), in: Capsule())
-                    .help(row.testTooltip ?? pill)
+                    .help("Local simulation")
             }
             if !row.hasDrawing {
                 Image(systemName: "circle.dotted")
@@ -179,12 +178,11 @@ private struct MenuBarSlotRow: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 6)
-        .opacity(row.muted ? 0.6 : 1)
-        .help(row.muted ? "Show test peeks is off: this Silicon's bubbles wait in peekd" : row.actorID)
+        .help(row.actorID)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
             "Position \(row.index.rawValue), \(row.index.side.rawValue): \(row.name)"
-                + (row.testPill.map { ", \($0)" } ?? "") + (row.hotkey.map { ", hotkey \($0)" } ?? ""))
+                + (row.simulation ? ", simulation" : "") + (row.hotkey.map { ", hotkey \($0)" } ?? ""))
     }
 }
 

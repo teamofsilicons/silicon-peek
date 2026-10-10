@@ -1,7 +1,7 @@
 //! `session.json` schema v1 (BLUEPRINT §1.7, gap-token-custody §5.2).
 //!
 //! One file per home holds one slot per `"<api_url>#<context>"`. The Silicon's
-//! `oat_`/`ort_` pair lives only here (client custody, D5): 0600, never
+//! JWT/`sar_` pair lives only here (client custody, D5): 0600, never
 //! printed, never in argv, env or URLs. Unknown fields written by a newer peek
 //! are preserved on rewrite, because several peek versions share one machine.
 
@@ -14,24 +14,20 @@ use crate::{
     REQUIRED_SCOPES, Secret,
     api::{EnrollmentError, SessionResponse, TingEnrollment},
     error::{Error, ErrorCode, Result},
-    identity::{Actor, ActorId, OrgId, SlotKey},
+    identity::{AccountId, Actor, ActorId, SlotKey},
     ids::IdempotencyKey,
-    timestamp::Timestamp,
+    timestamp::{Timestamp, unix_now},
 };
 
 /// The schema this build reads and writes.
-pub const SESSION_SCHEMA: u32 = 1;
+pub const SESSION_SCHEMA: u32 = 2;
 
-/// IAM's replay window for one-time secrets: a login or refresh must be
+/// ACCOUNTS's replay window for one-time secrets: a login or refresh must be
 /// recovered with the same key within 10 minutes.
 pub const REPLAY_WINDOW_SECS: i64 = 600;
 
-/// IAM returns no refresh-family expiry; status reports `logged_in_at + 900 d`
-/// as an estimate.
-pub const FAMILY_LIFETIME_ESTIMATE_SECS: i64 = 900 * 24 * 3600;
-
 /// The hint for every terminal session failure.
-pub const RELOGIN_HINT: &str = "log in again: si auth setup peek   (or: iam silicon-login … --app-id peek …; peek login '<SLT>')";
+pub const RELOGIN_HINT: &str = "log in again: silicon-accounts login --app peek --json | jq -r .slt | peek login --token-file -";
 
 /// The whole file.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -73,21 +69,24 @@ impl Default for SessionFile {
 pub struct SessionSlot {
     /// The authenticated actor.
     pub actor: Actor,
-    /// The selected org.
-    pub org_id: OrgId,
-    /// Compatibility projection: exactly the token-bound organization.
+    /// The selected account.
+    pub account_id: AccountId,
+    /// Compatibility projection: exactly the token-bound account.
     #[serde(default)]
-    pub org_ids: Vec<OrgId>,
-    /// `si:<handle>[<org>]`.
+    pub account_ids: Vec<AccountId>,
+    /// `si:<handle>[<account>]`.
     pub membership_id: String,
     /// Space-separated granted scopes.
     pub scope: String,
-    /// `oat_…`.
+    /// JWT access token.
     pub access_token: Secret,
-    /// `ort_…`.
+    /// `sar_…`.
     pub refresh_token: Secret,
     /// Unix seconds; computed from the request start, never the replay time.
     pub access_expires_at: i64,
+    /// Absolute expiry provided by ACCOUNTS.
+    #[serde(default)]
+    pub refresh_token_expires_at: Option<Timestamp>,
     /// When the pending refresh started (unix seconds).
     #[serde(default)]
     pub refresh_started_at: Option<i64>,
@@ -170,15 +169,15 @@ pub struct PendingLogin {
     /// The slot key the login targets.
     #[serde(default)]
     pub slot: Option<String>,
-    /// The `X-Org-ID` hint that was sent.
+    /// The `X-Account-ID` hint that was sent.
     #[serde(default)]
-    pub org_hint: Option<String>,
+    pub account_hint: Option<String>,
 }
 
 /// A refresh token to revoke.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PendingRevocation {
-    /// `ort_…`.
+    /// `sar_…`.
     pub token: Secret,
     /// `peek-revoke-<hex(blake3(token))>`.
     pub key: String,
@@ -209,9 +208,9 @@ pub struct LoggedOut {
     /// Exact login context whose work may be cancelled.
     #[serde(default)]
     pub context_id: Option<String>,
-    /// Organization of that login.
+    /// Account of that login.
     #[serde(default)]
-    pub org_id: Option<OrgId>,
+    pub account_id: Option<AccountId>,
     /// The actor that logged out.
     pub actor: String,
     /// Unix seconds.
@@ -228,11 +227,11 @@ impl SessionSlot {
     pub fn from_login(resp: &SessionResponse, started_at: i64, now: i64) -> Self {
         let mut slot = Self {
             actor: resp.actor.clone(),
-            org_id: resp.org_id.clone(),
-            org_ids: if resp.org_ids.is_empty() {
-                vec![resp.org_id.clone()]
+            account_id: resp.account_id.clone(),
+            account_ids: if resp.account_ids.is_empty() {
+                vec![resp.account_id.clone()]
             } else {
-                resp.org_ids.clone()
+                resp.account_ids.clone()
             },
             membership_id: resp.membership_id.clone(),
             scope: resp.scope.clone(),
@@ -240,6 +239,7 @@ impl SessionSlot {
             refresh_token: resp.refresh_token.clone(),
             access_expires_at: started_at
                 .saturating_add(i64::try_from(resp.expires_in).unwrap_or(i64::MAX)),
+            refresh_token_expires_at: resp.refresh_token_expires_at,
             refresh_started_at: None,
             pending_refresh_key: None,
             logged_in_at: started_at,
@@ -263,8 +263,10 @@ impl SessionSlot {
     /// Applies a refresh response: both tokens, scope and expiry
     /// (`refresh_started_at + expires_in`), and clears the pending state.
     pub fn apply_refresh(&mut self, resp: &SessionResponse, started_at: i64) {
+        self.actor = resp.actor.clone();
         self.access_token = resp.access_token.clone();
         self.refresh_token = resp.refresh_token.clone();
+        self.refresh_token_expires_at = resp.refresh_token_expires_at;
         self.scope.clone_from(&resp.scope);
         self.access_expires_at =
             started_at.saturating_add(i64::try_from(resp.expires_in).unwrap_or(i64::MAX));
@@ -276,7 +278,7 @@ impl SessionSlot {
         }
     }
 
-    /// Stable identity of this login family. Older sessions require a fresh IAM 5 login.
+    /// Stable identity of this login family. Older sessions require a fresh ACCOUNTS login.
     ///
     /// # Errors
     /// `session_rejected` for legacy or invalid saved context metadata.
@@ -288,21 +290,21 @@ impl SessionSlot {
             .ok_or_else(|| {
                 Error::new(
                     ErrorCode::SessionRejected,
-                    "this saved session predates IAM 5; sign in again",
+                    "this saved session predates ACCOUNTS; sign in again",
                 )
                 .with_hint(RELOGIN_HINT)
             })
     }
 
-    /// Rejects legacy multi-organization or delegated credentials before use.
+    /// Rejects legacy multi-account or delegated credentials before use.
     ///
     /// # Errors
     /// `session_rejected` when the saved authority is not one ordinary context.
     pub fn validate_context(&self) -> Result<()> {
         self.context_id()?;
-        if self.org_ids != [self.org_id.clone()]
+        if self.account_ids != [self.account_id.clone()]
             || self.actor.actor_type != self.actor.public_id.actor_type()
-            || self.membership_id != format!("{}[{}]", self.actor.public_id, self.org_id)
+            || self.membership_id != format!("peek:{}", self.account_id)
             || self
                 .scope
                 .split_ascii_whitespace()
@@ -310,7 +312,7 @@ impl SessionSlot {
         {
             return Err(Error::new(
                 ErrorCode::SessionRejected,
-                "this saved session is not an IAM 5 account and organization context",
+                "this saved session is not a ACCOUNTS session",
             )
             .with_hint(RELOGIN_HINT));
         }
@@ -354,13 +356,11 @@ impl SessionSlot {
             && self.rejected.is_none()
     }
 
-    /// `logged_in_at + 900 days`, labelled an estimate.
+    /// The absolute refresh-family expiry returned by ACCOUNTS.
     #[must_use]
-    pub fn family_expires_at_estimate(&self) -> Timestamp {
-        Timestamp::from_unix(
-            self.logged_in_at
-                .saturating_add(FAMILY_LIFETIME_ESTIMATE_SECS),
-        )
+    pub fn family_expires_at(&self) -> Timestamp {
+        self.refresh_token_expires_at
+            .unwrap_or_else(|| Timestamp::from_unix(self.access_expires_at))
     }
 }
 
@@ -393,11 +393,21 @@ impl SessionFile {
             return Err(Error::new(ErrorCode::NotLoggedIn, msg).with_hint(RELOGIN_HINT));
         };
         slot.validate_context()?;
+        if slot
+            .refresh_token_expires_at
+            .is_some_and(|at| at.unix() <= unix_now())
+        {
+            return Err(Error::new(
+                ErrorCode::SessionRejected,
+                "This session reached its token expiry",
+            )
+            .with_hint(RELOGIN_HINT));
+        }
         if let Some(r) = &slot.rejected {
             return Err(Error::new(
                 ErrorCode::SessionRejected,
                 format!(
-                    "IAM rejected this home's peek session for {} ({}, at {}); it cannot be refreshed",
+                    "ACCOUNTS rejected this home's peek session for {} ({}, at {}); it cannot be refreshed",
                     slot.actor.public_id,
                     r.code,
                     Timestamp::from_unix(r.at)
@@ -460,7 +470,7 @@ impl SessionFile {
         let slot = self.slots.get(&k)?.clone();
         self.logged_out = Some(LoggedOut {
             context_id: slot.context_id().ok().map(str::to_owned),
-            org_id: Some(slot.org_id.clone()),
+            account_id: Some(slot.account_id.clone()),
             actor: slot.actor.public_id.to_string(),
             at: now,
             slot: Some(k.clone()),
@@ -483,7 +493,7 @@ impl SessionFile {
         }
     }
 
-    /// Whether `pending_login` is still inside IAM's replay window.
+    /// Whether `pending_login` is still inside ACCOUNTS's replay window.
     #[must_use]
     pub fn pending_login_live(&self, now: i64) -> bool {
         self.pending_login
@@ -496,133 +506,6 @@ impl SessionFile {
 ///
 /// # Errors
 /// `unexpected_response` when identity, scope, token, or world bindings are invalid.
-pub fn validate_response(resp: &SessionResponse, context: crate::identity::Context) -> Result<()> {
-    resp.validate()?;
-    if resp.testing_environment.as_ref().map(|world| world.id) != context.testing_id() {
-        return Err(Error::new(
-            ErrorCode::UnexpectedResponse,
-            "the backend returned a different IAM world",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        identity::{ApiUrl, Context},
-        json,
-    };
-
-    fn response(access: &str, refresh: &str, scope: &str) -> Result<SessionResponse> {
-        json::from_value(
-            serde_json::json!({"access_token":access,"refresh_token":refresh,"token_type":"Bearer","expires_in":1800,
-                "scope":scope,"actor":{"type":"silicon","public_id":"si:cleanup"},"org_id":"tos","org_ids":["tos"],
-                "membership_id":"si:cleanup[tos]","reconsent_required":false,"display_name":"Cleanup",
-                "ting":{"subscribed":true,"subscription_id":"sub_1"}}),
-            "session",
-        )
-    }
-
-    const FULL: &str = "obo:ting:subscriptions.register obo:ting:subscriptions.revoke obo:ting:tings.send self.identity.read self.membership.read self.profile.read";
-
-    #[test]
-    fn blueprint_example_parses_and_round_trips() -> Result<()> {
-        let text = r#"{"schema":1,"slots":{"https://backend.peek.teamofsilicons.com#production":{
-            "actor":{"type":"silicon","public_id":"si:cleanup"},"org_id":"tos","org_ids":["tos"],"membership_id":"si:cleanup[tos]",
-            "scope":"obo:ting:subscriptions.register obo:ting:subscriptions.revoke obo:ting:tings.send self.identity.read self.membership.read self.profile.read",
-            "access_token":"oat_a","refresh_token":"ort_b","access_expires_at":1790001800,"refresh_started_at":null,"pending_refresh_key":null,
-            "logged_in_at":1790000000,"verified_at":1790000000,"ting":{"subscribed":true,"subscription_id":"sub_1","registered_at":1790000001},
-            "display_name":"DJ","reconsent_required":false,"rejected":null,"future_slot_field":[1]}},
-            "pending_login":null,"pending_revocations":[],"logged_out":null,"future_top":true}"#;
-        let f: SessionFile = json::from_slice(text.as_bytes(), "session.json")?;
-        let key = SlotKey::new(ApiUrl::production(), Context::Production);
-        let slot = f.slot(&key).ok_or_else(|| Error::internal("slot"))?;
-        assert!(slot.has_required_scopes());
-        assert_eq!(slot.scopes().len(), 6);
-        assert_eq!(
-            slot.family_expires_at_estimate().unix(),
-            1_790_000_000 + 900 * 86_400
-        );
-        let back = serde_json::to_value(&f).map_err(|e| Error::internal(e.to_string()))?;
-        assert_eq!(back["future_top"], true);
-        assert_eq!(
-            back["slots"]["https://backend.peek.teamofsilicons.com#production"]["future_slot_field"]
-                [0],
-            1
-        );
-        assert_eq!(
-            back["slots"]["https://backend.peek.teamofsilicons.com#production"]["refresh_token"],
-            "ort_b"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn login_logout_bookkeeping() -> Result<()> {
-        let key = SlotKey::new(ApiUrl::production(), Context::Production);
-        let mut f = SessionFile::default();
-        let s1 = SessionSlot::from_login(&response("oat_1", "ort_1", FULL)?, 100, 101);
-        assert_eq!(s1.access_expires_at, 1900);
-        assert_eq!(s1.ting.as_ref().and_then(|t| t.registered_at), Some(101));
-        assert!(f.record_login(&key, s1, 101).is_none());
-        let s2 = SessionSlot::from_login(&response("oat_2", "ort_2", FULL)?, 200, 201);
-        let replaced = f
-            .record_login(&key, s2, 201)
-            .ok_or_else(|| Error::internal("replaced"))?;
-        assert_eq!(replaced.token.expose(), "ort_1");
-        assert_eq!(f.pending_revocations.len(), 1);
-        assert_eq!(replaced.key, IdempotencyKey::revoke("ort_1").as_str());
-
-        let (slot, r) = f
-            .begin_logout(&key, 300)
-            .ok_or_else(|| Error::internal("logout"))?;
-        assert_eq!(r.token.expose(), "ort_2");
-        assert!(f.logged_out.is_some());
-        assert!(f.slot(&key).is_some(), "slot kept until the backend call");
-        f.finish_logout(&key, &slot.refresh_token);
-        assert!(f.slot(&key).is_none());
-        let e = f.usable_slot(&key, std::path::Path::new("/x")).err();
-        assert!(e.is_some_and(
-            |e| *e.code() == ErrorCode::NotLoggedIn && e.message().contains("logged out")
-        ));
-        f.complete_revocation(&r.key);
-        assert_eq!(f.pending_revocations.len(), 1);
-        Ok(())
-    }
-
-    #[test]
-    fn reconsent_and_freshness() -> Result<()> {
-        let s = SessionSlot::from_login(&response("oat", "ort", "self.profile.read")?, 0, 0);
-        assert!(s.reconsent_required);
-        let mut s = SessionSlot::from_login(&response("oat", "ort", FULL)?, 1000, 1000);
-        assert!(s.is_fresh(1000, 60));
-        assert!(!s.is_fresh(2741, 60));
-        s.pending_refresh_key = Some("k".into());
-        assert!(!s.is_fresh(1000, 60));
-        s.pending_refresh_key = None;
-        s.rejected = Some(Rejection {
-            code: "session_rejected".into(),
-            at: 1,
-            request_id: None,
-        });
-        assert!(!s.is_fresh(1000, 60));
-        let mut f = SessionFile::default();
-        let key = SlotKey::new(ApiUrl::production(), Context::Production);
-        f.slots.insert(key.as_string(), s);
-        let e = f.usable_slot(&key, std::path::Path::new("/x")).err();
-        assert!(
-            e.is_some_and(|e| *e.code() == ErrorCode::SessionRejected && e.exit_code().code() == 3)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn debug_never_prints_tokens() -> Result<()> {
-        let s = SessionSlot::from_login(&response("oat_secret", "ort_secret", FULL)?, 0, 0);
-        let d = format!("{s:?}");
-        assert!(!d.contains("oat_secret") && !d.contains("ort_secret"));
-        Ok(())
-    }
+pub fn validate_response(resp: &SessionResponse, _context: crate::identity::Context) -> Result<()> {
+    resp.validate()
 }

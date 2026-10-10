@@ -9,7 +9,7 @@ use serde_json::json;
 use silicon_peek_client::{ErrorCode, Secret};
 use std::time::Duration;
 
-/// Keep existing org key management usable without routing speech to Deepgram.
+/// Keep existing account key management usable without routing speech to Deepgram.
 pub(crate) async fn validate_key(state: &AppState, base_url: &str, key: &Secret) -> ApiResult<()> {
     let unavailable = || {
         ApiError::new(

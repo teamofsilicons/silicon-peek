@@ -49,7 +49,7 @@ public final class DrawingRuntime: DrawingRuntimeProviding {
                 message: "cannot read the drawing at \(url.path): \(error.localizedDescription). "
                     + "peekd stages the script before asking Peek.app to validate it; register the drawing again"))
         }
-        let script = DrawingScript(key: SiliconKey(context: .production, orgID: "", actorID: ""), sha256: "",
+        let script = DrawingScript(key: SiliconKey(context: .production, accountID: "", actorID: ""), sha256: "",
                                    source: data, filename: url.lastPathComponent)
         return await DrawingValidator.validate(script, options: options, glassMode: glassMode)
     }
