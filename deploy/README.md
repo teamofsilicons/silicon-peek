@@ -57,7 +57,7 @@ Silicon Apps owns updates for store installations. Native download users rerun t
 
 ## Frontend
 
-The site uses source from [Silicon UI](https://ui.teamofsilicons.com). Run `npm run build` in `web/`, then deploy the linked Vercel project with `vercel deploy --prod --yes`.
+The site uses source from [Silicon UI](https://ui.teamofsilicons.com). Run `web/deploy.sh --prod` from the repository root. It builds locally with the sibling `docs/` sources available and deploys Vercel's prebuilt output to the linked project.
 
 ## Live verification
 

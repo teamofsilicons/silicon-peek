@@ -40,5 +40,4 @@ answers `204` without forwarding anything when the table has no key on the backe
 off, so a quiet gateway is not proof that events arrived
 (`../docs/telemetry.md`, "The gateway").
 
-Deploying is a mutating step owned by the operator (BLUEPRINT §9.3):
-`npx --yes vercel@60.0.1 deploy --prod --yes --build-env VITE_PEEK_ANALYTICS_TABLE=peekfrontendanalytics --build-env VITE_PEEK_EVENTS_TABLE=peekfrontendevents`.
+Deploy with `./deploy.sh --prod` from this directory (or omit `--prod` for a preview). The script builds locally so the sibling `docs/` sources are available, then uploads Vercel's prebuilt output. The production project must already be linked in `.vercel/project.json`.
