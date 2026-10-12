@@ -26,7 +26,6 @@ use crate::{
     db::SqlResult as _,
     net::{HomeRef, needs_authority},
     state::{ActorKey, Shared, SharedRef},
-    telemetry::Record,
 };
 
 /// What a row delivers.
@@ -698,21 +697,6 @@ impl Shared {
             let code = outcome.code().unwrap_or("none");
             tracing::info!(event = %row.event_id, status, code, "delivery attempt did not complete");
         }
-        let mut rec = Record::new(
-            "delivery.attempt",
-            if matches!(outcome, Outcome::Accepted { .. }) {
-                "ok"
-            } else {
-                "error"
-            },
-        )
-        .with("ting_status", status)
-        .with("attempt", attempts)
-        .with("method", row.kind.as_str());
-        rec.error_code = outcome.code().map(str::to_owned);
-        rec.actor = Some((row.key.account.clone(), row.key.actor.clone()));
-
-        self.record(rec);
         Ok(())
     }
 

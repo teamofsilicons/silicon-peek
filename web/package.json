@@ -1,7 +1,7 @@
 {
   "name": "@teamofsilicons/peek-web",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Landing page and documentation for peek, prerendered for https://peek.teamofsilicons.com.",
   "license": "MIT",
   "type": "module",
@@ -13,7 +13,6 @@
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "5.3.0",
-    "@teamofsilicons/space-station-web": "0.1.0",
     "solid-js": "1.9.15"
   },
   "devDependencies": {

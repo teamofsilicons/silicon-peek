@@ -56,8 +56,6 @@ public struct SlotManagerEnvironment {
     public var send: (BubbleContext, BubbleOutbound) async -> BubbleDelivery
     /// `speech.done` for a send whose audio never started playing when the Carbon stopped it.
     public var speechStoppedBeforeStart: (String, Bool) -> Void
-    /// Telemetry (`mac, events` / `mac, analytics`, BLUEPRINT §6.5).
-    public var telemetry: (String, [String: JSONValue], PeekContext) -> Void
     /// Bare Esc for the Esc router (``CarbonEscapeKey`` in the app; inert in tests and headless runs).
     public var escapeKeys: any EscapeKeyProviding
     /// Whether one of Peek's windows is key (a typing slot panel, Settings, Simulation): Esc then arrives through
@@ -72,7 +70,6 @@ public struct SlotManagerEnvironment {
                 host: @escaping (SiliconKey) -> (any DrawingHosting)?,
                 send: @escaping (BubbleContext, BubbleOutbound) async -> BubbleDelivery,
                 speechStoppedBeforeStart: @escaping (String, Bool) -> Void = { _, _ in },
-                telemetry: @escaping (String, [String: JSONValue], PeekContext) -> Void = { _, _, _ in },
                 escapeKeys: any EscapeKeyProviding = InertEscapeKey(),
                 keyWindowIsOpen: @escaping () -> Bool = { false }) {
         self.speech = speech
@@ -89,7 +86,6 @@ public struct SlotManagerEnvironment {
         self.host = host
         self.send = send
         self.speechStoppedBeforeStart = speechStoppedBeforeStart
-        self.telemetry = telemetry
         self.escapeKeys = escapeKeys
         self.keyWindowIsOpen = keyWindowIsOpen
     }
@@ -329,7 +325,6 @@ public final class SlotManager {
             activate(pending, id: id, in: slot)
         case .enqueue:
             enqueue(pending, entry: entry, in: slot)
-            env.telemetry("send.queued", ["slot": .int(Int64(event.slot.rawValue))], event.context)
         case .replaceActive:
             var front = entry
             front.sequence = -nextSequence()
@@ -461,7 +456,6 @@ public final class SlotManager {
     /// The Carbon pressed a slot's hotkey (§8.5): bring its bubble forward and take key focus.
     public func summon(_ index: SlotIndex) {
         guard let slot = slots[index] else { return }
-        env.telemetry("shortcut_used", ["shortcut": .string("slot_\(index.rawValue)")], occupant(of: index)?.context ?? .production)
         if let active = slot.active {
             switch active.machine.stage {
             case .prewarming, .entering, .visible:
@@ -801,11 +795,6 @@ public final class SlotManager {
                 latestWaiting.removeValue(forKey: sendID)
                 onSendsChanged?()
             }
-            if let since = machine.visibleSince {
-                env.telemetry("peek_visible", ["slot": .int(Int64(slot.index.rawValue)), "mode": .string(mode.rawValue),
-                                               "visible_ms": .int(Int64(BubbleMachine.milliseconds(env.now() - since)))],
-                              bubble.key.context)
-            }
         }
         env.backdrop.track(bubble.key, rectOnScreen: nil)
         env.input.update(bubble.key) { state in
@@ -929,19 +918,6 @@ public final class SlotManager {
             guard let sendID = context.sendID, shownSends.insert(sendID).inserted else { return }
             if shownSends.count > 2048 { shownSends = [sendID] }
         }
-        switch outbound {
-        case .dismissed(let gesture):
-            env.telemetry("dismissed", ["gesture": .string(gesture.rawValue)], bubble.key.context)
-        case .answer(_, let via):
-            var data: [String: JSONValue] = ["input": .string(via.rawValue)]
-            if let type = context.askType { data["ask_type"] = .string(type.rawValue) }
-            if let since = bubble.machine.visibleSince {
-                data["answer_latency_ms"] = .int(Int64(BubbleMachine.milliseconds(env.now() - since)))
-            }
-            env.telemetry("answer_submitted", data, bubble.key.context)
-        default:
-            break
-        }
         let expectsReply: Bool =
             switch outbound {
             case .answer, .message, .voice: true
@@ -1035,7 +1011,6 @@ public final class SlotManager {
     }
 
     private func startRecording(_ bubble: Bubble, in slot: PhysicalSlot) {
-        env.telemetry("mic_pressed", [:], bubble.key.context)
         Task { [weak self] in
             guard let self else { return }
             let mic = self.env.mic
@@ -1276,7 +1251,6 @@ public final class SlotManager {
         actions.submitValue = withBubble { manager, bubble, slot in manager.handle(.submitValue(via: .click), for: bubble, in: slot) }
         actions.mic = withBubble { manager, bubble, slot in manager.handle(.micButton, for: bubble, in: slot) }
         actions.keyboard = withBubble { manager, bubble, slot in
-            if bubble.machine.input != .typing { manager.env.telemetry("keyboard_pressed", [:], bubble.key.context) }
             manager.handle(.keyboardButton, for: bubble, in: slot)
         }
         actions.startTyping = withBubble { manager, bubble, slot in manager.handle(.startTyping(seed: nil), for: bubble, in: slot) }

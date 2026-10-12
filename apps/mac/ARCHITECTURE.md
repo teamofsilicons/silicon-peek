@@ -15,7 +15,7 @@ apps/mac/
     AppDelegate.swift             launch: parse args, register services, start PeekCoordinator; quit: stop it
     ServiceRegistration.swift     SMAppService.mainApp + agent("ai.tos.peek.daemon.plist"); requiresApproval →
                                   spawn Contents/Helpers/peekd run --parent-ui (setsid, stdio → peekd.log)
-    SelfUpdateHooks.swift         --after-update <old build>: read update-applied.json, report app.updated
+    SelfUpdateHooks.swift         --after-update <old build>: log the update locally
   Resources/
     Info.plist                    §8.9 keys (CFBundleIdentifier = $(PRODUCT_BUNDLE_IDENTIFIER))
     Peek.entitlements             com.apple.security.device.audio-input only; no App Sandbox
@@ -138,7 +138,6 @@ public protocol DaemonLinking: Sendable {
 | UI → peekd | `shown.done` | `ShownDoneRequest(sendID, visibleMs, reason: .auto/.speechDone)` |
 | UI → peekd | `focus` | `FocusRequest(slot)` |
 | UI → peekd | `drawing.error` | `DrawingErrorRequest(context, accountID, actorID, reason: .throwsRepeatedly/.overruns/.oom, message, stack)` |
-| UI → peekd | `telemetry` | `TelemetryRequest(events: [TelemetryEvent])` |
 | UI → peekd | `settings.changed` | `SettingsChangedRequest(key: PeekSettings.Key, value: JSONValue)` |
 | UI → peekd | `ui.status` | `UIStatusReport(mic, hotkeys, glass, services, appBuild, appVersion)` (additive; peekd keeps the latest for `peek doctor`) |
 | UI → peekd | `presence` | `PresenceRequest(available, reason: .ok/.locked/.asleep/.displayOff, paused)` (additive; `PresenceMonitor` → `DaemonLink.setPresence`, sent right after every hello, on change and when the menu bar pause toggles (`paused`, peek 0.1.2); while unavailable peekd queues new sends with `carbon_away`; `unknown_op` from an older peekd is tolerated) |
@@ -423,7 +422,7 @@ Debug builds read `PEEK_DEBUG_HOVER`, `PEEK_DEBUG_PRESS`, `PEEK_DEBUG_EXPAND` (a
   multiple-choice `min` 1 / `max` = count, slider `step` = (max−min)/100 and `default` = min, range default
   `[min, max]`. `validate()` enforces every §7.4 limit with the CLI's error codes.
 - `PeekShowEvent.effectiveDuration`: `duration_ms`, else `clamp(3 + 0.06 × visible chars, 4, 15)` s.
-- `PeekSettings` mirrors settings.json (§1.7): `mode`, `hotkey_modifier`, `display`, `backdrop`, `telemetry`,
+- `PeekSettings` mirrors settings.json (§1.7): `mode`, `hotkey_modifier`, `display`, `backdrop`,
   `voice_defaults`, `stt_language`, plus preserved unknown keys. Updates are managed by Silicon Apps.
   Lenient per-key decoding with warnings; atomic 0600 writes. The UI writes the file and sends `settings.changed`;
   peekd must merge, not overwrite, keys it does not own.

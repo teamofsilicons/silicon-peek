@@ -142,29 +142,8 @@ SPEC: dict[str, tuple[bool, bool, Callable[[str], str | None]]] = {
     "PEEK_BYO_DEEPGRAM_HOSTS": (False, False, _byo_hosts),
     "PEEK_GITHUB_ISSUES_TOKEN": (False, True, _pattern(r"[\x21-\x7e]{20,512}", "a fine-grained GitHub token")),
     "PEEK_GITHUB_REPO": (True, False, _one_of("teamofsilicons/silicon-peek")),
-    "PEEK_TELEMETRY": (True, False, _one_of("on", "off")),
-    # Space Station table keys arrive in P6.
-    "PEEK_BACKEND_TABLE_KEY": (False, True, _pattern(r"table-peekbackend-[0-9a-f]{32}", "table-peekbackend-<32 hex>")),
-    "PEEK_CLIDAEMON_TABLE_KEY": (
-        False,
-        True,
-        _pattern(r"table-peekclidaemon-[0-9a-f]{32}", "table-peekclidaemon-<32 hex>"),
-    ),
-    "PEEK_FRONTEND_ANALYTICS_TABLE_KEY": (
-        False,
-        True,
-        _pattern(r"table-peekfrontendanalytics-[0-9a-f]{32}", "table-peekfrontendanalytics-<32 hex>"),
-    ),
-    "PEEK_FRONTEND_EVENTS_TABLE_KEY": (
-        False,
-        True,
-        _pattern(r"table-peekfrontendevents-[0-9a-f]{32}", "table-peekfrontendevents-<32 hex>"),
-    ),
-    "PEEK_TELEMETRY_HOME": (True, False, _under_data_dir),
-    "PEEK_TELEMETRY_URL": (True, False, _https_origin),
     "RUST_LOG": (True, False, _pattern(r"[A-Za-z0-9_=,.:\-]+", "a tracing filter such as info,peek=info")),
     # Optional additions of the P0 server (all may be ""):
-    "PEEK_ENVIRONMENT": (False, False, _one_of("production", "development")),
     "PEEK_GITHUB_API_URL": (False, False, _https_origin),
 }
 

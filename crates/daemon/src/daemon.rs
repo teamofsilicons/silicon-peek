@@ -7,7 +7,7 @@
 //! 4. Load slots, drawings and queues.
 //! 5. If the UI is absent and a Silicon has a pending ask or queued send,
 //!    open Peek.app.
-//! 6. Start the outbox worker, timers, the telemetry relay and the updater.
+//! 6. Start the outbox worker, timers and the updater.
 //! 7. On shutdown: stop accepting, finish in-flight writes, remove the
 //!    socket, release the lock.
 
@@ -34,7 +34,6 @@ use crate::{
     settings::SettingsStore,
     speech::Speech,
     state::{Core, Shared, SharedRef},
-    telemetry::{Record, Telemetry},
     ui::UiHub,
 };
 
@@ -137,7 +136,6 @@ pub async fn start(cfg: DaemonConfig) -> Result<DaemonHandle> {
     let settings = SettingsStore::load(paths.settings());
     let (shutdown, _) = watch::channel(false);
     let shared = Arc::new(Shared {
-        telemetry: Telemetry::new(&cfg.bundle_id),
         speech: Speech::new(paths.tts_dir()),
         net: Net::new()?,
         settings,
@@ -154,13 +152,11 @@ pub async fn start(cfg: DaemonConfig) -> Result<DaemonHandle> {
         exit_request: Mutex::new(None),
         prewarmed: Mutex::new(HashMap::new()),
         last_launch: Mutex::new(None),
-        instance_id: uuid::Uuid::now_v7().hyphenated().to_string(),
         started: Instant::now(),
         clock: crate::state::WallClock::default(),
         cfg,
     });
     let queued = shared.load_queues().await?;
-    shared.load_telemetry_mirror().await?;
     shared.speech.cache.prune();
     sweep_recordings(&shared.paths.recordings_dir());
     shared.prune_image_cache().await;
@@ -170,13 +166,11 @@ pub async fn start(cfg: DaemonConfig) -> Result<DaemonHandle> {
         queued,
         "peekd started"
     );
-    shared.record(Record::new("daemon.started", "ok"));
 
     let mut tasks = vec![
         tokio::spawn(crate::server::serve(Arc::clone(&shared), listener)),
         tokio::spawn(Arc::clone(&shared).run_outbox()),
         tokio::spawn(Arc::clone(&shared).run_timers()),
-        tokio::spawn(Arc::clone(&shared).run_telemetry()),
     ];
     if shared.cfg.updates_enabled {
         tasks.push(tokio::spawn(Arc::clone(&shared).run_maintenance()));
@@ -229,14 +223,6 @@ impl DaemonHandle {
     /// Database failures.
     pub async fn deliver_now(&self) -> Result<usize> {
         self.shared.outbox_pass().await
-    }
-
-    /// Runs one telemetry relay pass now.
-    ///
-    /// # Errors
-    /// Database failures.
-    pub async fn relay_telemetry_now(&self) -> Result<usize> {
-        self.shared.relay_telemetry_once().await
     }
 
     /// Runs one update attempt now.

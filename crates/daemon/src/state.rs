@@ -22,7 +22,7 @@ use tokio::sync::{Notify, oneshot, watch};
 
 use crate::{
     config::DaemonConfig, db::Db, net::HomeRef, net::Net, paths::Paths, settings::SettingsStore,
-    speech::Speech, telemetry::Telemetry, ui::UiHub,
+    speech::Speech, ui::UiHub,
 };
 
 /// A Silicon in a data context: the key of slots, drawings, asks and
@@ -261,8 +261,6 @@ pub struct Shared {
     pub net: Net,
     /// `ElevenLabs` TTS, `OpenAI` STT, and the local audio cache.
     pub speech: Speech,
-    /// Telemetry relay.
-    pub telemetry: Telemetry,
     /// Wakes the outbox worker.
     pub outbox_wake: Notify,
     /// Wakes the expiry/watchdog timer.
@@ -281,8 +279,6 @@ pub struct Shared {
     pub prewarmed: Mutex<HashMap<String, Instant>>,
     /// When peekd last asked `LaunchServices` to open Peek.app.
     pub last_launch: Mutex<Option<Instant>>,
-    /// The `UUIDv7` of this process (telemetry `instance_id`).
-    pub instance_id: String,
     /// When the daemon started.
     pub started: Instant,
     /// The wall clock expiry and scheduling use.

@@ -5,7 +5,7 @@
 //! hop (§2.9): `Authorization` + `X-Account-ID` on bearer routes,
 //! `Idempotency-Key` on every POST, `X-Testing-Environment-Key` on every route
 //! in a testing context, `X-Testing-Environment-Generation` on every mutation
-//! except login and refresh, and `X-Peek-Telemetry: on|off`.
+//! except login and refresh.
 //!
 //! Failures decode into [`Error`]: the server's `{"error":{…}}` object when
 //! there is one, otherwise a precise synthesized error. Transport failures are
@@ -23,7 +23,7 @@ use crate::{
         AccountsDiscovery, ByoDeepgramRequest, ByoStatus, DeliveryResponse, Drawing, DrawingStored,
         Health, LoginRequest, LogoutRequest, Me, Ready, RefreshRequest, ReportRequest,
         ReportResponse, SessionResponse, SpeechPurpose, SpeechToken, SpeechTokenRequest,
-        SpeechTranscript, TelemetryBatch, TingRecipient, headers, routes,
+        SpeechTranscript, TingRecipient, headers, routes,
     },
     error::{Error, ErrorCode, ErrorObject, Origin, Result},
     identity::{AccountId, ApiUrl},
@@ -113,8 +113,6 @@ impl ClientBuilder {
             api: self.api,
             timeout: self.timeout,
             session: None,
-            telemetry: true,
-            trace_id: None,
         })
     }
 }
@@ -126,8 +124,6 @@ pub struct Client {
     api: ApiUrl,
     timeout: Duration,
     session: Option<(Secret, AccountId)>,
-    telemetry: bool,
-    trace_id: Option<String>,
 }
 
 impl Client {
@@ -173,37 +169,13 @@ impl Client {
         next
     }
 
-    /// Sets `X-Peek-Telemetry` (default `on`); `off` also suppresses
-    /// [`Client::telemetry`].
-    #[must_use]
-    pub fn with_telemetry(&self, enabled: bool) -> Self {
-        let mut next = self.clone();
-        next.telemetry = enabled;
-        next
-    }
-
-    /// Carries a trace ID (`X-Peek-Trace-Id`) on every request.
-    #[must_use]
-    pub fn with_trace_id(&self, trace_id: impl Into<String>) -> Self {
-        let mut next = self.clone();
-        next.trace_id = Some(trace_id.into());
-        next
-    }
-
     fn request(&self, method: Method, path: &str, _generation: bool) -> RequestBuilder {
-        let mut r = self
-            .http
+        self.http
             .request(method, self.api.join(path))
             .header(headers::CLIENT_VERSION, crate::VERSION)
-            .header(
-                headers::TELEMETRY,
-                if self.telemetry { "on" } else { "off" },
-            )
-            .header(reqwest::header::ACCEPT, "application/json");
-        if let Some(t) = &self.trace_id {
-            r = r.header(headers::TRACE_ID, t);
-        }
-        r
+            // Older custom backends must not record these requests either.
+            .header("x-peek-telemetry", "off")
+            .header(reqwest::header::ACCEPT, "application/json")
     }
 
     fn bearer(&self, r: RequestBuilder) -> Result<RequestBuilder> {
@@ -559,50 +531,6 @@ impl Client {
             r = self.bearer(r)?;
         }
         self.json(routes::REPORTS, r).await
-    }
-
-    /// `POST /api/web/telemetry` (best effort; the CLI uses a 300 ms timeout).
-    /// Does nothing when telemetry is off.
-    ///
-    /// # Errors
-    /// `invalid_input` for an empty, oversized or > 40-event batch; server or
-    /// transport errors.
-    pub async fn telemetry(
-        &self,
-        batch: &TelemetryBatch,
-        source: &str,
-        timeout: Option<Duration>,
-    ) -> Result<()> {
-        if !self.telemetry {
-            return Ok(());
-        }
-        if batch.events.is_empty() || batch.events.len() > 40 {
-            return Err(Error::invalid_input(format!(
-                "a telemetry batch carries 1–40 events, not {}",
-                batch.events.len()
-            )));
-        }
-        let body = serde_json::to_vec(batch)
-            .map_err(|e| Error::internal(format!("serializing telemetry failed: {e}")))?;
-        if body.len() > 64 * 1024 {
-            return Err(Error::invalid_input(format!(
-                "a telemetry batch is at most 64 KiB, this one is {} bytes",
-                body.len()
-            )));
-        }
-        let mut r = self
-            .request(Method::POST, routes::WEB_TELEMETRY, false)
-            .header(
-                headers::IDEMPOTENCY_KEY,
-                IdempotencyKey::generate().as_str(),
-            )
-            .header(headers::SOURCE, source)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body);
-        if let Some(t) = timeout {
-            r = r.timeout(t);
-        }
-        self.empty(routes::WEB_TELEMETRY, r).await
     }
 
     async fn json<T: DeserializeOwned>(&self, path: &str, r: RequestBuilder) -> Result<T> {

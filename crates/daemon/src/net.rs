@@ -3,12 +3,7 @@
 //! peekd's margins (§2.5). peekd reads each home's store under that home's
 //! `session.lock` and never copies tokens into its own database.
 
-use std::{
-    collections::HashSet,
-    path::Path,
-    sync::{Arc, PoisonError, RwLock},
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 
 use silicon_peek_client::{
     Error, ErrorCode, Result,
@@ -32,10 +27,6 @@ pub struct HomeRef {
 #[derive(Clone, Debug)]
 pub struct Net {
     http: reqwest::Client,
-    /// Homes whose mirrored config (`config.sync`) opts out of telemetry:
-    /// the home's CLI runs in an environment that opts out, which its
-    /// `config.json` does not show.
-    opted_out: Arc<RwLock<HashSet<String>>>,
 }
 
 impl Net {
@@ -58,40 +49,7 @@ impl Net {
             ))
             .build()
             .map_err(|e| Error::internal(format!("could not initialize the HTTP client: {e}")))?;
-        Ok(Self {
-            http,
-            opted_out: Arc::default(),
-        })
-    }
-
-    /// Records whether a home's mirrored config opts out of telemetry.
-    pub fn set_home_opted_out(&self, home_path: &str, opted_out: bool) {
-        let mut set = self
-            .opted_out
-            .write()
-            .unwrap_or_else(PoisonError::into_inner);
-        if opted_out {
-            set.insert(home_path.to_owned());
-        } else {
-            set.remove(home_path);
-        }
-    }
-
-    /// Whether a home's mirrored config opts out of telemetry.
-    #[must_use]
-    pub fn home_opted_out(&self, home_path: &str) -> bool {
-        self.opted_out
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains(home_path)
-    }
-
-    /// A client for `api` sharing the pool (no session, no testing secret).
-    ///
-    /// # Errors
-    /// `internal_error` if the client cannot be built.
-    pub fn api_client(&self, api: &ApiUrl) -> Result<Client> {
-        Client::builder(api).http_client(self.http.clone()).build()
+        Ok(Self { http })
     }
 
     /// Opens the home's store (without creating anything) and builds a
@@ -103,16 +61,9 @@ impl Net {
     /// when the environment is not saved there.
     pub fn client(&self, home: &HomeRef) -> Result<(Store, Client)> {
         let store = Store::open_existing(Path::new(&home.home_path))?;
-        // A home that opted out (`peek config telemetry off`, or a CLI
-        // environment that opts out, mirrored by `config.sync`) sends
-        // `X-Peek-Telemetry: off` on everything peekd does for it, so the
-        // backend records nothing about its deliveries, speech or drawings.
-        let telemetry = store.read_config().map_or(true, |c| c.telemetry)
-            && !self.home_opted_out(&home.home_path);
-        let mut client = Client::builder(&home.api_url)
+        let client = Client::builder(&home.api_url)
             .http_client(self.http.clone())
-            .build()?
-            .with_telemetry(telemetry);
+            .build()?;
         Ok((store, client))
     }
 

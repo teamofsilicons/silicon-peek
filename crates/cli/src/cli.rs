@@ -78,11 +78,6 @@ pub struct GlobalArgs {
     #[arg(long, global = true, value_name = "KEY")]
     pub idempotency_key: Option<String>,
 
-    /// Turn telemetry off for this process [also off when PEEK_TELEMETRY,
-    /// SPACE_STATION_TELEMETRY or SILICON_TELEMETRY is 0/false/off/no].
-    #[arg(long, global = true)]
-    pub no_telemetry: bool,
-
     /// No human hints or `Next:` lines on stderr (errors are still printed). NO_COLOR is
     /// honoured; peek never colours its own output.
     #[arg(short, long, global = true)]
@@ -130,10 +125,10 @@ grant too; every home of this Silicon then needs `peek ting enroll`."
     )]
     Logout(LogoutArgs),
 
-    /// This home's configuration: strict JSON merge, show, get, unset, telemetry, home.
+    /// This home's configuration: strict JSON merge, show, get, unset, home.
     #[command(
         long_about = "Configuration for this home, stored in $SILICON_HOME/.peek/config.json. \
-`peek config set '<json-object>'` is the Stemcell contract: a strict merge of known keys (telemetry, \
+`peek config set '<json-object>'` is the Stemcell contract: a strict merge of known keys (\
 voice, voice_instructions, language, notify, api_url, delivery_max_age_hours, position, drawing); `null` resets a key. The result is printed \
 and pushed to peekd.",
         subcommand_required = true,
@@ -423,7 +418,7 @@ pub enum ConfigCommand {
 resulting config. Parsing is strict: a non-object, a duplicate key or an unknown key fails with exit 2 \
 and details.valid_keys, and nothing is written. `null` resets a key to its default. The result is \
 also pushed to peekd (best effort).\n\n\
-Keys: telemetry (bool), voice (ElevenLabs voice ID or null), voice_instructions (1–2000 characters or null), language (BCP 47 primary \
+Keys: voice (ElevenLabs voice ID or null), voice_instructions (1–2000 characters or null), language (BCP 47 primary \
 subtag or null), notify (subset of [\"speech_finished\",\"show_dismissed\",\"shown\"]), api_url (https origin or \
 null), delivery_max_age_hours (1–168), position (1–8 or null), drawing (JavaScript file path or null). \
 Relative drawing paths are saved as absolute paths. Sends use position/drawing only when no explicit \
@@ -438,7 +433,7 @@ registration exists."
     Show,
     /// Print one key's value.
     Get {
-        /// The key (telemetry, voice, voice_instructions, language, notify, api_url, delivery_max_age_hours, position, drawing).
+        /// The key (voice, voice_instructions, language, notify, api_url, delivery_max_age_hours, position, drawing).
         #[arg(value_name = "KEY")]
         key: String,
     },
@@ -447,12 +442,6 @@ registration exists."
         /// The key to reset.
         #[arg(value_name = "KEY")]
         key: String,
-    },
-    /// Turn this home's telemetry on or off.
-    Telemetry {
-        /// on or off.
-        #[arg(value_enum, value_name = "on|off")]
-        state: OnOff,
     },
     /// Move this home's store to DIR/.peek (a pointer file stays in the default store).
     #[command(

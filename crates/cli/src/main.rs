@@ -16,7 +16,7 @@
 //!   `ensure_app`) and the exact `platform_unsupported` error elsewhere.
 //! - `sys`: the only `unsafe` (`renamex_np`, `setsid`).
 //! - `when`: `--at` / `--expires-at` / `--tz` date-times and their rendering.
-//! - `output`, `input`, `docs`, `telemetry`.
+//! - `output`, `input`, `docs`.
 
 mod cli;
 mod commands;
@@ -27,16 +27,14 @@ mod input;
 mod output;
 mod service;
 mod sys;
-mod telemetry;
 mod when;
 
-use std::{process::ExitCode, time::Instant};
+use std::process::ExitCode;
 
 use silicon_peek_client::Error;
 
 fn main() -> ExitCode {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let started = Instant::now();
     let (cli, path) = match experience::parse(std::env::args_os().collect()) {
         experience::Parsed::Run { cli, path } => (cli, path),
         experience::Parsed::Exit(code) => return ExitCode::from(code),
@@ -85,12 +83,5 @@ fn main() -> ExitCode {
             e.exit_code().code()
         }
     };
-    runtime.block_on(telemetry::finish(
-        &globals,
-        &path,
-        result.as_ref().err(),
-        exit,
-        started.elapsed(),
-    ));
     ExitCode::from(exit)
 }

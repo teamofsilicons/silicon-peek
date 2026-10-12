@@ -29,8 +29,6 @@ pub struct Settings {
     pub display: String,
     /// `wallpaper` or `screen`.
     pub backdrop: String,
-    /// Share usage and diagnostics.
-    pub telemetry: bool,
     /// Per-language TTS voice overrides (`{"en":"DtsPFCrhbCbbJkwZsb3d"}`).
     pub voice_defaults: BTreeMap<String, String>,
     /// `auto` or a BCP 47 language for speech-to-text.
@@ -47,7 +45,6 @@ impl Default for Settings {
             hotkey_modifier: silicon_peek_client::identity::DEFAULT_HOTKEY_MODIFIER.to_owned(),
             display: "main".to_owned(),
             backdrop: "wallpaper".to_owned(),
-            telemetry: true,
             voice_defaults: BTreeMap::new(),
             stt_language: "auto".to_owned(),
             extra: BTreeMap::new(),
@@ -56,12 +53,11 @@ impl Default for Settings {
 }
 
 /// Keys `settings.changed` accepts.
-pub const SETTING_KEYS: [&str; 7] = [
+pub const SETTING_KEYS: [&str; 6] = [
     "mode",
     "hotkey_modifier",
     "display",
     "backdrop",
-    "telemetry",
     "voice_defaults",
     "stt_language",
 ];
@@ -74,14 +70,6 @@ fn one_of(key: &str, value: &Value, allowed: &[&str]) -> Result<String> {
             allowed.join(", ")
         ))),
     }
-}
-
-fn boolean(key: &str, value: &Value) -> Result<bool> {
-    value.as_bool().ok_or_else(|| {
-        Error::invalid_input(format!(
-            "setting `{key}` must be true or false, got {value}"
-        ))
-    })
 }
 
 /// Validates a hotkey modifier: `+`-joined, unique parts of cmd, ctrl, opt,
@@ -141,6 +129,7 @@ impl Settings {
         };
         for (key, v) in object {
             match key.as_str() {
+                "telemetry" => {}
                 k if SETTING_KEYS.contains(&k) => {
                     if v.is_null() {
                         continue;
@@ -176,7 +165,6 @@ impl Settings {
             "mode" => self.mode = one_of(key, value, &["normal", "compact"])?,
             "display" => self.display = one_of(key, value, &["main", "pointer"])?,
             "backdrop" => self.backdrop = one_of(key, value, &["wallpaper", "screen"])?,
-            "telemetry" => self.telemetry = boolean(key, value)?,
             "hotkey_modifier" => {
                 let s = value.as_str().ok_or_else(|| {
                     Error::invalid_input(

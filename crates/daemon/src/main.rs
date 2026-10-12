@@ -24,7 +24,6 @@ Isolated runs (development and tests; see docs/development.md):
   PEEK_CACHES_DIR     replaces ~/Library/Caches/Peek
   PEEK_DAEMON_SOCKET  replaces the socket path (the lock sits next to it)
   PEEK_NO_SERVICES=1  never launch Peek.app, never run the updater or watchdog
-  PEEK_API_URL        peek-server origin for telemetry (loopback http allowed)
   The install hooks PEEK_INSTALL_SUPPORT_DIR, PEEK_INSTALL_APPLICATIONS_DIR and
   PEEK_INSTALL_NO_LAUNCH=1 are honoured as the peek CLI honours them.
 

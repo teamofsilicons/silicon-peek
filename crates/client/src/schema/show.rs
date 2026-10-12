@@ -195,18 +195,6 @@ impl Show {
             .clamp(4000, 15_000);
         Duration::from_millis(ms)
     }
-
-    /// Element kinds, for telemetry (`show_kinds`); never the content.
-    #[must_use]
-    pub fn kinds(&self) -> Vec<&'static str> {
-        self.elements
-            .iter()
-            .map(|e| match e {
-                ShowElement::Text { .. } => "text",
-                ShowElement::Image { .. } => "image",
-            })
-            .collect()
-    }
 }
 
 fn check_element_count(n: usize) -> Result<()> {

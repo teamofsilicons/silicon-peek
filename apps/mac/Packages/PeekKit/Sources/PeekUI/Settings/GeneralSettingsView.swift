@@ -1,7 +1,7 @@
 import PeekCore
 import SwiftUI
 
-/// Settings › General: mode, display, backdrop, hotkeys, telemetry, CLI updates, Simulation.
+/// Settings › General: mode, display, backdrop, hotkeys, CLI updates, Simulation.
 struct GeneralSettingsView: View {
     let model: SettingsModel
     let openSimulation: () -> Void
@@ -61,16 +61,6 @@ struct GeneralSettingsView: View {
                         .foregroundStyle(.orange)
                         .accessibilityLabel("Hotkey problem: \(problem)")
                 }
-            }
-
-            Section("Privacy") {
-                Toggle(
-                    "Share usage and diagnostics",
-                    isOn: Binding(get: { model.settings.telemetry }, set: { model.setTelemetry($0) }))
-                SettingsFootnote(
-                    "Sends usage events and errors to Team of Silicons through peek's server so problems can be found and fixed. "
-                        + "Silicon ids are hashed. Transcripts, typed answers, audio and drawings are never included. "
-                        + "Turning this off also clears events peekd has not sent yet.")
             }
 
             Section("Updates") {

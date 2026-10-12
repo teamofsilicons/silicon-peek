@@ -7,7 +7,6 @@ pub(crate) mod drawings;
 pub(crate) mod health;
 pub(crate) mod reports;
 pub(crate) mod speech;
-pub(crate) mod telemetry;
 pub(crate) mod ting;
 pub(crate) mod webhooks;
 

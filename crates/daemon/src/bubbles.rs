@@ -63,7 +63,6 @@ use crate::{
     queue::{CancelledAll, Withdraw, cancelled_result},
     speech::{TtsCache, TtsJob},
     state::{ActorKey, Bubble, Caller, Core, Shared, SharedRef, WaiterMsg},
-    telemetry::Record,
     voice,
 };
 
@@ -985,13 +984,8 @@ impl Shared {
             warnings_out.push(w);
         }
         self.store_send_warnings(&send_id, &warnings_out).await;
-        self.record_send(&key, slot, placed.status, &payload, &op, placed.waiting);
         if let Some(old) = &placed.replaced {
-            let mut rec = Record::new("send.replaced", "ok").with("slot", slot.get());
-            rec.actor = Some((key.account.clone(), key.actor.clone()));
-
             tracing::debug!(send = %send_id, replaced = %old, "a --replace send took over the bubble");
-            self.record(rec);
         }
         Ok((
             SendResult {
@@ -1323,48 +1317,6 @@ impl Shared {
         })
     }
 
-    fn record_send(
-        &self,
-        key: &ActorKey,
-        slot: SlotIndex,
-        status: SendStatus,
-        payload: &SendPayload,
-        op: &SendOp,
-        waiting: u32,
-    ) {
-        let mut rec = Record::new(
-            match status {
-                SendStatus::Showing => "send.displayed",
-                SendStatus::Queued => "send.queued",
-                SendStatus::Scheduled => "send.scheduled",
-            },
-            "ok",
-        )
-        .with("slot", slot.get());
-        if status == SendStatus::Scheduled {
-            rec = rec.with("scheduled", true);
-        } else {
-            rec = rec.with("queue_waiting", waiting);
-        }
-        if let Some(s) = &payload.show {
-            rec = rec
-                .with("show_elements", s.elements.len())
-                .with("show_kinds", json!(s.kinds()));
-        }
-        if let Some(a) = &payload.ask {
-            rec = rec
-                .with("ask_type", a.ask_type().as_str())
-                .with("options_count", a.options().len());
-        }
-        if let Some(t) = &op.speak {
-            rec = rec.with("speak_chars", t.chars().count());
-        }
-        rec.actor = Some((key.account.clone(), key.actor.clone()));
-        rec.isi.clone_from(&op.isi);
-
-        self.record(rec);
-    }
-
     /// The `voice` of a home's mirrored config (`config.sync`).
     async fn home_speech_setting(&self, home_path: &str, field: &'static str) -> Option<String> {
         let hp = home_path.to_owned();
@@ -1629,14 +1581,6 @@ impl Shared {
                 tracing::warn!(send = %send.send_id, error = %e, "queueing peek.send.shown failed");
             }
         }
-        let mut rec = Record::new("send.shown", "ok").with("slot", slot.get());
-        if send.schedule_id.is_some() {
-            rec = rec.with("scheduled", true);
-        }
-        rec.actor = Some((key.account.clone(), key.actor.clone()));
-        rec.isi.clone_from(&send.isi);
-
-        self.record(rec);
     }
 
     /// `shown` (UI op, contract §6.8): Peek.app began presenting the current
@@ -2010,25 +1954,6 @@ impl Shared {
             // it once the delivery ends (§1.7).
             let _ = std::fs::remove_file(self.paths.recording(ask_id.as_str()));
         }
-        let mut rec = Record::new("ask.resolved", "ok")
-            .with(
-                "ask_type",
-                send.payload
-                    .ask
-                    .as_ref()
-                    .map_or("", |a| a.ask_type().as_str()),
-            )
-            .with("status", enum_str(&state))
-            .with(
-                "answer_latency_ms",
-                now.saturating_sub(send.shown_at.unwrap_or(send.created_at)),
-            );
-        if let Some(v) = via {
-            rec = rec.with("input", enum_str(&v));
-        }
-        rec.actor = Some((key.account.clone(), key.actor.clone()));
-
-        self.record(rec);
         Ok(state)
     }
 
@@ -2686,12 +2611,6 @@ impl Shared {
         };
         self.db.tx(move |tx| outbox::insert(tx, &row)).await?;
         self.outbox_wake.notify_one();
-        let mut rec = Record::new("message.received", "ok")
-            .with("slot", slot.get())
-            .with("input", enum_str(&via));
-        rec.actor = Some((key.account.clone(), key.actor.clone()));
-
-        self.record(rec);
         Ok(message_id)
     }
 

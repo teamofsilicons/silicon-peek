@@ -34,7 +34,7 @@ Peek.app needs macOS 26 or newer. On Linux and Windows only the CLI is installed
 | Topic | What it explains | CLI |
 |---|---|---|
 | [Silicon Accounts and sessions](accounts.md) | Scopes and why each exists, login, token custody, refresh. | `peek docs accounts` |
-| [Telemetry](telemetry.md) | What is recorded, what never is, and every way to turn it off. | `peek docs telemetry` |
+| [Telemetry](telemetry.md) | Why no telemetry is collected or sent. | `peek docs telemetry` |
 | [Privacy](privacy.md) | Where voice, text and drawings go, and what the backend keeps. | `peek docs privacy` |
 | [Platforms](platforms.md) | macOS versus Linux and Windows, and the exact errors. | `peek docs platforms` |
 | [Development](development.md) | Architecture, building from source, the IPC protocol, contributing. | `peek docs development` |

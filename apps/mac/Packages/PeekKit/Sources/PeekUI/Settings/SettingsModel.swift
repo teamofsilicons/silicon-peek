@@ -61,7 +61,6 @@ public final class SettingsModel {
     public func setMode(_ mode: DisplayMode) { apply(.mode, .string(mode.rawValue)) }
     public func setHotkeyModifier(_ modifier: HotkeyModifier) { apply(.hotkeyModifier, .string(modifier.rawValue)) }
     public func setDisplay(_ display: DisplayTarget) { apply(.display, .string(display.rawValue)) }
-    public func setTelemetry(_ enabled: Bool) { apply(.telemetry, .bool(enabled)) }
 
     public func setBackdrop(_ backdrop: BackdropSourceSetting) {
         apply(.backdrop, .string(backdrop.rawValue))

@@ -29,7 +29,7 @@ use crate::{
     context::{Globals, Session, cli_refresh_policy},
     input,
     output::Out,
-    service, telemetry,
+    service,
 };
 
 /// peekd's view of this home, for the `daemon` block.
@@ -296,9 +296,7 @@ pub async fn run(g: &Globals, out: Out, args: LoginArgs) -> Result<()> {
             login::recover_login(&session.store, &session.client, session.context, &delays).await?
         }
     };
-    telemetry::note_actor(&outcome.slot.account_id, outcome.slot.actor_id());
     let auth = auth_block(&session.store, &outcome.slot_key)?;
-    telemetry::note_auth(&auth);
     let attached = attach_now(&auth).await;
     let daemon = DaemonInfo {
         attached,
@@ -333,7 +331,7 @@ pub async fn run(g: &Globals, out: Out, args: LoginArgs) -> Result<()> {
             "peek send --speak \"…\"",
         ],
     );
-    sweep_revocations(&session.store, session.telemetry).await;
+    sweep_revocations(&session.store).await;
     if cfg!(target_os = "macos") {
         // Best effort, detached, after the result is printed: its outcome
         // never changes login's output or exit code.
@@ -500,7 +498,6 @@ pub async fn status(g: &Globals, out: Out) -> Result<()> {
                 next(out, &[relogin_next()]);
                 return Ok(());
             }
-            telemetry::note_actor(&slot.account_id, slot.actor_id());
         }
     }
     let Verified::Live(live) = verify(g, &session).await? else {
@@ -510,15 +507,12 @@ pub async fn status(g: &Globals, out: Out) -> Result<()> {
     let updated = record_verification(&session, &slot, &me).await?;
     let auth = auth_block(&session.store, &session.slot_key).ok();
     let daemon = match &auth {
-        Some(a) => {
-            telemetry::note_auth(a);
-            daemon_info(a).await
-        }
+        Some(a) => daemon_info(a).await,
         None => DaemonInfo::default(),
     };
     let value = authenticated(&session, &updated, daemon);
     out.value(&value, human_status);
-    sweep_revocations(&session.store, session.telemetry).await;
+    sweep_revocations(&session.store).await;
     Ok(())
 }
 
@@ -576,8 +570,10 @@ pub async fn logout(g: &Globals, args: &LogoutArgs, out: Out) -> Result<()> {
     // Detach first: peekd authenticates the home from its session slot, so
     // it must still exist when peekd cancels this actor's undelivered rows.
     let file = session.store.read_session()?;
-    if let Ok(slot) = file.usable_slot(&session.slot_key, session.store.dir()) {
-        telemetry::note_actor(&slot.account_id, slot.actor_id());
+    if file
+        .usable_slot(&session.slot_key, session.store.dir())
+        .is_ok()
+    {
         if let Ok(auth) = auth_block(&session.store, &session.slot_key) {
             detach_now(&auth).await;
         }
@@ -605,7 +601,7 @@ pub async fn logout(g: &Globals, args: &LogoutArgs, out: Out) -> Result<()> {
     } else if outcome.actor.is_none() {
         out.hint("there was no peek session in this home; nothing needed revoking");
     }
-    sweep_revocations(&session.store, session.telemetry).await;
+    sweep_revocations(&session.store).await;
     Ok(())
 }
 

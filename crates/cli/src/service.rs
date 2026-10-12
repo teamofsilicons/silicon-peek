@@ -1212,7 +1212,7 @@ mod mac {
 mod other {
     //! Stand-ins on platforms without Peek.app: every Mac-bound command checks
     //! [`super::require_mac`] first, so only the best-effort callers (login's
-    //! attach, telemetry, `login status` daemon info) reach these. The
+    //! attach, `login status` daemon info) reach these. The
     //! signatures mirror the macOS implementations, hence the allows.
     #![allow(
         clippy::unused_async,

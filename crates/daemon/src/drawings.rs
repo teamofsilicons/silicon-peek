@@ -24,7 +24,6 @@ use crate::{
     outbox,
     paths::sha256_hex,
     state::{ActorKey, Caller, Shared, SharedRef},
-    telemetry::Record,
 };
 
 /// A `drawings` row.
@@ -332,12 +331,6 @@ impl Shared {
         let (result, reply_blobs, staged) = self
             .validate_script(&key, &op.filename, &bytes, op.preview, op.dump_frame)
             .await?;
-        let mut rec = Record::new("drawing.validate", if result.ok { "ok" } else { "error" })
-            .with("drawing_bytes", bytes.len())
-            .with("drawing_sha256", sha.clone());
-        rec.actor = Some((key.account.clone(), key.actor.clone()));
-
-        self.record(rec);
         if !result.ok {
             staged.remove();
             let previous_active = self.drawing_row(&key).await.is_ok_and(|r| r.is_some());
@@ -540,10 +533,6 @@ impl Shared {
             account: op.account_id,
             actor: op.actor_id,
         };
-        let mut rec = Record::new("drawing.fallback", "error");
-        rec.actor = Some((k.account.clone(), k.actor.clone()));
-
-        self.record(rec);
         self.db
             .call(move |c| {
                 c.execute(

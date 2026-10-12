@@ -1,10 +1,7 @@
 //! `POST /api/v1/ting/recipient` (explicit enrollment, §3.4) and
 //! `POST /api/v1/deliveries` (§3.5, §3.6).
 
-use std::time::Instant;
-
 use axum::{
-    Extension,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::Response,
@@ -29,7 +26,6 @@ use crate::{
         self,
         deliveries::{Begin, DeliveryKey, Outcome},
     },
-    telemetry::{Event, RequestMeta},
     ting,
 };
 
@@ -41,7 +37,6 @@ pub(crate) struct EmptyBody {}
 /// `POST /api/v1/ting/recipient`: (re)enrolls the caller as a Ting recipient.
 pub(crate) async fn enroll(
     State(state): State<AppState>,
-    Extension(meta): Extension<RequestMeta>,
     plane: Plane,
     IdemKey(key): IdemKey,
     headers: HeaderMap,
@@ -70,9 +65,7 @@ pub(crate) async fn enroll(
         request_sha256: hash,
     };
     let task_state = state.clone();
-    let task_meta = meta.clone();
     run.run(StatusCode::OK, async move {
-        let started = Instant::now();
         let result = async {
             let subscription =
                 ting::enroll(&task_state, &plane, &principal, &enrollment_key).await?;
@@ -101,13 +94,6 @@ pub(crate) async fn enroll(
             })
         }
         .await;
-        task_state.0.telemetry.record(
-            &task_meta,
-            Event::new("ting.enroll", "ting.enroll")
-                .actor(&principal.account, &principal.actor)
-                .duration(started.elapsed())
-                .outcome(&result),
-        );
         result
     })
     .await
@@ -117,7 +103,6 @@ pub(crate) async fn enroll(
 /// identity, builds the deterministic Ting body and sends it.
 pub(crate) async fn deliver(
     State(state): State<AppState>,
-    Extension(meta): Extension<RequestMeta>,
     plane: Plane,
     IdemKey(key): IdemKey,
     headers: HeaderMap,
@@ -168,7 +153,7 @@ pub(crate) async fn deliver(
     };
     run.run(
         StatusCode::OK,
-        deliver_once(state.clone(), meta, plane, principal, delivery, body),
+        deliver_once(state.clone(), plane, principal, delivery, body),
     )
     .await
 }
@@ -198,7 +183,6 @@ fn context_name(c: DataContext) -> &'static str {
 
 async fn deliver_once(
     state: AppState,
-    meta: RequestMeta,
     plane: Plane,
     principal: Principal,
     delivery: DeliveryRequest,
@@ -208,12 +192,7 @@ async fn deliver_once(
     if let Some(recorded) = begin(&plane, &principal, &delivery).await? {
         return Ok(recorded);
     }
-    let started = Instant::now();
     let (outcome, attempts) = ting::send(&state, &plane, &principal, &body, &delivery.key).await;
-    let event = Event::new("ting.send", delivery.ting_type.as_str())
-        .actor(&principal.account, &principal.actor)
-        .duration(started.elapsed())
-        .context("attempt", attempts);
     match outcome {
         Ok(accepted) => {
             record(
@@ -224,17 +203,6 @@ async fn deliver_once(
                 &principal,
             )
             .await?;
-            state.0.telemetry.record(
-                &meta,
-                event.context(
-                    "ting_status",
-                    if accepted.silent {
-                        "silent"
-                    } else {
-                        "accepted"
-                    },
-                ),
-            );
             Ok(DeliveryResponse {
                 event_id,
                 ting_id: accepted.ting_id,
@@ -255,12 +223,6 @@ async fn deliver_once(
             {
                 tracing::warn!(code = %e.code(), "could not record a failed delivery");
             }
-            state.0.telemetry.record(
-                &meta,
-                event
-                    .context("ting_status", failed.error.code().as_str())
-                    .failed(failed.error.code()),
-            );
             Err(failed.error)
         }
     }

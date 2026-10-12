@@ -517,9 +517,6 @@ enum SimulationRequestDescriber {
             let reason = f["reason"]?.stringValue ?? "?"
             let message = f["message"]?.stringValue ?? ""
             return Description(text: "drawing.error (\(reason)): \(message)", isError: true)
-        case TelemetryRequest.op:
-            let count = f["events"]?.arrayValue?.count ?? 0
-            return Description(text: "telemetry: \(count) event(s) dropped (Simulation sends no telemetry)")
         case SettingsChangedRequest.op:
             let key = f["key"]?.stringValue ?? "?"
             return Description(text: "settings.changed \(key) = \(f["value"]?.jsonString ?? "null") (Simulation only; settings.json is untouched)")

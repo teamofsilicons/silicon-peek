@@ -132,7 +132,7 @@ trap rollback EXIT
 # Idempotent host layout (the stack's UserData creates the same on first boot).
 id peek >/dev/null 2>&1 || useradd --system --home-dir /var/lib/peek --shell /sbin/nologin peek
 id caddy >/dev/null 2>&1 || useradd --system --home-dir /var/lib/caddy --shell /sbin/nologin caddy
-install -d -o peek -g peek -m 0700 /var/lib/peek /var/lib/peek/telemetry
+install -d -o peek -g peek -m 0700 /var/lib/peek
 install -d -o caddy -g caddy -m 0700 /var/lib/caddy
 install -d -o root -g root -m 0700 /etc/peek
 install -d -m 0755 /opt/peek/releases /etc/caddy
@@ -210,6 +210,7 @@ if ((!tls)); then
     printf 'peek install: warning: https://%s is not serving yet (DNS or the first certificate may be pending, BLUEPRINT §5.4)\n' "$host" >&2
 fi
 systemctl start peek-backup.timer
+rm -rf -- /var/lib/peek/telemetry
 
 # Keep the current release, the previous one and the three newest others.
 current=$(readlink -e "$current_link")

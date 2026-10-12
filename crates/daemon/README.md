@@ -20,7 +20,6 @@ peekd owns:
 - every Deepgram call: Aura-2 TTS, streamed to the UI, and Nova-3 STT, once
   per recording;
 - per-home session refresh, run under each home's `session.lock`;
-- the telemetry relay;
 - applying locally bundled Peek.app updates; Silicon Apps owns network updates.
 
 Peek.app holds no tokens and does no networking. The CLI talks only to peekd,
@@ -59,12 +58,12 @@ and to peek-server for login.
 
 | Path | What |
 |---|---|
-| `peekd.sqlite` | homes, slots, drawings, sends, asks, scheduled sends, outbox, telemetry outbox (account-scoped schema). All times are unix ms. No tokens. |
+| `peekd.sqlite` | homes, slots, drawings, sends, asks, scheduled sends, outbox (account-scoped schema). All times are unix ms. No tokens. |
 | `settings.json` | UI and daemon settings, mirrored from `settings.changed` |
 | `drawings/<context>/<account>/<sha256>.js` | the active drawing, plus the previous one for rollback |
 | `cache/images/`, `cache/tts/` | image copies and the TTS cache (LRU, 200 MB / 30 days) |
 | `recordings/` | voice recordings, kept until the answer is delivered |
-| `offers/`, `rejected.json`, `install.lock`, `update-applied.json` | local app update offers |
+| `offers/`, `rejected.json`, `install.lock` | local app update offers |
 | `homes.json` | registered CLI homes |
 | `peekd.log` | rotated at 10 MB × 3 |
 

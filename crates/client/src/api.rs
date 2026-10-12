@@ -44,8 +44,6 @@ pub mod routes {
     pub const DRAWING: &str = "/api/v1/drawings/current";
     /// `POST` bug reports.
     pub const REPORTS: &str = "/api/v1/reports";
-    /// `POST` telemetry gateway.
-    pub const WEB_TELEMETRY: &str = "/api/web/telemetry";
     /// `POST` ACCOUNTS webhooks (HMAC-signed raw body).
     pub const ACCOUNTS_WEBHOOK: &str = "/webhooks/accounts";
 
@@ -62,14 +60,8 @@ pub mod headers {
     pub const IDEMPOTENCY_KEY: &str = "idempotency-key";
     /// Optional account consistency hint; bearer authority is authoritative.
     pub const ACCOUNT_ID: &str = "x-account-id";
-    /// `on` or `off`; `off` makes the backend skip request events.
-    pub const TELEMETRY: &str = "x-peek-telemetry";
     /// The caller's version.
     pub const CLIENT_VERSION: &str = "peek-client-version";
-    /// Relayed telemetry source: `daemon`, `cli` or `mac`.
-    pub const SOURCE: &str = "x-peek-source";
-    /// Trace ID carried from the CLI.
-    pub const TRACE_ID: &str = "x-peek-trace-id";
     /// Server request ID on every response.
     pub const REQUEST_ID: &str = "x-request-id";
     /// Drawing hash on `PUT /api/v1/drawings/current`.
@@ -572,42 +564,6 @@ pub struct ReportResponse {
     /// The GitHub issue, when filed.
     #[serde(default)]
     pub issue_url: Option<String>,
-}
-
-/// One relayed telemetry event (the web SDK shape).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TelemetryEvent {
-    /// Unique per event (dedup key).
-    pub id: String,
-    /// The event name.
-    #[serde(rename = "type")]
-    pub event_type: String,
-    /// Event fields (the §6.4 envelope).
-    pub data: Value,
-    /// Metadata, including `occurred_at`.
-    pub metadata: Value,
-}
-
-/// Tables the gateway accepts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TelemetryTable {
-    /// CLI and daemon events.
-    Peekclidaemon,
-    /// Automatic analytics (web and Peek.app).
-    Peekfrontendanalytics,
-    /// Explicit events (web and Peek.app).
-    Peekfrontendevents,
-}
-
-/// `POST /api/web/telemetry` body: 1–40 events, ≤ 64 KiB.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TelemetryBatch {
-    /// The destination table.
-    pub table: TelemetryTable,
-    /// The events.
-    pub events: Vec<TelemetryEvent>,
 }
 
 /// The shape `peek accounts --json` prints: static, offline, no side effects

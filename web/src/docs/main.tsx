@@ -6,12 +6,10 @@ import "../styles/tokens.css";
 import "../shared/theme.ts";
 import "../styles/docs.css";
 import { copyText } from "../shared/copy.ts";
-import TelemetryToggle from "../shared/TelemetryToggle.tsx";
 import AccountMenu from "../shared/AccountMenu.tsx";
-import { startTelemetry, track } from "../shared/telemetry.ts";
 
 // Progressive enhancement for the prerendered docs: search (⌘K or /), copy buttons, the mobile
-// menu and the telemetry switch. Every page is complete and readable without this script.
+// menu. Every page is complete and readable without this script.
 
 type Heading = { id: string; text: string };
 type Entry = { slug: string; title: string; group: string; url: string; description: string; headings: Heading[]; text: string };
@@ -53,7 +51,6 @@ function Tools() {
   let dialog!: HTMLDialogElement;
   let input!: HTMLInputElement;
   let opener: HTMLElement | null = null;
-  let trackTimer: number | undefined;
 
   const results = createMemo(() => searchEntries(entries(), query()));
 
@@ -89,9 +86,6 @@ function Tools() {
 
   function onInput(value: string) {
     setQuery(value);
-    clearTimeout(trackTimer);
-    // Only the number of results is recorded, never the query itself.
-    if (value.trim().length >= 2) trackTimer = window.setTimeout(() => track("docs_search", { results: results().length }), 1200);
   }
 
   onMount(() => {
@@ -142,7 +136,6 @@ function Tools() {
     onCleanup(() => {
       document.removeEventListener("keydown", onKey);
       removers.forEach((fn) => fn());
-      clearTimeout(trackTimer);
     });
   });
 
@@ -193,7 +186,7 @@ function Tools() {
             type="search"
             autocomplete="off"
             spellcheck={false}
-            placeholder="Try keyterm, side_taken, --wait, telemetry…"
+            placeholder="Try keyterm, side_taken, --wait, privacy…"
             value={query()}
             onInput={(e) => onInput(e.currentTarget.value)}
             onKeyDown={(e) => {
@@ -256,11 +249,8 @@ function Tools() {
   );
 }
 
-startTelemetry();
 const tools = document.getElementById("docs-tools");
 if (tools) render(() => <Tools />, tools);
-const toggle = document.getElementById("telemetry-toggle");
-if (toggle) render(() => <TelemetryToggle />, toggle);
 
 const account = document.getElementById("docs-account");
 if (account) render(() => <AccountMenu />, account);

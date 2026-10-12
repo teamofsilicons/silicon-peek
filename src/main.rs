@@ -2,13 +2,12 @@
 //!
 //! Configuration comes only from the environment (a local `.env` is loaded
 //! for development). Logs are JSON lines on stdout. SIGTERM and Ctrl-C shut
-//! the server down gracefully: in-flight requests finish, then telemetry is
-//! flushed.
+//! the server down gracefully after in-flight requests finish.
 #![forbid(unsafe_code)]
 
 use std::{net::SocketAddr, process::ExitCode, time::Duration};
 
-use silicon_peek::{app, config::Config, state::AppState, telemetry};
+use silicon_peek::{app, config::Config, state::AppState};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 const MAINTENANCE_EVERY: Duration = Duration::from_secs(300);
@@ -61,16 +60,12 @@ async fn run(config: Config) -> ExitCode {
         tracing::warn!("{warning}");
     }
     let bind = config.bind;
-    let sink = telemetry::backend_sink(&config.telemetry);
-    if config.telemetry.enabled && sink.is_none() {
-        tracing::warn!("backend telemetry is off: PEEK_BACKEND_TABLE_KEY is missing or invalid");
-    }
     if config.accounts.app_secret.is_none() {
         tracing::warn!(
             "PEEK_ACCOUNTS_APP_SECRET is empty: /readyz reports accounts_config missing and ACCOUNTS routes answer 503 accounts_misconfigured until it is set"
         );
     }
-    let state = match AppState::new(config, sink.clone()) {
+    let state = match AppState::new(config) {
         Ok(state) => state,
         Err(e) => {
             tracing::error!(error = %e, "peek-server cannot start");
@@ -104,11 +99,6 @@ async fn run(config: Config) -> ExitCode {
     .with_graceful_shutdown(shutdown_signal())
     .await;
     maintenance.abort();
-    if let Some(sink) = sink
-        && !sink.flush()
-    {
-        tracing::warn!("some telemetry was not handed off before exit; it stays spooled");
-    }
     match served {
         Ok(()) => {
             tracing::info!("peek-server stopped");

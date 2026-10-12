@@ -332,12 +332,12 @@ pub fn notes(path: &str) -> String {
         "peek config" => (
             "Examples:\n  peek config set '{\"notify\":[\"speech_finished\"],\"voice\":\"JBFqnCBsd6RMkjVDRZzb\"}'\n  \
              peek config set '{\"position\":3,\"drawing\":\"./logo.js\"}'\n  \
-             peek config show --json\n  peek config get voice\n  peek config unset voice\n  peek config telemetry off\n\n\
+             peek config show --json\n  peek config get voice\n  peek config unset voice\n\n\
              Next:\n  peek send --speak \"…\"     uses configured defaults",
             "cli",
         ),
         "peek config set" => (
-            "Examples:\n  peek config set '{\"telemetry\":false}'\n  \
+            "Examples:\n  peek config set '{\"voice\":null}'\n  \
              peek config set '{\"notify\":[\"speech_finished\",\"show_dismissed\"],\"delivery_max_age_hours\":24}'\n  \
              peek config set '{\"voice\":null}'          reset to the default\n\n\
              Next:\n  peek config show --json",
@@ -347,11 +347,6 @@ pub fn notes(path: &str) -> String {
             "Examples:\n  peek config show --json\n  peek config get notify\n  peek config unset voice\n\n\
              Next:\n  peek config set '<json-object>'",
             "cli",
-        ),
-        "peek config telemetry" => (
-            "Examples:\n  peek config telemetry off\n  PEEK_TELEMETRY=0 peek send --speak \"…\"   off for one run\n\n\
-             Next:\n  peek docs telemetry      what is recorded, and what never is",
-            "telemetry",
         ),
         "peek config home" => (
             "Examples:\n  peek config home /Volumes/data/silicons/dj\n  peek config home \"$SILICON_HOME\"   back to the default\n\n\

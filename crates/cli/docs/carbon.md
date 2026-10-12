@@ -124,7 +124,6 @@ Settings has five tabs:
 | General | Display | The menu-bar screen, or the screen under the pointer when the bubble arrives | Menu-bar screen |
 | General | Backdrop | Desktop picture, or Screen contents (samples the real screen under each bubble; needs Screen Recording permission) | Desktop picture |
 | General | Hotkeys | ⌘, ⌃⌘, ⌥⌘, ⇧⌘, ⌃⌥⌘ or ⌃⌥, each followed by 1 … 8 | ⌃⌘1 … ⌃⌘8 |
-| General | Share usage and diagnostics | On or off. Content is never included. See [Telemetry](telemetry.md). | On |
 | General | Keep Silicons' peek CLI up to date | The helper's hourly fallback to Silicon Apps's updater | On |
 | Voice | Speaking voice | ElevenLabs voice; your Silicon can set a voice and delivery instructions through the CLI | George (`JBFqnCBsd6RMkjVDRZzb`) |
 | Voice | Listening language | Automatic (your macOS languages), a fixed language, or any BCP 47 tag | Automatic |

@@ -161,7 +161,6 @@ pub(crate) struct Audio {
     idle_deadline: Instant,
     keepalive: Interval,
     bytes: usize,
-    pub(crate) request_id: Option<String>,
 }
 
 impl Audio {
@@ -191,7 +190,7 @@ impl Audio {
         .await
         .map_err(|_| classify_proxy_error(unavailable("the speech connection timed out")))?
         .map_err(connection_error)?;
-        let request_id = timeout_at(deadline, async {
+        timeout_at(deadline, async {
             loop {
                 match socket.next().await {
                     Some(Ok(Message::Text(text))) => {
@@ -202,7 +201,7 @@ impl Audio {
                                 "Deepgram did not welcome the speech connection",
                             ));
                         }
-                        return Ok(event["request_id"].as_str().map(str::to_owned));
+                        return Ok(());
                     }
                     Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
                     _ => {
@@ -234,7 +233,6 @@ impl Audio {
             idle_deadline: deadline,
             keepalive: interval_at(started + Duration::from_secs(4), Duration::from_secs(4)),
             bytes: 0,
-            request_id,
         })
     }
 

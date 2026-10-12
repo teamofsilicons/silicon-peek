@@ -3,16 +3,11 @@
 //! negotiation, then serve CLI requests (one request, one reply; `send
 //! --wait` keeps the connection for `ask.result`) or the long-lived UI link.
 
-use std::{
-    os::fd::AsRawFd as _,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{os::fd::AsRawFd as _, sync::Arc, time::Duration};
 
 use serde_json::{Value, json};
 use silicon_peek_client::{
     Error, ErrorCode, Result,
-    api::TelemetryTable,
     ipc::{
         Empty, Event, Message, Reply, Request, SUPPORTED_PROTOCOLS,
         cli::{
@@ -20,14 +15,14 @@ use silicon_peek_client::{
             AskResultAck, AskState, Attach, CliHello, ConfigSync, DaemonStatus, DaemonStatusResult,
             Detach, Doctor, Hello, HelloApp, HelloResult, History, HistoryItem, QueueClear,
             QueueList, RegisterDrawing, RegisterSide, ScheduleCancel, ScheduleClear, ScheduleList,
-            SendCancel, SendOp, StatusOp, Telemetry, UiStatus, Unregister, Warning, features,
+            SendCancel, SendOp, StatusOp, UiStatus, Unregister, Warning, features,
         },
         frame::{AsyncFrameReader, Frame, FrameLimits, blob_limit, write_frame_async},
         negotiate,
         ui::{
             AnswerOp, CancelReason, Dismissed, DrawingError, Focus, MessageOp, Presence,
             SettingsChanged, Shown, ShownDone, SpeechDone, UiAppUninstall, UiDoctor,
-            UiStatusReport, UiTelemetry, VoiceSubmit,
+            UiStatusReport, VoiceSubmit,
         },
     },
     runtime::daemon::verify_peer,
@@ -44,7 +39,6 @@ use crate::{
     db::SqlResult as _,
     state::{Shared, SharedRef, WaiterMsg},
     sys,
-    telemetry::{Record, check_events, ui_table},
     ui::UiLink,
 };
 
@@ -55,7 +49,7 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// accept one but do not need it).
 const NO_AUTH: [&str; 3] = ["daemon.status", "app.uninstall", "doctor"];
 /// Ops only a CLI may send.
-const CLI_OPS: [&str; 23] = [
+const CLI_OPS: [&str; 22] = [
     "attach",
     "detach",
     "status",
@@ -68,7 +62,6 @@ const CLI_OPS: [&str; 23] = [
     "ask.cancel",
     "history",
     "config.sync",
-    "telemetry",
     "app.offer",
     "daemon.status",
     "app.uninstall",
@@ -81,7 +74,7 @@ const CLI_OPS: [&str; 23] = [
     "schedule.clear",
 ];
 /// Ops only Peek.app may send.
-const UI_OPS: [&str; 15] = [
+const UI_OPS: [&str; 14] = [
     "answer",
     "voice.submit",
     "ui.status",
@@ -92,7 +85,6 @@ const UI_OPS: [&str; 15] = [
     "shown.done",
     "focus",
     "drawing.error",
-    "telemetry",
     "settings.changed",
     "permissions.contexts",
     "permissions.ting",
@@ -429,26 +421,17 @@ impl Shared {
                     return;
                 }
             };
-            let started = Instant::now();
             let op = req.op.clone();
             let (mut reply, waiter) = self.cli_request(&req, legacy).await;
             if legacy {
                 downgrade_reply(&op, &mut reply);
             }
-            let outcome = if reply.outcome.is_ok() { "ok" } else { "error" };
-            let error_code = reply.outcome.as_ref().err().map(|e| e.code.to_string());
             if write(&mut w, Message::Reply(reply)).await.is_err() {
                 if let Some((ask_id, _)) = waiter {
                     self.drop_waiter(&ask_id).await;
                 }
                 return;
             }
-            let mut rec = Record::new("ipc.request", outcome).with("command", op);
-            rec.duration_ms =
-                Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
-            rec.error_code = error_code;
-            rec.home = req.auth.as_ref().map(|a| a.home.clone());
-            self.record(rec);
             if let Some((ask_id, rx)) = waiter {
                 self.wait_for_result(&mut reader, &mut w, &ask_id, rx, legacy)
                     .await;
@@ -738,26 +721,6 @@ impl Shared {
                 }
                 .await,
             ),
-            "telemetry" => reply_of(
-                req,
-                async {
-                    let op = req.parse::<Telemetry>()?;
-                    check_events(&op.events)?;
-                    if self.home_telemetry(&caller.home.home_path).await {
-                        self.enqueue_telemetry(TelemetryTable::Peekclidaemon, "cli", op.events)
-                            .await?;
-                    } else if !op.events.is_empty() {
-                        // The CLI hands over events only when neither its
-                        // home's config nor its environment opts out: an
-                        // environment opt-out mirrored earlier is over (this
-                        // batch still follows the opt-out it arrived under).
-                        self.home_telemetry_confirmed(&caller.home.home_path)
-                            .await?;
-                    }
-                    Ok(Empty {})
-                }
-                .await,
-            ),
             "app.offer" => reply_of(
                 req,
                 async {
@@ -1042,7 +1005,6 @@ impl Shared {
             self.on_ui_disconnect().await;
         }
         tracing::info!(build, %version, "Peek.app connected");
-        self.record(Record::new("ui.connected", "ok"));
         self.push_slots_state().await;
         self.push_all().await;
         // Anything that came due while Peek.app was away is handled now.
@@ -1231,35 +1193,10 @@ impl Shared {
             "drawing.error" => {
                 empty(async { self.ui_drawing_error(req.parse::<DrawingError>()?).await }.await)
             }
-            "telemetry" => empty(
-                async {
-                    let op = req.parse::<UiTelemetry>()?;
-                    check_events(&op.events)?;
-                    let mut by_table: std::collections::BTreeMap<String, (TelemetryTable, Vec<_>)> =
-                        std::collections::BTreeMap::new();
-                    for e in op.events {
-                        let t = ui_table(&e);
-                        by_table
-                            .entry(format!("{t:?}"))
-                            .or_insert_with(|| (t, Vec::new()))
-                            .1
-                            .push(e);
-                    }
-                    for (_, (t, events)) in by_table {
-                        self.enqueue_telemetry(t, "mac", events).await?;
-                    }
-                    Ok(())
-                }
-                .await,
-            ),
             "settings.changed" => empty(
                 async {
                     let op = req.parse::<SettingsChanged>()?;
-                    let before = self.settings.get();
-                    let after = self.settings.apply(&op.key, &op.value)?;
-                    if before.telemetry && !after.telemetry {
-                        self.clear_telemetry().await?;
-                    }
+                    self.settings.apply(&op.key, &op.value)?;
                     Ok(())
                 }
                 .await,

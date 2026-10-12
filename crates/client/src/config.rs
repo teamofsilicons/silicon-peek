@@ -2,7 +2,7 @@
 //! `peek config set '<json-object>'` (BLUEPRINT §7.3).
 //!
 //! ```json
-//! {"schema":1,"telemetry":true,"voice":null,"voice_instructions":null,"language":null,"notify":[],
+//! {"schema":1,"voice":null,"voice_instructions":null,"language":null,"notify":[],
 //!  "api_url":null,"delivery_max_age_hours":168,"position":null,"drawing":null}
 //! ```
 
@@ -25,8 +25,7 @@ pub const CONFIG_SCHEMA: u32 = 1;
 pub const DEFAULT_DELIVERY_MAX_AGE_HOURS: u32 = 168;
 
 /// Every key `config set` accepts, in documentation order.
-pub const CONFIG_KEYS: [&str; 9] = [
-    "telemetry",
+pub const CONFIG_KEYS: [&str; 8] = [
     "voice",
     "voice_instructions",
     "language",
@@ -44,8 +43,6 @@ pub const CONFIG_KEYS: [&str; 9] = [
 pub struct Config {
     /// Always 1 for this build.
     pub schema: u32,
-    /// This home's telemetry (default on).
-    pub telemetry: bool,
     /// Default `ElevenLabs` TTS voice; `null` picks George.
     pub voice: Option<String>,
     /// Default speaking style, accent, pace and delivery instructions.
@@ -71,7 +68,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             schema: CONFIG_SCHEMA,
-            telemetry: true,
             voice: None,
             voice_instructions: None,
             language: None,
@@ -103,7 +99,7 @@ impl Config {
     pub fn parse_patch(input: &str) -> Result<Map<String, Value>> {
         let patch = parse_object(input.as_bytes(), "config").map_err(|e| {
             let hint = format!(
-                r#"pass one JSON object, for example peek config set '{{"telemetry":false}}'; valid keys: {}"#,
+                r#"pass one JSON object, for example peek config set '{{"voice":null}}'; valid keys: {}"#,
                 CONFIG_KEYS.join(", ")
             );
             let details = json!({"valid_keys": CONFIG_KEYS});
@@ -156,13 +152,6 @@ impl Config {
         };
         let d = Self::default();
         match key {
-            "telemetry" => {
-                self.telemetry = match value {
-                    Value::Null => d.telemetry,
-                    Value::Bool(b) => *b,
-                    _ => return Err(bad("true or false")),
-                };
-            }
             "voice" => {
                 self.voice = match value {
                     Value::Null => None,
@@ -287,7 +276,6 @@ impl Config {
     pub fn to_public_value(&self) -> Value {
         json!({
             "schema": self.schema,
-            "telemetry": self.telemetry,
             "voice": self.voice,
             "voice_instructions": self.voice_instructions,
             "language": self.language,
@@ -307,8 +295,6 @@ impl Config {
             voice_instructions: self.voice_instructions.clone(),
             language: self.language.clone(),
             notify: self.notify.clone(),
-            telemetry: self.telemetry,
-            env_opt_out: false,
         }
     }
 
@@ -333,7 +319,7 @@ impl Config {
         let mut c = Self::default();
         let mut invalid = Vec::new();
         for (k, v) in stored {
-            if k == "schema" {
+            if k == "schema" || k == "telemetry" {
                 continue;
             }
             if CONFIG_KEYS.contains(&k.as_str()) {

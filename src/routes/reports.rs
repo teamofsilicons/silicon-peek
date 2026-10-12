@@ -4,7 +4,6 @@
 //! `stored` for operators. 10 per hour per client IP.
 
 use axum::{
-    Extension,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::Response,
@@ -25,7 +24,6 @@ use crate::{
     plane::Plane,
     state::AppState,
     store::{self, reports::NewReport},
-    telemetry::{Event, RequestMeta},
 };
 
 const MESSAGE_MAX_CHARS: usize = 10_000;
@@ -92,7 +90,6 @@ fn validate(report: &ReportRequest) -> ApiResult<()> {
 /// Creates a report.
 pub(crate) async fn create(
     State(state): State<AppState>,
-    Extension(meta): Extension<RequestMeta>,
     plane: Plane,
     IdemKey(key): IdemKey,
     ClientIp(ip): ClientIp,
@@ -121,14 +118,13 @@ pub(crate) async fn create(
     };
     run.run(
         StatusCode::OK,
-        store_and_file(state.clone(), meta, plane, principal, report, ip),
+        store_and_file(state.clone(), plane, principal, report, ip),
     )
     .await
 }
 
 async fn store_and_file(
     state: AppState,
-    meta: RequestMeta,
     plane: Plane,
     principal: Option<Principal>,
     report: ReportRequest,
@@ -208,15 +204,5 @@ async fn store_and_file(
             }
         }
     };
-    state.0.telemetry.record(
-        &meta,
-        Event::new("report.created", "report").context(
-            "status",
-            match response.status {
-                ReportStatus::Filed => "filed",
-                ReportStatus::Stored => "stored",
-            },
-        ),
-    );
     Ok(response)
 }

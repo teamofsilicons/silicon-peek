@@ -12,7 +12,6 @@ use serde_json::Value;
 use silicon_peek_client::{
     Error, ErrorCode, Result,
     api::{SpeechPurpose, SpeechTranscript},
-    identity::SlotIndex,
     ids::{AskId, MessageId},
     ipc::{
         cli::AskState,
@@ -29,10 +28,9 @@ use crate::{
     bubbles::{Resolution, load_ask, load_send},
     matching::{MatchOutcome, match_transcript},
     net::HomeRef,
-    speech::{jitter, millis},
+    speech::jitter,
     speech_request::{ListenParams, RetryBudget, RetryKind, SpeechError, SttLanguage, keyterms},
     state::{ActorKey, Shared, SharedRef},
-    telemetry::Record,
 };
 
 /// Recordings whose loudest 20 ms window is below this count as "nothing
@@ -204,14 +202,13 @@ enum Target {
 #[derive(Debug)]
 pub struct SttJob {
     job: VoiceJob,
-    slot: SlotIndex,
 }
 
 impl SttJob {
     /// Transcribes in the background.
     pub fn start(self, shared: &SharedRef) {
         let this = Arc::clone(shared);
-        tokio::spawn(async move { this.run_stt(self.job, self.slot).await });
+        tokio::spawn(async move { this.run_stt(self.job).await });
     }
 }
 
@@ -270,7 +267,7 @@ impl Shared {
             info,
             languages: op.languages,
         };
-        Ok((result, SttJob { job, slot: op.slot }))
+        Ok((result, SttJob { job }))
     }
 
     /// What a recording answers: a pending ask (checked against its send),
@@ -355,19 +352,14 @@ impl Shared {
         );
     }
 
-    async fn run_stt(self: SharedRef, job: VoiceJob, slot: SlotIndex) {
-        let started = Instant::now();
+    async fn run_stt(self: SharedRef, job: VoiceJob) {
         let recording_id = match &job.target {
             Target::Ask { ask_id, .. } => ask_id.as_str().to_owned(),
             Target::Message { message_id } => message_id.as_str().to_owned(),
         };
-        let mut rec = Record::new("stt.request", "ok").with("slot", slot.get());
-        rec.actor = Some((job.key.account.clone(), job.key.actor.clone()));
-
         if job.info.peak_dbfs < SILENCE_DBFS {
             self.stt_event(&job.target, SttOutcome::Empty, None, None);
             let _ = std::fs::remove_file(self.paths.recording(&recording_id));
-            self.record(rec.with("status", "silent").with("matched", false));
             return;
         }
         let (numerals, labels): (bool, Vec<String>) = match &job.target {
@@ -391,22 +383,12 @@ impl Shared {
                     // Nothing will ever reference a failed message's audio.
                     let _ = std::fs::remove_file(self.paths.recording(&recording_id));
                 }
-                rec.outcome = "error";
-                rec.error_code = Some(e.code().to_string());
-                rec.duration_ms = Some(millis(started.elapsed()));
-                self.record(rec.with("status", "failed"));
+
                 return;
             }
         };
-        rec = rec.with("stt_ms", millis(started.elapsed()));
-        if let Some(l) = &transcript.detected_language {
-            rec = rec.with("stt_language", l.clone());
-        }
-        if let Some(r) = &transcript.request_id {
-            rec = rec.with("stt_request_id", r.clone());
-        }
         let text = transcript.text.trim().to_owned();
-        let matched = match &job.target {
+        match &job.target {
             Target::Message { message_id } => {
                 self.finish_message(&job, message_id, &text, &recording_id)
                     .await
@@ -415,7 +397,6 @@ impl Shared {
                 self.finish_answer(&job.target, ask_id, ask, &text).await
             }
         };
-        self.record(rec.with("matched", matched));
     }
 
     /// A voice message: the transcript becomes `peek.message.received`.

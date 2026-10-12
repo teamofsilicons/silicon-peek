@@ -19,8 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rusqlite::{OptionalExtension as _, params};
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use silicon_peek_client::{
     Error, ErrorCode, Result,
@@ -32,13 +31,10 @@ use silicon_peek_client::{
 };
 
 use crate::{
-    bubbles::now_ms,
     commands::CommandSpec,
     config::{BUNDLE_ID, DEV_BUNDLE_ID, TEAM_ID},
-    db::SqlResult as _,
     state::{Shared, SharedRef},
     sys,
-    telemetry::Record,
 };
 
 /// Offers kept per channel (§4.3: the newest 3 builds).
@@ -637,11 +633,6 @@ impl Shared {
                         .applications_dir
                         .join(format!(".Peek.app.update.{}", std::process::id())),
                 );
-                self.record(
-                    Record::new("app.update", "error")
-                        .with("update_from", installed.build)
-                        .with("update_to", to),
-                );
                 return Ok(UpdateOutcome::Rejected { build: to, reason });
             }
         };
@@ -683,16 +674,7 @@ impl Shared {
         })?;
 
         let _ = std::fs::remove_dir_all(&stage);
-        let applied = json!({"from": installed.build, "to": to, "at": silicon_peek_client::timestamp::Timestamp::now()});
-        let mut bytes = serde_json::to_vec_pretty(&applied).unwrap_or_default();
-        bytes.push(b'\n');
-        write_atomic(&self.paths.support, "update-applied.json", &bytes)?;
         drop(lock);
-        self.record(
-            Record::new("app.update", "ok")
-                .with("update_from", installed.build)
-                .with("update_to", to),
-        );
         let reopen = CommandSpec::new("/usr/bin/open")
             .arg("-g")
             .arg("-j")

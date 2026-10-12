@@ -1,7 +1,6 @@
 import { For, Show, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { copyText } from "../shared/copy.ts";
 import { HOTKEY, INSTALL_COMMAND, docsHref } from "../shared/site.ts";
-import { track } from "../shared/telemetry.ts";
 import { CoverArt, DotDrawing, EyeDrawing, GaugeDrawing, MonogramDrawing, OrbDrawing, SunDrawing, VinylDrawing } from "./Art.tsx";
 import {
   SLOTS,
@@ -682,7 +681,6 @@ export default function Hero() {
   };
 
   async function copyInstall(e: MouseEvent) {
-    track("install_command_copied", { place: "hero" });
     const ok = await copyText(INSTALL_COMMAND, (e.currentTarget as HTMLElement).previousElementSibling ?? undefined);
     setCopied(ok ? "copied" : "manual");
     window.setTimeout(() => setCopied("idle"), 2200);
@@ -1055,7 +1053,7 @@ export default function Hero() {
         </p>
         <div class="install-row" id="hero-install">
           <code class="install-code">{INSTALL_COMMAND}</code>
-          <button type="button" class="copy-button" data-spacestation-event="install_command_copied" onClick={copyInstall}>
+          <button type="button" class="copy-button" onClick={copyInstall}>
             {copied() === "copied" ? "Copied" : copied() === "manual" ? "Select & copy" : "Copy"}
           </button>
         </div>

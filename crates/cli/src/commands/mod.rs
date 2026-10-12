@@ -22,7 +22,7 @@ use silicon_peek_client::{
     Error, ErrorCode, Result,
     error::Origin,
     http::Client,
-    identity::{AccountId, Context, SlotKey},
+    identity::{AccountId, SlotKey},
     ipc::AuthBlock,
     runtime::{
         CLI_MARGIN, SessionSlot, Store, auth_block, force_refresh, fresh_session_with,
@@ -35,7 +35,7 @@ use crate::{
     context::{Globals, Session, cli_refresh_policy},
     docs, experience,
     output::Out,
-    service, telemetry,
+    service,
 };
 
 /// Runs the parsed command.
@@ -103,9 +103,7 @@ pub async fn mac_session(g: &Globals) -> Result<(Session, AuthBlock)> {
     let file = session.store.read_session()?;
     let slot = file.usable_slot(&session.slot_key, session.store.dir())?;
     g.session_account(slot)?;
-    telemetry::note_actor(&slot.account_id, slot.actor_id());
     let auth = auth_block(&session.store, &session.slot_key)?;
-    telemetry::note_auth(&auth);
     Ok((session, auth))
 }
 
@@ -166,7 +164,6 @@ where
         ));
     }
     let account = g.session_account(&slot)?;
-    telemetry::note_actor(&account, slot.actor_id());
     match f(
         s.client
             .with_session(slot.access_token.clone(), account.clone()),
@@ -201,15 +198,13 @@ where
 }
 
 /// Retries queued refresh-family revocations (best effort, bounded).
-pub async fn sweep_revocations(store: &Store, telemetry_on: bool) {
+pub async fn sweep_revocations(store: &Store) {
     let client_for = move |key: &SlotKey| -> Option<Client> {
-        let mut client = Client::builder(key.api_url())
+        let client = Client::builder(key.api_url())
             .component(concat!("peek-cli/", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(4))
             .build()
-            .ok()?
-            .with_telemetry(telemetry_on)
-            .with_trace_id(telemetry::trace_id());
+            .ok()?;
         Some(client)
     };
     let _ = tokio::time::timeout(

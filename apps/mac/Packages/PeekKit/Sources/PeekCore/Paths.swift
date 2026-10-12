@@ -67,7 +67,6 @@ public struct PeekPaths: Sendable, Equatable {
     public var imageCacheDirectory: URL { supportDirectory.appendingPathComponent("cache/images", isDirectory: true) }
     public var recordingsDirectory: URL { supportDirectory.appendingPathComponent("recordings", isDirectory: true) }
     public var installStatusFile: URL { supportDirectory.appendingPathComponent("install-status.txt") }
-    public var updateAppliedFile: URL { supportDirectory.appendingPathComponent("update-applied.json") }
 
     /// `~/Library/Caches/Peek/` (or `PEEK_CACHES_DIR`): Simulation's generated samples.
     public var cachesDirectory: URL {

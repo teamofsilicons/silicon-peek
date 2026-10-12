@@ -1,8 +1,6 @@
 import { For, Show, createSignal, type JSX } from "solid-js";
 import { copyText } from "../shared/copy.ts";
 import { CRATE_URL, HOTKEY, INSTALL_COMMAND, REPO_URL, TOPICS, TOPIC_GROUPS, VERSION, docsHref } from "../shared/site.ts";
-import TelemetryToggle from "../shared/TelemetryToggle.tsx";
-import { track } from "../shared/telemetry.ts";
 import Hero from "./Hero.tsx";
 import AccountMenu from "../shared/AccountMenu.tsx";
 
@@ -33,7 +31,7 @@ function Header() {
           </a>
         </div>
         <AccountMenu />
-        <a class="nav-cta" href="#install" onClick={() => track("download_cta", { place: "header" })}>
+        <a class="nav-cta" href="#install">
           Install
         </a>
       </nav>
@@ -83,9 +81,7 @@ function InstallSection() {
         <button
           type="button"
           class="copy-button large"
-          data-spacestation-event="install_command_copied"
           onClick={async () => {
-            track("install_command_copied", { place: "install" });
             setCopied(await copyText(INSTALL_COMMAND, code));
             window.setTimeout(() => setCopied(false), 2000);
           }}
@@ -377,7 +373,6 @@ function Footer() {
         </nav>
       </div>
       <div class="footer-bottom">
-        <TelemetryToggle />
         <span class="footer-meta">
           peek {VERSION} · MIT · © 2026 Team of Silicons
         </span>

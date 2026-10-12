@@ -637,32 +637,6 @@ public struct DrawingErrorRequest: UIRequest, Equatable {
     }
 }
 
-/// One telemetry event, relayed by peekd to the backend gateway (§6.3). Same shape as the CLI's.
-public struct TelemetryEvent: Codable, Sendable, Equatable {
-    public var id: String
-    public var type: String
-    public var data: JSONValue
-    public var metadata: JSONValue?
-
-    public init(id: String = "evt_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased(),
-                type: String, data: JSONValue, metadata: JSONValue? = nil) {
-        self.id = id
-        self.type = type
-        self.data = data
-        self.metadata = metadata
-    }
-}
-
-/// `telemetry`: a batch of UI events.
-public struct TelemetryRequest: UIRequest, Equatable {
-    public static let op = "telemetry"
-    public typealias Reply = IPCAck
-
-    public var events: [TelemetryEvent]
-
-    public init(events: [TelemetryEvent]) { self.events = events }
-}
-
 /// `settings.changed`: one settings key changed in the UI (mirrored to settings.json).
 public struct SettingsChangedRequest: UIRequest, Equatable {
     public static let op = "settings.changed"

@@ -7,7 +7,7 @@
 //! `slots.api_url/display_name/testing`, `drawings.error_pending/previous_path`,
 //! `sends.home_path/api_url/kind/warnings/speech_done_at`,
 //! `asks.event_id/created_at/closed_at`, `outbox.subject_id`,
-//! `telemetry_outbox.source`, table `cli_watchdog`) are documented inline.
+//! table `cli_watchdog`) are documented inline.
 //!
 //! Schema 2 (peek 0.1.2: always-queue FIFO, expiry on every send, scheduling)
 //! adds `sends.expires_at/queued_at/overflow/schedule_id/due_at` and the
@@ -34,7 +34,7 @@ CREATE TABLE homes (
   actor_id     TEXT,
   attached_at  INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL,
-  config       TEXT                       -- config.sync mirror (voice, language, notify, telemetry)
+  config       TEXT                       -- config.sync mirror (voice, language, notify)
 );
 CREATE TABLE slots (
   context       TEXT NOT NULL,
@@ -122,14 +122,6 @@ CREATE TABLE outbox (
 );
 CREATE INDEX outbox_due   ON outbox(status, next_attempt_at);
 CREATE INDEX outbox_actor ON outbox(context, account_id, actor_id, status);
-CREATE TABLE telemetry_outbox (
-  id         TEXT PRIMARY KEY,
-  table_id   TEXT NOT NULL,
-  event      BLOB NOT NULL,
-  created_at INTEGER NOT NULL,
-  source     TEXT NOT NULL DEFAULT 'daemon' -- daemon|cli|mac (X-Peek-Source)
-);
-
 "#;
 
 /// Schema 2 (peek 0.1.2): queue v2, expiry on every send, scheduling.
@@ -300,5 +292,46 @@ fn migrate(conn: &Connection, path: &Path) -> Result<()> {
         ))
         .sql()?;
     }
+    conn.execute_batch("DROP TABLE IF EXISTS telemetry_outbox;")
+        .sql()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upgrade_discards_telemetry_and_preserves_app_data()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(&format!(
+            "{SCHEMA_V1} {SCHEMA_V2}
+            CREATE TABLE telemetry_outbox (id TEXT PRIMARY KEY, table_id TEXT, event BLOB, created_at INTEGER, source TEXT);
+            INSERT INTO telemetry_outbox VALUES ('old-event', 'peekclidaemon', X'7B7D', 1, 'daemon');
+            INSERT INTO homes (home_path, token_sha256, api_url, context, attached_at, last_seen_at)
+                VALUES ('/saved/home', X'01', 'https://peek.example', 'production', 1, 2);
+            PRAGMA user_version=3;"
+        ))?;
+        let schema = |conn: &Connection| -> rusqlite::Result<Vec<String>> {
+            conn.prepare("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name != 'telemetry_outbox' ORDER BY name")?
+                .query_map([], |row| row.get(0))?
+                .collect()
+        };
+        let before = schema(&conn)?;
+        for _ in 0..2 {
+            migrate(&conn, Path::new("unused.sqlite"))?;
+            let queued: i64 = conn.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name='telemetry_outbox'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(queued, 0);
+            assert_eq!(schema(&conn)?, before);
+            let home: String =
+                conn.query_row("SELECT home_path FROM homes", [], |row| row.get(0))?;
+            assert_eq!(home, "/saved/home");
+        }
+        Ok(())
+    }
 }

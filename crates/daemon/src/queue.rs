@@ -29,7 +29,6 @@ use crate::{
     bubbles::{SendRow, Slotted, ask_of_send, load_send, queue_ting, slot_of, take_from_queue},
     db::SqlResult as _,
     state::{ActorKey, Caller, Core, Shared, SharedRef, WaiterMsg},
-    telemetry::Record,
 };
 
 /// How a send is withdrawn without a ting.
@@ -410,7 +409,6 @@ impl Shared {
             context: send.key.context.data_context(),
         });
         let key = send.key.clone();
-        let shown = send.shown_at.is_some();
         let how = Withdraw {
             ui_reason: CancelReason::Expired,
             close_reason: "expired",
@@ -444,14 +442,6 @@ impl Shared {
         if let Some(from) = from {
             self.after_removal_locked(&mut core, &key, from).await;
         }
-        let mut rec = Record::new("send.expired", "ok")
-            .with("status", if shown { "shown" } else { "not_shown" });
-        if let Some(slot) = slot {
-            rec = rec.with("slot", slot.get());
-        }
-        rec.actor = Some((key.account.clone(), key.actor.clone()));
-
-        self.record(rec);
         Ok(())
     }
 
@@ -627,23 +617,6 @@ impl Shared {
             self.after_removal_locked(&mut core, &key, Slotted::Waiting(0))
                 .await;
         }
-        drop(core);
-        let slot = self
-            .db
-            .call({
-                let k = key.clone();
-                move |c| slot_of(c, &k)
-            })
-            .await
-            .ok()
-            .flatten();
-        let mut rec = Record::new("queue.cleared", "ok").with("queue_waiting", cancelled.len());
-        if let Some(slot) = slot {
-            rec = rec.with("slot", slot.get());
-        }
-        rec.actor = Some((key.account.clone(), key.actor.clone()));
-
-        self.record(rec);
         Ok(QueueClearResult {
             cancelled,
             on_screen: current,
@@ -733,12 +706,6 @@ impl Shared {
             );
             return Ok(closed(state));
         };
-        let mut rec = Record::new("send.cancelled", "ok")
-            .with("status", enum_word(w.was))
-            .with("slot", row.slot.get());
-        rec.actor = Some((row.key.account.clone(), row.key.actor.clone()));
-
-        self.record(rec);
         Ok(SendCancelResult {
             send_id: w.send_id,
             ask_id: w.ask_id,

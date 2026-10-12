@@ -322,12 +322,7 @@ impl Shared {
         Ok(DetachResult { cancelled_rows })
     }
 
-    /// `config.sync`: mirrors the home's config (voice, language, notify,
-    /// telemetry). The CLI sends its *effective* telemetry: `false` also when
-    /// only its environment opts out (`PEEK_TELEMETRY`,
-    /// `SPACE_STATION_TELEMETRY`, `SILICON_TELEMETRY`), so peekd honours
-    /// that opt-out for everything it does for the home, including
-    /// `X-Peek-Telemetry: off` on its backend calls.
+    /// Mirrors the home's voice, language and notification settings.
     ///
     /// # Errors
     /// Database failures.
@@ -345,116 +340,7 @@ impl Shared {
                 .map(|_| ())
             })
             .await?;
-        self.net
-            .set_home_opted_out(&caller.home.home_path, !config.telemetry);
         Ok(())
-    }
-
-    /// A CLI of this home handed peekd telemetry, which it does only when
-    /// neither the home's config nor its environment opts out: an opt-out
-    /// the mirror holds from an earlier CLI environment (`env_opt_out`) is
-    /// over. A config opt-out is never lifted here (and the home's
-    /// `config.json` is always read as well).
-    ///
-    /// # Errors
-    /// Database failures.
-    pub async fn home_telemetry_confirmed(&self, home_path: &str) -> Result<()> {
-        let hp = home_path.to_owned();
-        let cleared = self
-            .db
-            .call(move |c| {
-                let cfg: Option<Option<String>> = c
-                    .query_row(
-                        "SELECT config FROM homes WHERE home_path = ?1",
-                        [&hp],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .sql()?;
-                let Some(mut mirror) = cfg
-                    .flatten()
-                    .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-                else {
-                    return Ok(false);
-                };
-                if mirror.get("telemetry").and_then(Value::as_bool) != Some(false)
-                    || mirror.get("env_opt_out").and_then(Value::as_bool) != Some(true)
-                {
-                    return Ok(false);
-                }
-                mirror["telemetry"] = Value::Bool(true);
-                if let Some(m) = mirror.as_object_mut() {
-                    m.remove("env_opt_out");
-                }
-                c.execute(
-                    "UPDATE homes SET config = ?2 WHERE home_path = ?1",
-                    params![hp, mirror.to_string()],
-                )
-                .sql()?;
-                Ok(true)
-            })
-            .await?;
-        if cleared {
-            self.net.set_home_opted_out(home_path, false);
-        }
-        Ok(())
-    }
-
-    /// Loads the homes whose mirrored config opts out of telemetry into
-    /// [`crate::net::Net`] (at startup).
-    ///
-    /// # Errors
-    /// Database failures.
-    pub async fn load_telemetry_mirror(&self) -> Result<usize> {
-        let opted_out: Vec<String> = self
-            .db
-            .call(|c| {
-                let mut st = c
-                    .prepare("SELECT home_path, config FROM homes WHERE config IS NOT NULL")
-                    .sql()?;
-                let rows = st
-                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-                    .sql()?
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .sql()?;
-                Ok(rows
-                    .into_iter()
-                    .filter(|(_, cfg)| {
-                        serde_json::from_str::<Value>(cfg)
-                            .ok()
-                            .and_then(|v| v.get("telemetry").and_then(Value::as_bool))
-                            == Some(false)
-                    })
-                    .map(|(hp, _)| hp)
-                    .collect())
-            })
-            .await?;
-        for hp in &opted_out {
-            self.net.set_home_opted_out(hp, true);
-        }
-        Ok(opted_out.len())
-    }
-
-    /// Whether a home's config (its `config.json` and the mirror) allows
-    /// telemetry.
-    pub async fn home_telemetry(&self, home_path: &str) -> bool {
-        let hp = home_path.to_owned();
-        let hp_for_file = hp.clone();
-        self.db
-            .call(move |c| {
-                let cfg: Option<Option<String>> = c
-                    .query_row("SELECT config FROM homes WHERE home_path = ?1", [hp], |r| {
-                        r.get(0)
-                    })
-                    .optional()
-                    .sql()?;
-                Ok(crate::telemetry::home_config_allows_telemetry(
-                    &hp_for_file,
-                    cfg.flatten().as_deref(),
-                ))
-            })
-            .await
-            .unwrap_or(true)
     }
 
     /// Retries a home's queued refresh-token revocations (§2.6 step 4).

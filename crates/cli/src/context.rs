@@ -1,5 +1,5 @@
 //! Resolution of the global context (BLUEPRINT §7.1, §2.9): store, config,
-//! API URL, testing environment, account, HTTP client and telemetry opt-out.
+//! API URL, testing environment, account, HTTP client.
 //!
 //! Environment variables are read here rather than by clap so that an empty
 //! value is an error (`SILICON_ACCOUNT=` never silently means "unset"). peek never
@@ -9,14 +9,12 @@ use std::{path::PathBuf, time::Duration};
 
 use silicon_peek_client::{
     Error, ErrorCode, Result,
-    config::Config,
     http::Client,
     identity::{AccountId, ApiUrl, Context, SlotKey},
     runtime::{
         RefreshPolicy, SessionSlot, Store,
         store::{silicon_home, store_dir_for},
     },
-    telemetry::env_opt_out,
 };
 
 use crate::{cli::GlobalArgs, output::Out};
@@ -121,12 +119,10 @@ pub struct Session {
     pub api: ApiUrl,
     /// production or a testing environment.
     pub context: Context,
-    /// HTTP client with the testing and telemetry headers applied.
+    /// HTTP client for this session.
     pub client: Client,
     /// `"<api>#<context>"`.
     pub slot_key: SlotKey,
-    /// Whether telemetry is on for this run.
-    pub telemetry: bool,
 }
 
 impl Globals {
@@ -203,11 +199,6 @@ impl Globals {
         Ok(slot.account_id.clone())
     }
 
-    /// Whether telemetry is on for this run (flag, env, config).
-    pub fn telemetry_enabled(&self, config: Option<&Config>) -> bool {
-        !self.args.no_telemetry && !env_opt_out() && config.is_none_or(|c| c.telemetry)
-    }
-
     /// Build a client for the selected profile and backend.
     pub async fn session(&self, store: Store, _rediscover: bool) -> Result<Session> {
         let config = store.read_config()?;
@@ -215,21 +206,16 @@ impl Globals {
             .explicit_api()?
             .or(config.api_url.clone())
             .unwrap_or_else(ApiUrl::production);
-        let telemetry = self.telemetry_enabled(Some(&config));
         let context = Context::Production;
         let client = Client::builder(&api)
             .component(concat!("peek-cli/", env!("CARGO_PKG_VERSION")))
-            .build()?
-            .with_telemetry(telemetry)
-            .with_trace_id(crate::telemetry::trace_id());
-        crate::telemetry::note_session(telemetry, &client, context);
+            .build()?;
         Ok(Session {
             slot_key: SlotKey::new(api.clone(), context),
             store,
             api,
             context,
             client,
-            telemetry,
         })
     }
 }

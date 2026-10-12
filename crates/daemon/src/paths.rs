@@ -153,12 +153,6 @@ impl Paths {
     pub fn install_status(&self) -> PathBuf {
         self.support.join("install-status.txt")
     }
-
-    /// `update-applied.json`.
-    #[must_use]
-    pub fn update_applied(&self) -> PathBuf {
-        self.support.join("update-applied.json")
-    }
 }
 
 /// Lowercase hex SHA-256.

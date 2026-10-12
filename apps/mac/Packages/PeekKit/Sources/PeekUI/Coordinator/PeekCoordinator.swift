@@ -77,8 +77,6 @@ public final class PeekCoordinator: PeekPresenting {
     @ObservationIgnored private var drawingLoads: [SiliconKey: (sha256: String, task: Task<DrawingFailure?, Never>)] = [:]
     @ObservationIgnored private var hotKeys: HotKeyCenter?
     @ObservationIgnored private var speechDoneSent: Set<String> = []
-    @ObservationIgnored private var telemetryBuffer: [TelemetryEvent] = []
-    @ObservationIgnored private var reportedGlassMode = false
     @ObservationIgnored private var screenObserver: (any NSObjectProtocol)?
     @ObservationIgnored private var keyWindowObservers: [any NSObjectProtocol] = []
     /// peekd answered `unknown_op` to `shown` (an older build during an update swap): not sent again on this link.
@@ -90,8 +88,7 @@ public final class PeekCoordinator: PeekPresenting {
     @ObservationIgnored private let settingsURL: URL?
     @ObservationIgnored private let logger = PeekLogger(category: "ui")
 
-    static let telemetryFlushInterval: Duration = .seconds(30)
-    static let telemetryBatch = 20
+    static let statusCheckInterval: Duration = .seconds(30)
 
     public init(link: any DaemonLinking, drawing: any DrawingRuntimeProviding, speech: any SpeechPlaying,
                 mic: any MicRecording, images: any ImageProviding, input: any InputHubbing,
@@ -155,7 +152,6 @@ public final class PeekCoordinator: PeekPresenting {
             speechStoppedBeforeStart: { [weak self] sendID, byUser in
                 self?.sendSpeechDone(SpeechFinished(sendID: sendID, stoppedByUser: byUser, playedMs: 0, totalMs: 0))
             },
-            telemetry: { [weak self] type, data, context in self?.record(type, data, context: context) },
             // Bare Esc is only ever grabbed by the real app (never by tests or GUI-less runs).
             escapeKeys: usesLivePanels ? CarbonEscapeKey() : InertEscapeKey(),
             keyWindowIsOpen: { NSApp?.keyWindow != nil })
@@ -188,9 +184,8 @@ public final class PeekCoordinator: PeekPresenting {
         })
         tasks.append(Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: Self.telemetryFlushInterval)
+                try? await Task.sleep(for: Self.statusCheckInterval)
                 guard !Task.isCancelled else { return }
-                self?.flushTelemetry()
                 // The mic permission can change in System Settings at any time.
                 self?.pushStatusIfChanged()
             }
@@ -217,13 +212,6 @@ public final class PeekCoordinator: PeekPresenting {
         slotManager.releaseEscape()
         presenceMonitor?.stop()
         presenceMonitor = nil
-        if let request = takeTelemetry() {
-            do throws(DaemonLinkError) {
-                _ = try await link.send(request, blobs: [], timeout: .seconds(2))
-            } catch {
-                logger.notice("dropped \(request.events.count) telemetry events at shutdown: \(error.description)")
-            }
-        }
         await link.stop()
     }
 
@@ -262,7 +250,6 @@ public final class PeekCoordinator: PeekPresenting {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.slotManager.screensChanged()
-                self?.record("display_changed", ["screens": .int(Int64(NSScreen.screens.count))], context: .production)
             }
         }
         // A key Peek window (typing, Settings, Simulation) takes Esc through AppKit: the Esc router lets go at once.
@@ -434,10 +421,6 @@ public final class PeekCoordinator: PeekPresenting {
             }
         }
         registerHotKeys()
-        if !reportedGlassMode, sorted.contains(where: { $0.context != .simulation }) {
-            reportedGlassMode = true
-            record("glass_mode", ["mode": .string(glassMode.rawValue)], context: .production)
-        }
     }
 
     public func present(_ show: PeekShowEvent) {
@@ -479,7 +462,6 @@ public final class PeekCoordinator: PeekPresenting {
         case .mode: slotManager.setMode(settings.mode)
         case .display: slotManager.setDisplay(settings.display)
         case .hotkeyModifier: registerHotKeys()
-        case .telemetry: if !settings.telemetry { telemetryBuffer.removeAll() }
         case .voiceDefaults, .sttLanguage: break
         }
         if let settingsURL {
@@ -489,8 +471,6 @@ public final class PeekCoordinator: PeekPresenting {
                 lastProblem = "cannot save settings to \(settingsURL.path): \(error)"
             }
         }
-        // Only the app's own coordinator owns settings.json; Simulation's presenter changes a private copy.
-        if settingsURL != nil { record("settings_changed", ["key": .string(key.rawValue)], context: .production) }
         sendInBackground(SettingsChangedRequest(key: key, value: settings.value(for: key)))
     }
 
@@ -578,7 +558,6 @@ public final class PeekCoordinator: PeekPresenting {
     }
 
     private func drawingFailed(_ key: SiliconKey, _ failure: DrawingFailure) {
-        record("fallback_visual", ["reason": .string(failure.reason.rawValue)], context: key.context)
         logger.info("drawing error for \(key): \(failure.reason.rawValue): \(failure.message); showing the fallback visual")
         guard !key.actorID.isEmpty else { return }
         sendInBackground(DrawingErrorRequest(context: key.context, accountID: key.accountID, actorID: key.actorID,
@@ -665,24 +644,6 @@ public final class PeekCoordinator: PeekPresenting {
                 self?.logger.error("\(R.op) failed: \(error.description)")
             }
         }
-    }
-
-    // MARK: Telemetry (BLUEPRINT §6.5 "mac"; relayed by peekd; opt-out in Settings)
-
-    private func record(_ type: String, _ data: [String: JSONValue], context: PeekContext) {
-        guard settings.telemetry, context != .simulation else { return }
-        telemetryBuffer.append(TelemetryEvent(type: type, data: .object(data), metadata: ["source": "peek.app"]))
-        if telemetryBuffer.count >= Self.telemetryBatch { flushTelemetry() }
-    }
-
-    private func flushTelemetry() {
-        if let request = takeTelemetry() { sendInBackground(request) }
-    }
-
-    private func takeTelemetry() -> TelemetryRequest? {
-        defer { telemetryBuffer.removeAll() }
-        guard !telemetryBuffer.isEmpty, settings.telemetry else { return nil }
-        return TelemetryRequest(events: telemetryBuffer)
     }
 }
 

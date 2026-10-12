@@ -171,7 +171,7 @@ Resources:
           dnf install -y python3 sqlite
           id peek >/dev/null 2>&1 || useradd --system --home-dir /var/lib/peek --shell /sbin/nologin peek
           id caddy >/dev/null 2>&1 || useradd --system --home-dir /var/lib/caddy --shell /sbin/nologin caddy
-          install -d -o peek -g peek -m 0700 /var/lib/peek /var/lib/peek/telemetry
+          install -d -o peek -g peek -m 0700 /var/lib/peek
           install -d -o caddy -g caddy -m 0700 /var/lib/caddy
           install -d -m 0700 /etc/peek
           install -d -m 0755 /opt/peek /opt/peek/releases /etc/caddy /etc/systemd/journald.conf.d

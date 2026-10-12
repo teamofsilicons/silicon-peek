@@ -61,7 +61,7 @@ public final class DiagnosticsModel {
         let settings = controls.settings
         lines.append(
             "mode \(settings.mode.rawValue), hotkeys \(settings.hotkeyModifier.rawValue), display \(settings.display.rawValue), "
-                + "backdrop \(settings.backdrop.rawValue), telemetry \(settings.telemetry), "
+                + "backdrop \(settings.backdrop.rawValue), "
                 + "stt_language \(settings.sttLanguage)")
         for warning in controls.settingsWarnings { lines.append("settings warning: \(warning)") }
         lines.append("microphone: \(controls.mic.permission.diagnosticsText)")

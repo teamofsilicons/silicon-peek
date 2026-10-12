@@ -11,10 +11,8 @@ use std::{
 
 use silicon_peek_client::{
     Error, ErrorCode, Result,
-    identity::ApiUrl,
     ipc::cli::AppOfferInfo,
     runtime::{daemon, sys},
-    telemetry,
 };
 
 use crate::commands::{CommandRunner, SystemCommands};
@@ -53,9 +51,6 @@ pub const INSTALL_HOOK_ENVS: [&str; 3] = [
     "PEEK_INSTALL_APPLICATIONS_DIR",
     "PEEK_INSTALL_NO_LAUNCH",
 ];
-/// Where peekd relays telemetry (defaults to production).
-pub const API_URL_ENV: &str = "PEEK_API_URL";
-
 /// Which executable may connect with `role: "ui"` (§1.5: the peer PID's
 /// executable must be Peek.app's).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,8 +195,6 @@ pub struct Timings {
     pub ui_request_timeout: Duration,
     /// Timeout of `drawing.validate`.
     pub drawing_validate_timeout: Duration,
-    /// Telemetry relay period (§6.3: 10 s).
-    pub telemetry_interval: Duration,
     /// Update check period (§4.6: hourly).
     pub update_interval: Duration,
     /// Delay before the first update check after start.
@@ -259,7 +252,6 @@ impl Default for Timings {
             ui_connect_wait: s(20),
             ui_request_timeout: s(10),
             drawing_validate_timeout: s(90),
-            telemetry_interval: s(10),
             update_interval: s(3600),
             update_initial_delay: s(60),
             update_defer_poll: s(300),
@@ -277,7 +269,7 @@ impl Default for Timings {
 
 /// Everything peekd needs to run.
 #[derive(Clone, Debug)]
-#[allow(clippy::struct_excessive_bools)] // one switch per subsystem (UI launch, telemetry, log file, updater)
+#[allow(clippy::struct_excessive_bools)] // one switch per subsystem (UI launch, log file, updater)
 pub struct DaemonConfig {
     /// The socket (`/var/tmp/silicon-peek-<uid>/peekd.sock`).
     pub socket_path: PathBuf,
@@ -298,10 +290,6 @@ pub struct DaemonConfig {
     pub launch_ui: bool,
     /// The command runner.
     pub commands: Arc<dyn CommandRunner>,
-    /// Where telemetry is relayed (`POST /api/web/telemetry`).
-    pub telemetry_api: ApiUrl,
-    /// Process-level telemetry switch (env opt-out wins).
-    pub telemetry_enabled: bool,
     /// Every schedule.
     pub timings: Timings,
     /// Peek.app's bundle identifier for this channel.
@@ -331,10 +319,6 @@ impl DaemonConfig {
         let dirs = IsolatedDirs::resolve(&real_home, |k| std::env::var_os(k));
         let (support_dir, caches_dir, applications_dir, isolated) =
             (dirs.support, dirs.caches, dirs.applications, dirs.isolated);
-        let telemetry_api = match std::env::var(API_URL_ENV) {
-            Ok(v) if !v.is_empty() => ApiUrl::parse(&v)?,
-            _ => ApiUrl::production(),
-        };
         Ok(Self {
             socket_path,
             lock_path,
@@ -344,8 +328,6 @@ impl DaemonConfig {
             ui_executable: UiExecutableRule::detect(),
             launch_ui: launch_ui && !isolated,
             commands: Arc::new(SystemCommands),
-            telemetry_api,
-            telemetry_enabled: !telemetry::env_opt_out(),
             timings: Timings::default(),
             bundle_id: BUNDLE_ID.to_owned(),
             own_build: own_build()?,
@@ -379,8 +361,6 @@ impl DaemonConfig {
             ui_executable: UiExecutableRule::PeekAppSuffix,
             launch_ui: false,
             commands: Arc::new(SystemCommands),
-            telemetry_api: ApiUrl::production(),
-            telemetry_enabled: false,
             timings: Timings::default(),
             bundle_id: BUNDLE_ID.to_owned(),
             own_build: own_build()?,

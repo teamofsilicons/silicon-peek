@@ -744,13 +744,10 @@ impl Op for DrawingError {
     type Output = Empty;
 }
 
-/// `telemetry` from the UI (same shape as the CLI op).
-pub type UiTelemetry = crate::ipc::cli::Telemetry;
-
 /// `settings.changed`: mirrored into `settings.json`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SettingsChanged {
-    /// The setting (e.g. `telemetry`, `voice_defaults`).
+    /// The setting (e.g. `voice_defaults`).
     pub key: String,
     /// Its new value.
     pub value: Value,

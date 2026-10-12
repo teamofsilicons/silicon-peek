@@ -536,11 +536,6 @@ hr {
   font: 11px var(--font-mono);
 }
 
-.telemetry-slot {
-  margin-top: 18px;
-  color: var(--muted);
-}
-
 .toc {
   position: sticky;
   top: 116px;
@@ -827,8 +822,7 @@ hr {
   .sidebar,
   .toc,
   .copy,
-  .page-links,
-  .telemetry-slot {
+  .page-links {
     display: none;
   }
 

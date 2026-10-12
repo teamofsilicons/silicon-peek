@@ -7,7 +7,6 @@ use serde_json::{Value, json};
 
 use super::{Empty, EventBody, Op};
 use crate::{
-    api::TelemetryEvent,
     error::{Error, ErrorCode, Result},
     identity::{AccountId, ActorId, SlotIndex, SlotInfo},
     ids::{AskId, ScheduleId, SendId},
@@ -1323,18 +1322,9 @@ pub struct ConfigSyncConfig {
     pub language: Option<String>,
     /// Default notifications.
     pub notify: Vec<Notify>,
-    /// This home's telemetry, as the CLI that synced it sees it: its
-    /// config, and also its environment (`PEEK_TELEMETRY`,
-    /// `SPACE_STATION_TELEMETRY`, `SILICON_TELEMETRY`).
-    pub telemetry: bool,
-    /// Additive: `telemetry` is `false` only because that CLI's environment
-    /// opts out (the home's config allows telemetry). peekd lifts such an
-    /// opt-out once a CLI of the home hands it telemetry again.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub env_opt_out: bool,
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if signature
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde requires a reference
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -1348,18 +1338,6 @@ pub struct ConfigSync {
 
 impl Op for ConfigSync {
     const NAME: &'static str = "config.sync";
-    type Output = Empty;
-}
-
-/// `telemetry` (CLI and UI): hand events to peekd's relay.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Telemetry {
-    /// Web-SDK-shaped events.
-    pub events: Vec<TelemetryEvent>,
-}
-
-impl Op for Telemetry {
-    const NAME: &'static str = "telemetry";
     type Output = Empty;
 }
 

@@ -22,7 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         disableTextSubstitutions()
 
-        let hooks = SelfUpdateHooks(arguments: launch, paths: coordinator.paths)
+        let hooks = SelfUpdateHooks(arguments: launch)
         hooks.logLaunch(logger: logger)
         logIsolation()
         for warning in coordinator.settingsWarnings {
@@ -49,13 +49,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             await coordinator.start()
-            if let event = hooks.updateTelemetry() {
-                do throws(DaemonLinkError) {
-                    _ = try await coordinator.link.send(TelemetryRequest(events: [event]))
-                } catch {
-                    logger.notice("could not report the update: \(error.description)")
-                }
-            }
         }
         // `--simulate <scenario>`: present a Simulation bubble once the app is up (idempotent; the menu bar
         // label calls it too).

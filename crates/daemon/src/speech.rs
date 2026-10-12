@@ -36,7 +36,6 @@ use crate::{
         ListenParams, RetryBudget, RetryKind, SpeechError, classify_proxy_error, listen_query,
     },
     state::{ActorKey, Shared, SharedRef},
-    telemetry::Record,
     voice::estimated_frames,
 };
 
@@ -553,30 +552,18 @@ impl Shared {
         );
         let chars = job.text.chars().count();
         let est = estimated_frames(chars);
-        let mut record = Record::new("tts.request", "ok")
-            .with("tts_model", job.model.clone())
-            .with("speak_chars", chars);
-        record.actor = Some((job.key.account.clone(), job.key.actor.clone()));
-
         let outcome = if let Some(path) = self.speech.cache.lookup(&cache_key) {
-            record = record.with("status", "cached");
             self.stream_file(&job.send_id, &path, est)
                 .await
                 .map_err(|e| (e, false))
         } else {
-            record = record.with("status", "streamed");
-            self.synthesize(&job, est, &cache_key, started, &mut record)
-                .await
+            self.synthesize(&job, est, &cache_key, started).await
         };
         if let Err((e, audio_started)) = outcome {
-            record.outcome = "error";
-            record.error_code = Some(e.code().to_string());
             if !audio_started {
                 self.tts_failed(&job.send_id, &e).await;
             }
         }
-        record.duration_ms = Some(millis(started.elapsed()));
-        self.record(record);
     }
 
     /// Mint → speak → stream, retrying only before the first audio byte
@@ -588,7 +575,6 @@ impl Shared {
         est: u64,
         cache_key: &str,
         started: Instant,
-        record: &mut Record,
     ) -> std::result::Result<(), (Error, bool)> {
         let mut budget = RetryBudget::new(
             started + self.cfg.timings.tts_first_audio_budget,
@@ -637,15 +623,8 @@ impl Shared {
             }
             match self.speak_via(job, &token, remaining).await {
                 Ok(resp) => {
-                    *record = std::mem::take(record).with(
-                        "method",
-                        match token.mode {
-                            SpeechMode::Direct => "direct",
-                            SpeechMode::Proxy => "proxy",
-                        },
-                    );
                     match self
-                        .stream_response(job, resp, est, cache_key, started, record)
+                        .stream_response(job, resp, est, cache_key, started)
                         .await
                     {
                         StreamOutcome::Done => return Ok(()),
@@ -699,7 +678,6 @@ impl Shared {
         est: u64,
         cache_key: &str,
         started: Instant,
-        record: &mut Record,
     ) -> StreamOutcome {
         let temp = self.speech.cache.temp_path();
         let _cleanup = PendingAudio(temp.clone());
@@ -749,10 +727,6 @@ impl Shared {
                 continue;
             }
             if seq == 0 {
-                if let Some(id) = &resp.request_id {
-                    *record = std::mem::take(record).with("dg_request_id", id.clone());
-                }
-                *record = std::mem::take(record).with("tts_ttfb_ms", millis(started.elapsed()));
                 self.ui
                     .event(&TtsBegin::linear16(job.send_id.clone(), est), Vec::new());
             }
@@ -928,10 +902,4 @@ async fn open_private(path: &Path) -> Option<tokio::fs::File> {
 pub fn jitter(d: Duration) -> Duration {
     let r = uuid::Uuid::new_v4().as_u128() % 250;
     d + d.mul_f64(f64::from(u32::try_from(r).unwrap_or(0)) / 1000.0)
-}
-
-/// Whole milliseconds.
-#[must_use]
-pub fn millis(d: Duration) -> u64 {
-    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }

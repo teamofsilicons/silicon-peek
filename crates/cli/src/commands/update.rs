@@ -3,7 +3,7 @@
 //! updates Peek.app.
 
 use serde_json::{Value, json};
-use silicon_peek_client::{Result, VERSION, telemetry::is_off_value};
+use silicon_peek_client::{Result, VERSION};
 use std::fmt::Write as _;
 
 use crate::{context::Globals, output::Out};
@@ -59,4 +59,11 @@ pub async fn run(_g: &Globals, out: Out) -> Result<()> {
         s
     });
     Ok(())
+}
+
+fn is_off_value(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "off" | "no"
+    )
 }

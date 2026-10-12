@@ -35,7 +35,7 @@ Bearer requests include the access token and selected account UUID. Mutations us
 | `schema`, `json` | Speak/show/ask validation, strict JSON and payload limits |
 | `ipc` | Typed CLI/UI envelopes and streaming frame codec |
 | `ting` | Event and delivery payloads |
-| `config`, `telemetry` | Configuration and opt-out telemetry |
+| `config` | Configuration |
 | `runtime` | Private disk state, atomic session writes, refresh locks and daemon connections |
 
 ## Persistent sessions

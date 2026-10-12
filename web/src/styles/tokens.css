@@ -88,63 +88,6 @@ input,
   top: 12px;
 }
 
-/* The footer telemetry switch (landing and docs). */
-.telemetry-toggle {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 12px;
-  font: 12px/1.4 var(--font-sans);
-}
-
-.switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 2px;
-  border: 0;
-  background: none;
-  font-weight: 600;
-}
-
-.switch-track {
-  position: relative;
-  width: 34px;
-  height: 20px;
-  border-radius: 999px;
-  background: rgba(120, 120, 128, 0.32);
-  transition: background 0.2s ease;
-  flex: none;
-}
-
-.switch-thumb {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-  transition: transform 0.2s cubic-bezier(0.3, 1.3, 0.5, 1);
-}
-
-.switch[aria-checked="true"] .switch-track {
-  background: #34c759;
-}
-
-.switch[aria-checked="true"] .switch-thumb {
-  transform: translateX(14px);
-}
-
-.telemetry-note {
-  opacity: 0.72;
-}
-
-.telemetry-note a {
-  color: inherit;
-}
-
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

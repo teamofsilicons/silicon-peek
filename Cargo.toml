@@ -3,9 +3,9 @@ members = [".", "crates/client", "crates/cli", "crates/daemon"]
 resolver = "3"
 
 # One version for everything: apps.yaml `version`, Peek.app's
-# CFBundleShortVersionString and the git tag `v0.3.0` must all agree.
+# CFBundleShortVersionString and the git tag `v0.4.0` must all agree.
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"
@@ -16,9 +16,8 @@ authors = ["Team of Silicons"]
 # Pinned per BLUEPRINT §1.4. Members opt into extra features locally, e.g.
 # `tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }`.
 [workspace.dependencies]
-silicon-peek-client = { path = "crates/client", version = "=0.3.0" }
+silicon-peek-client = { path = "crates/client", version = "=0.4.0" }
 silicon-accounts-client = "=0.5.0"
-space-station = "=0.1.1"
 
 aes-gcm = "0.10.3"
 anyhow = "1.0.100"
@@ -105,7 +104,6 @@ path = "src/main.rs"
 [dependencies]
 silicon-peek-client.workspace = true
 silicon-accounts-client.workspace = true
-space-station.workspace = true
 aes-gcm.workspace = true
 # `dyn`-compatible async traits for provider integrations.
 async-trait = "0.1.89"

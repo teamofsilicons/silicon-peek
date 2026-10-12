@@ -91,8 +91,8 @@ impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for JsonBody<T> {
     }
 }
 
-/// The `Idempotency-Key` every POST must carry (except the telemetry
-/// gateway and the ACCOUNTS webhook, which have their own dedupe).
+/// The `Idempotency-Key` every POST must carry (except the ACCOUNTS
+/// webhook, which has its own dedupe).
 pub(crate) struct IdemKey(pub(crate) IdempotencyKey);
 
 impl<S: Send + Sync> FromRequestParts<S> for IdemKey {

@@ -2,7 +2,7 @@
 
 The static site at https://peek.teamofsilicons.com: a SolidJS landing page with real CSS glass
 bubbles, and the documentation prerendered from the repository's `../docs/*.md` into `/docs/<topic>`.
-It has no runtime backend; `/api/*` is proxied to the peek backend by `vercel.json` (telemetry only).
+The static frontend uses the Peek backend for account sign-in through the `/api/*` proxy in `vercel.json`.
 
 ```sh
 npm ci
@@ -29,15 +29,6 @@ file is incomplete, or `install.sh` does not parse.
 Edit the docs in `../docs`, never in `dist`. Add a topic by creating `../docs/<topic>.md` and listing
 it in `src/shared/topics.json` (the `peek docs` topic list in the CLI must match).
 
-Telemetry uses `@teamofsilicons/space-station-web` against the same-origin `/api/web/telemetry`
-gateway. Only table names are built in (`VITE_PEEK_ANALYTICS_TABLE`, `VITE_PEEK_EVENTS_TABLE`,
-defaulting to `peekfrontendanalytics` and `peekfrontendevents`); keys stay on the backend. Development
-builds never send events. The footer switch stores the reader's choice in `localStorage` as
-`peek.telemetry`. The gateway needs no `Idempotency-Key` (events are deduplicated by id), accepts a
-browser request only when its `Origin` is listed in the backend's `PEEK_WEB_ORIGINS`
-(`https://peek.teamofsilicons.com` in production; add your preview origin there for local tests), and
-answers `204` without forwarding anything when the table has no key on the backend, when telemetry is
-off, so a quiet gateway is not proof that events arrived
-(`../docs/telemetry.md`, "The gateway").
+The website collects and sends no usage analytics or diagnostics.
 
 Deploy with `./deploy.sh --prod` from this directory (or omit `--prod` for a preview). The script builds locally so the sibling `docs/` sources are available, then uploads Vercel's prebuilt output. The production project must already be linked in `.vercel/project.json`.

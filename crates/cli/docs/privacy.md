@@ -10,7 +10,6 @@ peek keeps bubbles, history and caches on the Mac. Speak text and voice instruct
 | A Silicon's **`--speak` text, voice ID and voice instructions** | directly to Deepgram Voice Agent (`agent.deepgram.com`) for ElevenLabs synthesis | when the bubble speaks (unless it is in the local speech cache) | to synthesize the voice |
 | **Answers, dismissals and messages** (question, answer or message text, option labels, transcript for voice answers, timestamps, position) | the peek backend, then Ting, then the asking Silicon | when the Carbon answers, dismisses or writes | this is the point of an ask |
 | The **drawing** (the Silicon's JavaScript file) | the peek backend | on `peek register drawing` | restore the Silicon's visual on another Mac |
-| **Telemetry** without content | the peek backend, then Space Station | continuously, unless opted out | diagnostics; see [Telemetry](telemetry.md) |
 
 What never leaves the Mac: show elements (text, images, captions), option images, your send history, the recordings once transcribed, the wallpaper or screen samples, and the Carbon's typing before Return.
 
@@ -67,4 +66,4 @@ Answers are delivered as Ting events, so Ting holds them under its own retention
 
 ## Identity
 
-The Carbon at the Mac does not sign in to peek. Answers carry only the asking Silicon's identity. Telemetry records hashed actor ids, never raw ones.
+The Carbon at the Mac does not sign in to peek. Answers carry only the asking Silicon's identity. Peek sends no usage analytics or diagnostic telemetry.

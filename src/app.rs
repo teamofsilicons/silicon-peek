@@ -4,13 +4,13 @@
 //! (`Pragma: no-cache` too on auth routes); every error — including axum's
 //! own rejections, 404/405 and timeouts — uses the peek error envelope with
 //! that request ID. Requests are logged as one JSON line each (never headers
-//! or bodies) and recorded as `http.completed` telemetry.
+//! or bodies).
 
 use std::time::{Duration, Instant};
 
 use axum::{
     Router,
-    extract::{DefaultBodyLimit, MatchedPath, Request, State},
+    extract::{DefaultBodyLimit, MatchedPath, Request},
     http::{HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -19,7 +19,6 @@ use axum::{
 use silicon_peek_client::{
     ErrorCode,
     api::{headers, routes as paths},
-    telemetry::is_off_value,
 };
 use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
@@ -28,7 +27,6 @@ use crate::{
     error::{ApiError, REQUEST_ID},
     routes,
     state::AppState,
-    telemetry::{Event, RequestMeta},
 };
 
 /// The largest request body a route accepts, except the speech proxy's
@@ -93,7 +91,6 @@ pub fn router(state: AppState) -> Router {
                 .delete(routes::byo::delete),
         )
         .route(paths::REPORTS, post(routes::reports::create))
-        .route(paths::WEB_TELEMETRY, post(routes::telemetry::ingest))
         .route(paths::ACCOUNTS_WEBHOOK, post(routes::webhooks::accounts))
         .fallback(routes::not_found)
         .method_not_allowed_fallback(routes::method_not_allowed)
@@ -102,20 +99,9 @@ pub fn router(state: AppState) -> Router {
             StatusCode::SERVICE_UNAVAILABLE,
             REQUEST_TIMEOUT,
         ))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            request_context,
-        ))
+        .layer(middleware::from_fn(request_context))
         .layer(cors)
         .with_state(state)
-}
-
-fn trace_id(value: Option<&HeaderValue>) -> Option<String> {
-    let v = value?.to_str().ok()?;
-    ((1..=64).contains(&v.len())
-        && v.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
-    .then(|| v.to_owned())
 }
 
 /// Turns a non-JSON error response (an axum rejection, the timeout layer)
@@ -170,7 +156,7 @@ async fn normalize(response: Response) -> Response {
     error.into_response()
 }
 
-async fn request_context(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
+async fn request_context(req: Request, next: Next) -> Response {
     let request_id = Uuid::now_v7().to_string();
     let started = Instant::now();
     let method = req.method().clone();
@@ -179,16 +165,6 @@ async fn request_context(State(state): State<AppState>, mut req: Request, next: 
         .extensions()
         .get::<MatchedPath>()
         .map(|p| p.as_str().to_owned());
-    let meta = RequestMeta {
-        request_id: request_id.clone(),
-        telemetry: !req
-            .headers()
-            .get(headers::TELEMETRY)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(is_off_value),
-        trace_id: trace_id(req.headers().get(headers::TRACE_ID)),
-    };
-    req.extensions_mut().insert(meta.clone());
     let mut response = REQUEST_ID
         .scope(request_id.clone(), async move {
             let response = next.run(req).await;
@@ -214,19 +190,5 @@ async fn request_context(State(state): State<AppState>, mut req: Request, next: 
         duration_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
         "request"
     );
-    let skip = matches!(
-        route.as_deref(),
-        Some(paths::WEB_TELEMETRY | paths::HEALTHZ | paths::READYZ) | None
-    );
-    if !skip {
-        state.0.telemetry.record(
-            &meta,
-            Event::new("http.completed", "http")
-                .duration(elapsed)
-                .context("http_route", route_label)
-                .context("method", method.as_str())
-                .context("status", status),
-        );
-    }
     response
 }

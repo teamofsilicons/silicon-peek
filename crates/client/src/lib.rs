@@ -46,7 +46,6 @@ pub mod json;
 pub mod num;
 pub mod schema;
 mod secret;
-pub mod telemetry;
 pub mod timestamp;
 pub mod ting;
 

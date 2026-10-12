@@ -1,7 +1,7 @@
 //! `PUT/GET/DELETE /api/v1/drawings/current`: the Silicon's drawing copy.
 
 use axum::{
-    Extension, Json,
+    Json,
     body::Body,
     extract::State,
     http::{HeaderMap, HeaderValue, StatusCode, header},
@@ -22,7 +22,6 @@ use crate::{
     plane::Plane,
     state::AppState,
     store,
-    telemetry::{Event, RequestMeta},
 };
 
 async fn principal(state: &AppState, plane: &Plane, headers: &HeaderMap) -> ApiResult<Principal> {
@@ -37,7 +36,6 @@ async fn principal(state: &AppState, plane: &Plane, headers: &HeaderMap) -> ApiR
 /// `PUT`: raw JavaScript, `X-Peek-Drawing-Sha256` must match, ≤ 256 KiB.
 pub(crate) async fn put(
     State(state): State<AppState>,
-    Extension(meta): Extension<RequestMeta>,
     plane: Plane,
     headers: HeaderMap,
     RawBody(bytes): RawBody,
@@ -99,13 +97,6 @@ pub(crate) async fn put(
             )?)
         })
         .await?;
-    state.0.telemetry.record(
-        &meta,
-        Event::new("drawing.put", "drawing.put")
-            .actor(&principal.account, &principal.actor)
-            .context("drawing_bytes", bytes.len())
-            .context("drawing_sha256", actual.clone()),
-    );
     Ok(Json(DrawingStored {
         sha256: actual,
         bytes: bytes.len() as u64,

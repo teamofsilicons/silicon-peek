@@ -14,7 +14,6 @@ public struct PeekSettings: Sendable, Equatable {
         case hotkeyModifier = "hotkey_modifier"
         case display
         case backdrop
-        case telemetry
         case voiceDefaults = "voice_defaults"
         case sttLanguage = "stt_language"
     }
@@ -23,7 +22,6 @@ public struct PeekSettings: Sendable, Equatable {
     public var hotkeyModifier: HotkeyModifier = .ctrlCmd
     public var display: DisplayTarget = .main
     public var backdrop: BackdropSourceSetting = .wallpaper
-    public var telemetry = true
     /// Language (BCP 47 primary subtag) → ElevenLabs voice.
     public var voiceDefaults: [String: String] = DefaultVoices.byLanguage
     /// `auto` or a BCP 47 tag.
@@ -43,7 +41,6 @@ public struct PeekSettings: Sendable, Equatable {
         case .hotkeyModifier: .string(hotkeyModifier.rawValue)
         case .display: .string(display.rawValue)
         case .backdrop: .string(backdrop.rawValue)
-        case .telemetry: .bool(telemetry)
         case .voiceDefaults: .object(voiceDefaults.mapValues(JSONValue.string))
         case .sttLanguage: .string(sttLanguage)
         }
@@ -61,7 +58,6 @@ public struct PeekSettings: Sendable, Equatable {
         case .hotkeyModifier: hotkeyModifier = try Self.enumValue(key, value)
         case .display: display = try Self.enumValue(key, value)
         case .backdrop: backdrop = try Self.enumValue(key, value)
-        case .telemetry: telemetry = try Self.boolValue(key, value)
         case .sttLanguage:
             guard let text = value.stringValue, text == "auto" || Self.isLanguageTag(text) else {
                 throw SettingsError(key: key.rawValue, message: "must be \"auto\" or a BCP 47 language tag such as \"en\" or \"pt-BR\"; got \(value.jsonString)")
@@ -117,6 +113,7 @@ public struct PeekSettings: Sendable, Equatable {
         if let schema = object.removeValue(forKey: "schema"), schema.intValue.map({ $0 > Int(Self.schema) }) == true {
             warnings.append("settings.json schema \(schema.jsonString) is newer than this build (\(Self.schema)); unknown keys are kept")
         }
+        object.removeValue(forKey: "telemetry")
         object.removeValue(forKey: "updates")
         object.removeValue(forKey: "show_test_peeks")
         for key in Key.allCases {
@@ -160,13 +157,6 @@ public struct PeekSettings: Sendable, Equatable {
             throw SettingsError(key: key.rawValue, message: "must be one of \(allowed); got \(value.jsonString)")
         }
         return parsed
-    }
-
-    private static func boolValue(_ key: Key, _ value: JSONValue) throws(SettingsError) -> Bool {
-        guard let flag = value.boolValue else {
-            throw SettingsError(key: key.rawValue, message: "must be true or false; got \(value.jsonString)")
-        }
-        return flag
     }
 
     /// A pragmatic BCP 47 check: a 2–3 letter language, then 2–8 character alphanumeric subtags.

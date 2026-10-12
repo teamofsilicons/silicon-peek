@@ -19,12 +19,11 @@ use silicon_peek_client::{
         },
     },
     schema::send::Notify,
-    telemetry::env_opt_out,
 };
 
 use super::next;
 use crate::{
-    cli::{ConfigCommand, OnOff},
+    cli::ConfigCommand,
     context::Globals,
     output::{Out, kv},
     service,
@@ -57,10 +56,6 @@ pub async fn run(g: &Globals, out: Out, command: ConfigCommand) -> Result<()> {
             patch.insert(key, Value::Null);
             merge(g, out, &Value::Object(patch).to_string()).await
         }
-        ConfigCommand::Telemetry { state } => {
-            let on = state == OnOff::On;
-            merge(g, out, &json!({"telemetry": on}).to_string()).await
-        }
         ConfigCommand::Home { dir } => home(out, &dir),
     }
 }
@@ -83,24 +78,11 @@ async fn merge(g: &Globals, out: Out, patch: &str) -> Result<()> {
     Ok(())
 }
 
-/// The config as peekd mirrors it: `telemetry` is this home's *effective*
-/// setting, so an opt-out in the environment (`PEEK_TELEMETRY`,
-/// `SPACE_STATION_TELEMETRY`, `SILICON_TELEMETRY`) reaches peekd too.
-/// `--no-telemetry` stays with this one process.
-pub fn sync_payload(config: &Config) -> ConfigSyncConfig {
-    let mut payload = config.sync_payload();
-    if payload.telemetry && env_opt_out() {
-        payload.telemetry = false;
-        payload.env_opt_out = true;
-    }
-    payload
-}
-
-/// [`sync_payload`] for a peekd that answered `hello`: `shown` is dropped
+/// The config payload for a peekd that answered `hello`: `shown` is dropped
 /// from `notify` when that peekd does not announce `notify_shown` (it would
 /// refuse the unknown value).
 pub fn sync_payload_for(config: &Config, hello: &HelloResult) -> ConfigSyncConfig {
-    let mut payload = sync_payload(config);
+    let mut payload = config.sync_payload();
     if !hello.has_feature(features::NOTIFY_SHOWN) {
         payload.notify.retain(|n| *n != Notify::Shown);
     }

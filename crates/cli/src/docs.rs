@@ -34,7 +34,7 @@ const TOPICS: &[Topic] = &[
     Topic {
         name: "carbon",
         title: "Peek for Carbons",
-        summary: "Peek.app shows each Silicon's bubble at its position. Press ctrl+cmd+<position> to focus a bubble, answer an ask by voice (`\\`), keyboard or click, and speak or type to a Silicon with no pending ask. Esc reaches a new peek for 3 s (or while hovered): once hides a show (twice also stops the audio) or folds an ask to compact; the down arrow always dismisses. \"+N\" shows how many of that Silicon's peeks wait. Settings: compact mode, hotkey modifier, display, telemetry.",
+        summary: "Peek.app shows each Silicon's bubble at its position. Press ctrl+cmd+<position> to focus a bubble, answer an ask by voice (`\\`), keyboard or click, and speak or type to a Silicon with no pending ask. Esc reaches a new peek for 3 s (or while hovered): once hides a show (twice also stops the audio) or folds an ask to compact; the down arrow always dismisses. \"+N\" shows how many of that Silicon's peeks wait. Settings: compact mode, hotkey modifier and display.",
     },
     Topic {
         name: "silicon",
@@ -74,7 +74,7 @@ const TOPICS: &[Topic] = &[
     Topic {
         name: "telemetry",
         title: "Telemetry",
-        summary: "peek records anonymous usage events (command, outcome, durations; actor ids hashed) through its backend into Space Station. It never records speak/show/ask text, answers, transcripts, paths, drawings or tokens. Turn it off with `peek config telemetry off`, --no-telemetry (this process only), or PEEK_TELEMETRY=0 (also forwarded to the helper for this home).",
+        summary: "peek does not collect or send usage analytics, crash reports or telemetry. No setting or opt-out is needed.",
     },
     Topic {
         name: "privacy",

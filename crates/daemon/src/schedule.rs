@@ -43,7 +43,6 @@ use crate::{
     queue::{ScheduledRef, Withdraw, schedule_not_found, scheduled_count},
     speech::TtsCache,
     state::{ActorKey, Bubble, Caller, Shared, SharedRef},
-    telemetry::Record,
 };
 
 /// How far the wall clock may run ahead of the monotonic clock between two
@@ -267,13 +266,6 @@ impl Shared {
             })
             .await?;
         self.timers_wake.notify_one();
-        let mut rec = Record::new("send.scheduled", "ok")
-            .with("slot", slot.get())
-            .with("scheduled", true);
-        rec.actor = Some((key.account.clone(), key.actor.clone()));
-        rec.isi.clone_from(&op.isi);
-
-        self.record(rec);
         Ok(SendResult {
             send_id,
             ask_id,
@@ -583,14 +575,6 @@ impl Shared {
             late_ms = now.saturating_sub(row.due_at),
             "a scheduled send came due"
         );
-        let mut rec = Record::new("schedule.fired", "ok")
-            .with("slot", slot.get())
-            .with("status", crate::queue::enum_word(fired.outcome))
-            .with("scheduled", true);
-        rec.actor = Some((key.account.clone(), key.actor.clone()));
-        rec.isi.clone_from(&row.isi);
-
-        self.record(rec);
         Ok(())
     }
 

@@ -21,7 +21,7 @@ impl Accounts {
             .base_url(&config.base_url)
             .timeout(config.request_timeout)
             .max_retries(0)
-            .telemetry(config.sdk_telemetry)
+            .telemetry(false)
             .build()?;
         Ok(Some(Self {
             client,

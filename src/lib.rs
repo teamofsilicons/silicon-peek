@@ -3,7 +3,7 @@
 //! It exchanges and rotates Silicon Accounts sessions, encrypts successful token
 //! responses for recovery, and introspects every bearer live. Account UUIDs own
 //! drawings and settings. Short-lived Accounts proofs authorize Ting operations;
-//! the server also brokers speech, bug reports, telemetry, and account webhooks.
+//! the server also brokers speech, bug reports and account webhooks.
 //!
 //! The binary (`src/main.rs`) only loads [`config::Config`], builds
 //! [`state::AppState`] and serves [`app::router`]. Everything else is internal;
@@ -13,7 +13,6 @@
 pub mod app;
 pub mod config;
 pub mod state;
-pub mod telemetry;
 
 mod accounts;
 mod auth;

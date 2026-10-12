@@ -1,10 +1,8 @@
 //! Authenticated speech: short-lived `ElevenLabs` connection tokens and `OpenAI` transcription.
 //! No audio, transcript, instructions or provider credentials are logged.
 
-use std::time::Instant;
-
 use axum::{
-    Extension, Json,
+    Json,
     extract::{RawQuery, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
@@ -26,7 +24,6 @@ use crate::{
     openai,
     plane::Plane,
     state::AppState,
-    telemetry::{Event, RequestMeta},
 };
 
 /// How long a proxy verdict may be reused by peekd (its token cache).
@@ -76,15 +73,13 @@ async fn authorize(state: &AppState, plane: &Plane, headers: &HeaderMap) -> ApiR
 /// Returns a short-lived TTS connection credential or an STT proxy routing hint.
 pub(crate) async fn token(
     State(state): State<AppState>,
-    Extension(meta): Extension<RequestMeta>,
     plane: Plane,
     // Required on every POST; routing hints are not replayed.
     IdemKey(_key): IdemKey,
     headers: HeaderMap,
     body: JsonBody<SpeechTokenRequest>,
 ) -> ApiResult<Json<SpeechToken>> {
-    let started = Instant::now();
-    let principal = authorize(&state, &plane, &headers).await?;
+    authorize(&state, &plane, &headers).await?;
     let purpose = body.value.purpose;
     let result = async {
         if purpose == SpeechPurpose::Tts {
@@ -105,25 +100,6 @@ pub(crate) async fn token(
         })
     }
     .await;
-    let mut event = Event::new(
-        "speech.token",
-        match purpose {
-            SpeechPurpose::Tts => "speech.tts",
-            SpeechPurpose::Stt => "speech.stt",
-        },
-    )
-    .actor(&principal.account, &principal.actor)
-    .duration(started.elapsed());
-    if let Ok(t) = &result {
-        event = event.context("key_source", "peek").context(
-            "method",
-            match t.mode {
-                SpeechMode::Direct => "direct",
-                SpeechMode::Proxy => "proxy",
-            },
-        );
-    }
-    state.0.telemetry.record(&meta, event.outcome(&result));
     result.map(Json)
 }
 
@@ -219,15 +195,13 @@ pub(crate) fn listen_params(raw: Option<&str>) -> ApiResult<Vec<(String, String)
 /// `POST /api/v1/speech/listen`: speech to text through peek's key.
 pub(crate) async fn listen(
     State(state): State<AppState>,
-    Extension(meta): Extension<RequestMeta>,
     plane: Plane,
     IdemKey(_key): IdemKey,
     RawQuery(query): RawQuery,
     headers: HeaderMap,
     RawBody(audio): RawBody,
 ) -> ApiResult<Response> {
-    let started = Instant::now();
-    let principal = authorize(&state, &plane, &headers).await?;
+    authorize(&state, &plane, &headers).await?;
     let result = async {
         let params = listen_params(query.as_deref())?;
         let content_type = single_header(&headers, header::CONTENT_TYPE.as_str())?
@@ -265,19 +239,5 @@ pub(crate) async fn listen(
         openai::listen(&state, &plane, &params, audio).await
     }
     .await;
-    let mut event = Event::new("speech.proxy", "speech.stt")
-        .actor(&principal.account, &principal.actor)
-        .duration(started.elapsed())
-        .context(
-            "stt_ms",
-            u64::try_from(started.elapsed().as_millis()).unwrap_or(0),
-        );
-    if let Ok(t) = &result {
-        event = event.context("key_source", "peek");
-        if let Some(id) = &t.request_id {
-            event = event.context("stt_request_id", id.clone());
-        }
-    }
-    state.0.telemetry.record(&meta, event.outcome(&result));
     result.map(|t| Json(t).into_response())
 }

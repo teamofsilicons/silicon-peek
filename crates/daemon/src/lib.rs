@@ -5,7 +5,7 @@
 //! agent. It owns the slot registry, the send queue, asks and history, the
 //! delivery outbox, `ElevenLabs` TTS streamed to the UI, `OpenAI` STT once
 //! per recording, per-home session refresh under each home's lock, the
-//! telemetry relay, Peek.app's self-update and the stale-CLI watchdog.
+//! Peek.app's self-update and the stale-CLI watchdog.
 //!
 //! It serves two roles on `/var/tmp/silicon-peek-<uid>/peekd.sock`: CLIs
 //! (one request per connection, authenticated per home) and Peek.app (one
@@ -43,7 +43,6 @@ pub mod speech_request;
 pub mod state;
 pub mod stt;
 mod sys;
-pub mod telemetry;
 pub mod ui;
 pub mod update;
 pub mod voice;

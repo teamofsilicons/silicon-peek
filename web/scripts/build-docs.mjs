@@ -148,7 +148,6 @@ ${article}
 <footer class="article-footer">
 <div class="page-links">${previous ? `<a href="${docsRoute(previous.slug)}"><small>← PREVIOUS</small>${escapeHtml(previous.title)}</a>` : "<span></span>"}${next ? `<a class="next" href="${docsRoute(next.slug)}"><small>NEXT →</small>${escapeHtml(next.title)}</a>` : ""}</div>
 <div class="meta"><span>peek ${VERSION} · MIT</span>${notFound ? "" : `<code>${escapeHtml(cliHint)}</code><a href="${markdownPath}">Read as Markdown</a><a href="${REPO_URL}/blob/main/docs/${page.slug}.md">View source ↗</a>`}</div>
-<div id="telemetry-toggle" class="telemetry-slot"></div>
 </footer>
 </main>
 <aside class="toc" aria-label="On this page">${toc.length ? `<h2>On this page</h2>${toc.map((h) => `<a href="#${h.id}">${escapeHtml(h.text)}</a>`).join("")}` : ""}<div class="toc-note">Instructive first.<br>Reasons one link away.</div></aside>

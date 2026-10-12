@@ -1,13 +1,9 @@
 //! Configuration, read only from the environment (BLUEPRINT §5.2).
 //!
 //! Every variable is validated at startup and every problem is reported at
-//! once, each naming the variable, what is wrong and how to fix it. Two
-//! deliberate exceptions keep a half-provisioned deployment alive:
-//!
-//! - an empty `PEEK_ACCOUNTS_APP_SECRET` is allowed: `/readyz` then reports
-//!   `accounts_config: missing` and ACCOUNTS routes answer `503 accounts_misconfigured`;
-//! - Space Station keys never fail startup: a missing or malformed key only
-//!   disables that table, with one warning.
+//! once, each naming the variable, what is wrong and how to fix it.
+//! An empty `PEEK_ACCOUNTS_APP_SECRET` is allowed: `/readyz` then reports
+//!   `accounts_config: missing` and ACCOUNTS routes answer `503 accounts_misconfigured`.
 
 use std::{
     fmt,
@@ -26,7 +22,6 @@ pub const VARIABLES: &[&str] = &[
     "PEEK_DATABASE_PATH",
     "PEEK_PUBLIC_ORIGIN",
     "PEEK_WEB_ORIGINS",
-    "PEEK_ENVIRONMENT",
     "PEEK_ACCOUNTS_BASE_URL",
     "PEEK_ACCOUNTS_APP_ID",
     "PEEK_ACCOUNTS_APP_SECRET",
@@ -35,7 +30,6 @@ pub const VARIABLES: &[&str] = &[
     "PEEK_ACCOUNTS_WEBHOOK_PREVIOUS_SECRET",
     "PEEK_ACCOUNTS_WEBHOOK_PREVIOUS_KEY_VERSION",
     "PEEK_ACCOUNTS_REQUEST_TIMEOUT_SECONDS",
-    "PEEK_ACCOUNTS_SDK_TELEMETRY",
     "PEEK_TING_BASE_URL",
     "PEEK_TING_REQUEST_TIMEOUT_SECONDS",
     "PEEK_ENCRYPTION_KEY",
@@ -50,13 +44,6 @@ pub const VARIABLES: &[&str] = &[
     "PEEK_GITHUB_ISSUES_TOKEN",
     "PEEK_GITHUB_REPO",
     "PEEK_GITHUB_API_URL",
-    "PEEK_TELEMETRY",
-    "PEEK_BACKEND_TABLE_KEY",
-    "PEEK_CLIDAEMON_TABLE_KEY",
-    "PEEK_FRONTEND_ANALYTICS_TABLE_KEY",
-    "PEEK_FRONTEND_EVENTS_TABLE_KEY",
-    "PEEK_TELEMETRY_HOME",
-    "PEEK_TELEMETRY_URL",
 ];
 
 /// The complete, validated server configuration.
@@ -68,10 +55,8 @@ pub struct Config {
     pub database_path: PathBuf,
     /// This backend's public origin, advertised by `/api/v1/accounts`.
     pub public_origin: String,
-    /// Browser origins allowed on the telemetry gateway.
+    /// Browser origins allowed on the API.
     pub web_origins: Vec<String>,
-    /// `production` or `development` (the telemetry `environment`).
-    pub environment: DeploymentEnvironment,
     /// ACCOUNTS settings.
     pub accounts: AccountsConfig,
     /// Ting settings.
@@ -86,30 +71,8 @@ pub struct Config {
     pub openai: OpenaiConfig,
     /// GitHub issue filing for bug reports.
     pub github: GithubConfig,
-    /// Space Station telemetry.
-    pub telemetry: TelemetryConfig,
     /// Non-fatal findings to log once at startup (never secret values).
     pub warnings: Vec<String>,
-}
-
-/// The deployment tier recorded in telemetry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DeploymentEnvironment {
-    /// The live service.
-    Production,
-    /// A developer's machine.
-    Development,
-}
-
-impl DeploymentEnvironment {
-    /// The telemetry spelling.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Production => "production",
-            Self::Development => "development",
-        }
-    }
 }
 
 /// ACCOUNTS settings.
@@ -125,11 +88,6 @@ pub struct AccountsConfig {
     pub webhook_keys: Vec<(i64, Secret)>,
     /// Per-request ACCOUNTS timeout.
     pub request_timeout: Duration,
-    /// Whether the ACCOUNTS SDK's own telemetry is on (`x-accounts-telemetry: on`, and
-    /// the SDK's recorder if an `ACCOUNTS_TELEMETRY_KEY` is configured). Defaults
-    /// to `PEEK_TELEMETRY`; `PEEK_ACCOUNTS_SDK_TELEMETRY=off` keeps the SDK from
-    /// ever looking for a developer's `~/.silicon-accounts` telemetry key.
-    pub sdk_telemetry: bool,
 }
 
 /// Ting settings.
@@ -322,25 +280,6 @@ pub struct GithubConfig {
     pub api_url: String,
 }
 
-/// Space Station settings. Keys are `None` when missing or malformed.
-#[derive(Clone, Debug)]
-pub struct TelemetryConfig {
-    /// `PEEK_TELEMETRY` (off disables every recorder and the gateway).
-    pub enabled: bool,
-    /// `table-peekbackend-…`, recorded directly.
-    pub backend_key: Option<Secret>,
-    /// `table-peekclidaemon-…`, relayed by the gateway.
-    pub clidaemon_key: Option<Secret>,
-    /// `table-peekfrontendanalytics-…`, relayed by the gateway.
-    pub analytics_key: Option<Secret>,
-    /// `table-peekfrontendevents-…`, relayed by the gateway.
-    pub events_key: Option<Secret>,
-    /// The `SpaceClient` spool directory (always explicit).
-    pub home: PathBuf,
-    /// Space Station origin; `None` when invalid (telemetry off).
-    pub url: Option<String>,
-}
-
 /// One configuration problem.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConfigProblem {
@@ -439,22 +378,6 @@ impl Reader<'_> {
         }
         Some(Secret::new(value))
     }
-
-    fn table_key(&mut self, var: &'static str, table: &str) -> Option<Secret> {
-        let value = self.value(var)?;
-        let prefix = format!("table-{table}-");
-        let ok = value
-            .strip_prefix(&prefix)
-            .is_some_and(|hex| hex.len() == 32 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
-        if ok {
-            Some(Secret::new(value))
-        } else {
-            self.warnings.push(format!(
-                "{var} is not a {table} table key (expected {prefix}<32 hex>); the {table} table is disabled"
-            ));
-            None
-        }
-    }
 }
 
 impl Config {
@@ -525,18 +448,6 @@ impl Config {
                 Err(why) => r.problem("PEEK_WEB_ORIGINS", format!("entry `{entry}` {why}")),
             }
         }
-
-        let environment = match r.value("PEEK_ENVIRONMENT").as_deref() {
-            None | Some("production") => DeploymentEnvironment::Production,
-            Some("development") => DeploymentEnvironment::Development,
-            Some(other) => {
-                r.problem(
-                    "PEEK_ENVIRONMENT",
-                    format!("must be `production` or `development`, got `{other}`"),
-                );
-                DeploymentEnvironment::Production
-            }
-        };
 
         let accounts_base_url =
             r.origin("PEEK_ACCOUNTS_BASE_URL", silicon_peek_client::ACCOUNTS_URL);
@@ -709,36 +620,18 @@ impl Config {
             api_url: r.origin("PEEK_GITHUB_API_URL", "https://api.github.com"),
         };
 
-        let telemetry = read_telemetry(&mut r);
-        let sdk_telemetry = match r.value("PEEK_ACCOUNTS_SDK_TELEMETRY") {
-            None => telemetry.enabled,
-            Some(v) if silicon_peek_client::telemetry::is_off_value(&v) => false,
-            Some(v) if matches!(v.to_ascii_lowercase().as_str(), "on" | "1" | "true" | "yes") => {
-                telemetry.enabled
-            }
-            Some(v) => {
-                r.problem(
-                    "PEEK_ACCOUNTS_SDK_TELEMETRY",
-                    format!("must be `on` or `off`, got `{v}`"),
-                );
-                telemetry.enabled
-            }
-        };
-
         if r.problems.is_empty() {
             Ok(Self {
                 bind,
                 database_path,
                 public_origin,
                 web_origins,
-                environment,
                 accounts: AccountsConfig {
                     base_url: accounts_base_url,
                     app_id,
                     app_secret,
                     webhook_keys,
                     request_timeout: Duration::from_secs(accounts_timeout),
-                    sdk_telemetry,
                 },
                 ting: TingConfig {
                     base_url: ting_base_url,
@@ -749,50 +642,11 @@ impl Config {
                 elevenlabs_agent_url,
                 openai,
                 github,
-                telemetry,
                 warnings: r.warnings,
             })
         } else {
             Err(ConfigError(r.problems))
         }
-    }
-}
-
-fn read_telemetry(r: &mut Reader<'_>) -> TelemetryConfig {
-    let enabled = match r.value("PEEK_TELEMETRY") {
-        None => true,
-        Some(v) if silicon_peek_client::telemetry::is_off_value(&v) => false,
-        Some(v) if matches!(v.to_ascii_lowercase().as_str(), "on" | "1" | "true" | "yes") => true,
-        Some(v) => {
-            r.problem(
-                "PEEK_TELEMETRY",
-                format!("must be `on` or `off` (0/false/off/no also turn it off), got `{v}`"),
-            );
-            true
-        }
-    };
-    let url_raw = r
-        .value("PEEK_TELEMETRY_URL")
-        .unwrap_or_else(|| "https://backend.spacestation.teamofsilicons.com".to_owned());
-    let url = match parse_origin(&url_raw) {
-        Ok(url) => Some(url),
-        Err(why) => {
-            r.warnings
-                .push(format!("PEEK_TELEMETRY_URL {why}; telemetry is disabled"));
-            None
-        }
-    };
-    TelemetryConfig {
-        enabled,
-        backend_key: r.table_key("PEEK_BACKEND_TABLE_KEY", "peekbackend"),
-        clidaemon_key: r.table_key("PEEK_CLIDAEMON_TABLE_KEY", "peekclidaemon"),
-        analytics_key: r.table_key("PEEK_FRONTEND_ANALYTICS_TABLE_KEY", "peekfrontendanalytics"),
-        events_key: r.table_key("PEEK_FRONTEND_EVENTS_TABLE_KEY", "peekfrontendevents"),
-        home: PathBuf::from(
-            r.value("PEEK_TELEMETRY_HOME")
-                .unwrap_or_else(|| "telemetry".to_owned()),
-        ),
-        url,
     }
 }
 

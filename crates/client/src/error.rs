@@ -185,8 +185,6 @@ error_codes! {
     FrameTooLarge = "frame_too_large" => Usage, false;
     /// A request body exceeds the server's limit.
     PayloadTooLarge = "payload_too_large" => Usage, false;
-    /// Space Station refused the relayed telemetry batch.
-    TelemetryRejected = "telemetry_rejected" => Usage, false;
 
     // exit 3: not authenticated
     /// No session for this home, API and context.
@@ -252,8 +250,6 @@ error_codes! {
     NotFound = "not_found" => Refused, false;
     /// The request's `Origin` is not an allowed web origin.
     OriginNotAllowed = "origin_not_allowed" => Refused, false;
-    /// The telemetry table is not accepted by this gateway.
-    TelemetryTableUnavailable = "telemetry_table_unavailable" => Refused, false;
 
     // exit 5: unavailable / transport
     /// peek-server could not be reached or failed.

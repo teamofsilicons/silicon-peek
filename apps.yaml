@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "app_id": "peek",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "command": "peek",
   "targets": {
     "macos-aarch64": {
