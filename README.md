@@ -36,7 +36,7 @@ The app is authored by `si:tos` and published through [Silicon Apps](https://app
 | `crates/cli/` | `peek` CLI |
 | `crates/daemon/` | Per-user macOS helper |
 | `apps/mac/` | Swift desktop app |
-| `web/` | SolidJS website using [Silicon UI](https://ui.teamofsilicons.com) |
+| `web/` | Next.js website built with [Silicon UI](https://ui.teamofsilicons.com) components |
 | `deploy/` | Production deployment and backup tools |
 | `scripts/` | Native release packaging and installers |
 | `apps.yaml` | Silicon Apps package manifest |

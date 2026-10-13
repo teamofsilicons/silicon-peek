@@ -2,6 +2,7 @@
 # Build with the repository docs available, then deploy Vercel's prebuilt output.
 # Usage: web/deploy.sh [--prod]
 set -eu
+export VERCEL_TELEMETRY_DISABLED=1
 cd "$(dirname "$0")"
 VERCEL=${VERCEL:-$(command -v vercel || ls "$HOME"/.npm/_npx/*/node_modules/.bin/vercel 2>/dev/null | head -1)}
 SCOPE=${VERCEL_SCOPE:-shubham-guptas-projects-7ecb7811}

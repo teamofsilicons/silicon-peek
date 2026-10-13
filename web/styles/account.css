@@ -1,0 +1,44 @@
+/* The account menu (components/peek/AccountMenu.tsx): the sign-in popover and the error alert. */
+.account-menu {
+  display: flex;
+  align-items: center;
+  color: var(--foreground);
+}
+
+.account-panel {
+  display: grid;
+  gap: 12px;
+  width: min(340px, calc(100vw - 32px));
+  font: 14px/1.5 var(--font-sans);
+}
+
+.account-panel p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.account-title {
+  font-size: 15px;
+}
+
+.account-form {
+  display: grid;
+  gap: 10px;
+}
+
+.account-form code {
+  font: 12px/1.6 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.account-alert {
+  position: fixed;
+  top: 76px;
+  right: 16px;
+  z-index: 80;
+  width: min(360px, calc(100vw - 32px));
+}
+
+.account-alert:empty {
+  display: none;
+}

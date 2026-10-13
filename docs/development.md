@@ -1,6 +1,6 @@
 # Development
 
-Peek combines a Rust backend, Rust client library and CLI, a per-user macOS daemon, a Swift desktop app, and a SolidJS website. Each Carbon or Silicon account is identified by its Silicon Accounts UUID.
+Peek combines a Rust backend, Rust client library and CLI, a per-user macOS daemon, a Swift desktop app, and a Next.js website. Each Carbon or Silicon account is identified by its Silicon Accounts UUID.
 
 ## Build
 
@@ -27,4 +27,4 @@ Generate `apps/mac/Peek.xcodeproj` with XcodeGen and build the Peek scheme with 
 
 `apps.yaml` is the Silicon Apps package manifest. `scripts/build-release.sh` builds and validates all payloads. The packager checks executable formats, app signatures, archive paths, and matching versions. Publishing and deployment are documented in [the operator runbook](https://github.com/teamofsilicons/silicon-peek/blob/main/deploy/README.md).
 
-The frontend vendors foundation and button styles from [Silicon UI](https://ui.teamofsilicons.com), adapted to SolidJS. App updates come from Silicon Apps rather than a second network updater.
+The website is a static Next.js export built from [Silicon UI](https://ui.teamofsilicons.com) components, installed from its shadcn registry. App updates come from Silicon Apps rather than a second network updater.
